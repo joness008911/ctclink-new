@@ -1,0 +1,45 @@
+root@vps48944631:~/CT# pm2 logs CT --lines 20
+[TAILING] Tailing last 20 lines for [CT] process (change the value with --lines option)
+/root/.pm2/logs/CT-out.log last 20 lines:
+0|CT       |
+0|CT       | > rest-express@1.0.0 start
+0|CT       | > NODE_ENV=production node dist/index.js
+0|CT       |
+0|CT       |
+0|CT       | > rest-express@1.0.0 start
+0|CT       | > NODE_ENV=production node dist/index.js
+0|CT       |
+0|CT       |
+0|CT       | > rest-express@1.0.0 start
+0|CT       | > NODE_ENV=production node dist/index.js
+0|CT       |
+0|CT       |
+0|CT       | > rest-express@1.0.0 start
+0|CT       | > NODE_ENV=production node dist/index.js
+0|CT       |
+0|CT       |
+0|CT       | > rest-express@1.0.0 start
+0|CT       | > NODE_ENV=production node dist/index.js
+0|CT       |
+
+/root/.pm2/logs/CT-error.log last 20 lines:
+0|CT       |     at ModuleJob.run (node:internal/modules/esm/module_job:325:25)
+0|CT       |     at async ModuleLoader.import (node:internal/modules/esm/loader:606:24)
+0|CT       |     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+0|CT       |
+0|CT       | Node.js v20.20.0
+0|CT       | file:///root/CT/dist/index.js:267
+0|CT       |       throw new Error(
+0|CT       |             ^
+0|CT       |
+0|CT       | Error: DATABASE_URL must be set. Did you forget to provision a database?
+0|CT       |     at server/db.ts (file:///root/CT/dist/index.js:267:13)
+0|CT       |     at __init (file:///root/CT/dist/index.js:4:56)
+0|CT       |     at server/storage.ts (file:///root/CT/dist/index.js:291:5)
+0|CT       |     at __init (file:///root/CT/dist/index.js:4:56)
+0|CT       |     at file:///root/CT/dist/index.js:1342:1
+0|CT       |     at ModuleJob.run (node:internal/modules/esm/module_job:325:25)
+0|CT       |     at async ModuleLoader.import (node:internal/modules/esm/loader:606:24)
+0|CT       |     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+0|CT       |
+0|CT       | Node.js v20.20.0

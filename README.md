@@ -1,11 +1,52 @@
-<div align="center">
+# CleanTraffic - Quick Setup Guide
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Get started with CleanTraffic in under 2 minutes.
 
-  <h1>Built with AI Studio</h2>
+## Step 1: Login
+1. Go to your CleanTraffic dashboard
+2. Enter your username and password (provided by your administrator)
+3. Enter your API key when prompted
+4. Click **Login**
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## Step 2: Configure Redirect URLs
+1. Go to **Settings** tab
+2. Set your redirect destinations:
+   - **Human URL**: Where real visitors should go (your main website)
+   - **Bot URL**: Where bots should go (e.g., `https://google.com`)
+3. Click **Save**
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Step 3: Download Integration Script
+1. Scroll to **Download Integration Script**
+2. Click **Download Script**
+3. Upload the file to your website
+4. Share the script URL with your visitors
 
-</div>
+## Step 4: Monitor Traffic
+View real-time analytics in your dashboard:
+- Total visitor classifications
+- Human vs bot traffic breakdown
+- Recent visitor activity
+- Detection details
+
+---
+
+## How It Works
+
+When someone visits your integration script:
+- ✅ **Human visitors** → Redirected to your Human URL
+- ❌ **Bot traffic** → Redirected to your Bot URL
+
+View all detections and analytics in your dashboard at `/`
+
+---
+
+## Support
+
+- **Dashboard**: Monitor real-time visitor classifications
+- **Analytics**: Track human vs bot traffic
+- **API Key Management**: Create unlimited keys for different websites
+- **White/Blacklists**: Fine-tune detection rules
+
+---
+
+**That's it!** Your bot detection system is now live and protecting your website.

@@ -1,0 +1,101 @@
+1. Web Scraper Bots
+ • Pattern: Rapid requests to many pages in short time.
+ • Clues: High request frequency, unusual user-agent strings (or fake ones), missing JavaScript execution, ignoring robots.txt.
+ • Use Case: Data scraping, price monitoring, stealing content.
+
+⸻
+
+2. Spam Bots
+ • Pattern: Form submissions with repeated links or keywords.
+ • Clues: Similar content across multiple posts, disposable emails, identical IP ranges.
+ • Use Case: Spamming comments, forums, blogs, email lists.
+
+⸻
+
+3. Click Bots
+ • Pattern: Repeated clicks on ads or links.
+ • Clues: High click rates from same device/IP, no meaningful browsing activity, unnatural session durations.
+ • Use Case: Ad fraud, manipulating engagement.
+
+⸻
+
+4. Credential Stuffing Bots
+ • Pattern: Multiple login attempts with different usernames/passwords.
+ • Clues: Failed logins spike, fast login attempts, login from data center IPs or proxies.
+ • Use Case: Brute force attacks, account takeover.
+
+⸻
+
+5. DDoS Bots
+ • Pattern: Thousands of requests per second from distributed sources.
+ • Clues: Sudden traffic spikes, abnormal request headers, repeated hits on same endpoints.
+ • Use Case: Overloading servers to take them offline.
+
+⸻
+
+6. Good Bots (Legit)
+ • Examples: Googlebot, Bingbot, social media crawlers.
+ • Pattern: Follow robots.txt, consistent user-agent, reasonable request rate.
+ • Clues: Usually from verifiable IP ranges owned by Google, Microsoft, etc.
+ • Use Case: Indexing, previews, monitoring.
+
+⸻
+
+7. Residential Proxy Bots
+ • Pattern: Harder to detect since they look like real users.
+ • Clues: Still have unusual behavior (no mouse movement, same patterns of requests).
+ • Use Case: Sneaker bots, ticket scalpers, scraping with human-like IPs.
+
+⸻
+
+👉 In short:
+ • Bad bots → High speed, repetitive, ignore rules, suspicious IPs.
+ • Good bots → Predictable, verifiable, polite crawling.
+ • Advanced bots → Use residential IPs, simulate humans, harder to catch.
+
+Here are detection strategies for advanced bots:
+
+⸻
+
+🔎 1. Behavioral Analysis
+ • What to check:
+ • Mouse movements → real users move in curved, imperfect ways. Bots often move in straight lines or jump instantly.
+ • Typing speed → humans type with variable speed + mistakes; bots “paste” instantly.
+ • Scroll behavior → humans scroll gradually, bots scroll instantly or not at all.
+
+⸻
+
+🔎 2. Browser & Device Fingerprinting
+ • Collect unique device/browser fingerprints (screen size, timezone, fonts, plugins, canvas data).
+ • Bots issue: They often use headless Chrome or Puppeteer, which miss certain attributes or report impossible combos (e.g., “Mac OS + Internet Explorer”).
+
+⸻
+
+🔎 3. Challenge–Response Tests
+ • Hidden fields (honeypots): Bots fill every form field, including invisible ones.
+
+
+⸻
+
+🔎 4. Traffic & Rate Patterns
+ • Look for:
+ • Repeated visits from different IPs with the same fingerprint.
+ • Too-perfect timing (e.g., login attempts exactly every 2 seconds).
+ • Abnormal volume of requests during odd hours.
+
+⸻
+
+🔎 5. IP & Network Intelligence
+ • Suspicious ASN ranges.
+ • Residential proxies (harder but possible if traffic patterns don’t match real users).
+
+⸻
+
+🔎 6. Server-Side Validation
+ • Don’t rely only on client-side checks. On the backend:
+ • Verify headers (bots often spoof User-Agent but forget Accept-Language, Referer, etc.).
+ • Detect cookie/session anomalies (real users carry cookies naturally, bots may restart sessions often).
+ • Enforce rate limits per session/IP/device.
+
+⸻
+

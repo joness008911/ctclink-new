@@ -1,0 +1,759 @@
+# Production Bot Protection SaaS — Master Replit AI Agent Prompt
+
+I already have a functioning private version of a SaaS application. Do NOT immediately rewrite or replace the existing application.
+
+The goal is to evolve the existing application into a production-grade, secure, multi-tenant SaaS platform for website bot protection.
+
+## Product concept
+
+The product allows website owners to create an account, start a free trial, register their websites, obtain site/API credentials, install a small PHP integration or SDK on their website, and use the service to detect and manage automated/bot traffic.
+
+The system may:
+
+* Detect suspicious automated traffic
+* Identify likely bots
+* Rate-limit abusive clients
+* Allow legitimate traffic
+* Block traffic according to customer rules
+* Challenge suspicious traffic where appropriate
+* Record security events
+* Send real-time security notifications
+* Provide dashboards and analytics
+* Allow customers to configure protection policies
+* Enforce usage limits
+* Enforce free-trial expiration
+* Require payment/subscription before continued service
+* Provide API access where appropriate
+
+This is a legitimate website-security product. It must NOT implement cloaking, search-engine manipulation, deceptive redirects, credential theft, fraud, phishing, malware delivery, or mechanisms intended to conceal malicious behavior.
+
+---
+
+# IMPORTANT: AUDIT FIRST
+
+Before making significant code changes:
+
+1. Inspect the entire existing repository.
+2. Identify the framework, database, authentication system, API architecture, frontend architecture, background jobs, caching, and deployment model.
+3. Identify all existing functionality that already works.
+4. Identify security weaknesses.
+5. Identify missing production functionality.
+6. Identify database tables and relationships.
+7. Identify where authorization is currently enforced.
+8. Identify where rate limiting is currently enforced.
+9. Identify how billing/trial status is currently handled.
+10. Identify any places where the frontend is trusted when the backend should be authoritative.
+11. Identify any secrets exposed to browsers or customers.
+12. Identify any tenant-isolation problems.
+13. Identify any administrative endpoints that customers could potentially access.
+14. Identify any API endpoints that do not have appropriate authentication or authorization.
+15. Identify any sensitive data unnecessarily stored or logged.
+
+Do not destroy existing working functionality.
+
+After the audit, explain:
+
+* Current architecture
+* Current strengths
+* Security risks
+* Missing features
+* Recommended architecture
+* Migration strategy
+
+Only then begin implementation.
+
+---
+
+# CORE SECURITY REQUIREMENTS
+
+The production application must use defense-in-depth.
+
+## Authentication
+
+Use Clerk for customer authentication unless the existing architecture has a compelling reason not to.
+
+Requirements:
+
+* No password storage in our database if Clerk handles authentication.
+* Secure session validation.
+* Server-side authentication on protected endpoints.
+* Never trust a user ID supplied by the browser without validating the authenticated session.
+* Support secure logout/session invalidation.
+* Support MFA/security features provided by Clerk where appropriate.
+
+---
+
+# AUTHORIZATION
+
+Authentication is not authorization.
+
+Every protected backend request must establish:
+
+1. Who is the authenticated user?
+2. Which organization/tenant do they belong to?
+3. What resource are they attempting to access?
+4. Does that tenant own the resource?
+5. Is the user's role allowed to perform the requested action?
+6. Is the customer's subscription/trial currently active?
+
+Customers must NEVER receive infrastructure-level administrator privileges.
+
+Create a strict separation between:
+
+* Customer
+* Customer organization
+* Customer organization members
+* Support/operator roles
+* Internal administrator roles
+
+Do not expose internal administrator functionality through normal customer routes.
+
+---
+
+# MULTI-TENANCY
+
+The application must be designed as a secure multi-tenant SaaS.
+
+Every customer-owned resource must have an ownership relationship such as:
+
+organization_id / tenant_id.
+
+Examples:
+
+* Websites
+* API keys
+* Security rules
+* Events
+* Alerts
+* Notifications
+* Usage records
+* Billing records
+* Integrations
+* Analytics
+
+A customer must never be able to access another customer's records by modifying:
+
+* IDs
+* UUIDs
+* URLs
+* API parameters
+* Request bodies
+* Headers
+* Query parameters
+
+Use database-level Row Level Security where supported.
+
+Application-level authorization must still exist even when RLS exists.
+
+Defense in depth is required.
+
+---
+
+# API SECURITY
+
+Every API endpoint must be classified as one of:
+
+* Public
+* Authenticated customer
+* Customer API key
+* Internal service
+* Administrator only
+* Webhook
+
+Document the classification for every endpoint.
+
+Never rely solely on frontend route protection.
+
+Backend authorization is mandatory.
+
+Validate:
+
+* Authentication
+* Authorization
+* Input schema
+* Content type
+* Request size
+* Rate limits
+* Subscription state
+* Resource ownership
+
+Return appropriate HTTP status codes without leaking sensitive implementation details.
+
+---
+
+# API KEYS
+
+Customers must be able to create API/site keys for their websites.
+
+Requirements:
+
+* Generate cryptographically secure random keys.
+* Never store raw secret keys if they do not need to be recoverable.
+* Store hashes where possible.
+* Show a secret only at creation time where appropriate.
+* Allow customers to revoke keys.
+* Allow key rotation.
+* Give keys identifiers so they can be managed without exposing secrets.
+* Never expose secret API keys in normal dashboard API responses.
+* Never put secret API keys in client-side JavaScript unless specifically designed as a public/site key.
+* Separate public site identifiers from secret server credentials.
+
+Implement least privilege for credentials.
+
+---
+
+# WEBSITE INSTALLATION
+
+Customers should have a simple onboarding process:
+
+1. Create account.
+2. Start free trial.
+3. Add website/domain.
+4. Verify ownership where required.
+5. Create site configuration.
+6. Generate credentials.
+7. Download the PHP integration/SDK or installation package.
+8. Upload/install it on their website.
+9. Verify installation.
+10. Send test traffic.
+11. View security events in real time.
+12. Configure protection rules.
+
+The PHP integration must be designed carefully.
+
+Do not embed highly privileged master credentials into downloadable client-side code.
+
+If a server-side PHP integration requires a secret, explain the security model clearly and use scoped credentials.
+
+The installer should be lightweight and should not unnecessarily interfere with the customer's existing website.
+
+---
+
+# BOT PROTECTION ENGINE
+
+The system should support a layered approach rather than relying on one simplistic "bot/not bot" decision.
+
+Potential signals include:
+
+* Request rate
+* IP reputation
+* Request frequency
+* Endpoint behavior
+* HTTP headers
+* User-agent characteristics
+* Session behavior
+* Request patterns
+* Authentication behavior
+* Repeated failures
+* Geographic information where legally appropriate
+* Known automation characteristics
+* Customer-defined rules
+* Historical behavior
+
+The system should produce a risk assessment such as:
+
+LOW
+MEDIUM
+HIGH
+CRITICAL
+
+The final action may be:
+
+ALLOW
+MONITOR
+RATE_LIMIT
+CHALLENGE
+BLOCK
+
+Do not design the system around deceptive content delivery or cloaking.
+
+---
+
+# RATE LIMITING
+
+Implement rate limiting at appropriate layers.
+
+Potential layers:
+
+* Global API rate limiting
+* Per-user rate limiting
+* Per-organization rate limiting
+* Per-site rate limiting
+* Per-IP rate limiting
+* Per-endpoint rate limiting
+* Bot-event ingestion limits
+
+Use Redis or another appropriate low-latency store where appropriate.
+
+Do not implement rate limiting only in the browser.
+
+The backend must enforce it.
+
+---
+
+# CACHING
+
+Use caching carefully for:
+
+* Site configuration
+* Protection policies
+* Subscription state where safe
+* Frequently accessed metadata
+* Rate-limit counters
+
+Never allow cached data to bypass tenant authorization.
+
+Be particularly careful with caching personalized API responses.
+
+Use appropriate cache invalidation when:
+
+* Site configuration changes
+* API keys are revoked
+* Subscription changes
+* Protection rules change
+
+---
+
+# REAL-TIME SECURITY EVENTS
+
+Customers should receive real-time events for important security activity.
+
+Examples:
+
+* Bot detected
+* Request blocked
+* Rate limit triggered
+* Suspicious activity detected
+* Site integration offline
+* Usage threshold reached
+* Trial approaching expiration
+* Trial expired
+* Payment failed
+* Subscription changed
+
+The dashboard should update without requiring constant manual page refreshes where practical.
+
+Do not allow customers to forge security events through public endpoints.
+
+---
+
+# BILLING
+
+Use Stripe or another production-grade payment processor.
+
+Billing must be server-authoritative.
+
+Support:
+
+* Free trial
+* Paid plans
+* Subscription creation
+* Subscription upgrades
+* Subscription downgrades
+* Cancellation
+* Payment failure
+* Grace periods where appropriate
+* Webhook processing
+* Subscription status synchronization
+* Usage limits
+* Trial expiration
+
+Never trust:
+
+* Frontend price
+* Frontend subscription status
+* Frontend trial status
+* Client-provided plan ID
+
+The backend must determine the customer's actual subscription state.
+
+Stripe webhooks must be:
+
+* Signature verified
+* Idempotent
+* Persisted where appropriate
+* Safe against replay
+* Processed asynchronously when appropriate
+
+---
+
+# TRIAL EXPIRATION
+
+A free trial must be enforced server-side.
+
+Example lifecycle:
+
+TRIALING
+↓
+ACTIVE
+↓
+PAST_DUE / GRACE
+↓
+SUSPENDED
+
+When the trial expires:
+
+* Notify the customer.
+* Show billing status.
+* Prevent protected-service usage according to product policy.
+* Preserve customer data.
+* Allow the customer to upgrade.
+* Do not simply hide functionality in the frontend.
+
+A customer must not be able to bypass expiration by manipulating:
+
+* Browser storage
+* Cookies
+* JavaScript
+* API requests
+* Plan IDs
+* Client timestamps
+
+The backend/database/payment provider must be authoritative.
+
+---
+
+# NOTIFICATIONS
+
+Create a notification system supporting:
+
+* In-app notifications
+* Email notifications
+* Real-time dashboard notifications
+
+Notification types should be stored as events or notification records where appropriate.
+
+Customers should be able to configure notification preferences.
+
+Avoid sending duplicate notifications.
+
+Use idempotency where necessary.
+
+---
+
+# CUSTOMER DASHBOARD
+
+The dashboard should provide:
+
+## Overview
+
+* Protected websites
+* Requests
+* Bots detected
+* Requests blocked
+* Rate limits
+* Current plan
+* Trial/subscription status
+* Usage
+
+## Websites
+
+* Add website
+* Verify website
+* Installation status
+* API/site credentials
+* Rotate credentials
+* Protection status
+* Configuration
+
+## Security Events
+
+* Real-time events
+* Filters
+* Search
+* Severity
+* IP information where appropriate
+* Timestamp
+* Website
+* Endpoint
+* Action
+* Risk score
+
+## Protection Rules
+
+Customers can configure legitimate security policies.
+
+## API Keys
+
+* Create
+* Revoke
+* Rotate
+* View metadata
+* Never reveal stored secrets unnecessarily
+
+## Billing
+
+* Current plan
+* Usage
+* Trial status
+* Payment method
+* Invoices
+* Upgrade/downgrade
+* Cancel subscription
+
+---
+
+# ADMIN SECURITY
+
+Customers must never be able to become administrators.
+
+Do not determine administrator status from:
+
+* Email address
+* Username
+* Query parameters
+* Hidden frontend fields
+* Local storage
+* Cookies controlled by the client
+
+Administrative authorization must be explicit and server-side.
+
+Ideally, internal administration should be isolated from the public customer dashboard.
+
+Administrator actions should be audited.
+
+---
+
+# AUDIT LOGGING
+
+Create security/audit logs for important actions:
+
+* Login/security events where appropriate
+* API key creation
+* API key revocation
+* Website creation
+* Website deletion
+* Rule changes
+* Billing changes
+* Organization membership changes
+* Administrative actions
+* Credential rotation
+* Security configuration changes
+
+Do not log secrets.
+
+Never log raw API keys, passwords, payment secrets, session tokens, or sensitive credentials.
+
+---
+
+# DATABASE SECURITY
+
+Review every table.
+
+For each table identify:
+
+* Primary key
+* Tenant/organization ownership
+* Foreign keys
+* Indexes
+* Unique constraints
+* RLS policies
+* Sensitive columns
+* Retention requirements
+
+Prevent IDOR/BOLA vulnerabilities.
+
+Use transactions for operations that must be atomic.
+
+Use database constraints instead of relying entirely on application logic.
+
+---
+
+# INPUT SECURITY
+
+Validate all external input.
+
+Protect against:
+
+* SQL injection
+* XSS
+* CSRF where applicable
+* SSRF
+* Command injection
+* Path traversal
+* Unsafe redirects
+* Header injection
+* Malicious file uploads
+* Oversized requests
+* Prototype pollution where relevant
+* Deserialization vulnerabilities
+* Abuse of webhook endpoints
+
+Use framework-native security mechanisms whenever possible.
+
+---
+
+# OBSERVABILITY
+
+The production application should have:
+
+* Structured logs
+* Error tracking
+* Metrics
+* Health checks
+* Database monitoring
+* Queue monitoring if queues exist
+* Rate-limit metrics
+* Security event metrics
+* Billing webhook monitoring
+
+Never expose internal stack traces to customers.
+
+---
+
+# FAILURE MODES
+
+Design for failures.
+
+Examples:
+
+* Redis unavailable
+* Database unavailable
+* Payment provider unavailable
+* Email provider unavailable
+* Real-time service unavailable
+* Customer website unavailable
+* Security engine timeout
+
+Define safe behavior for each.
+
+Security-critical paths should fail safely.
+
+---
+
+# TESTING
+
+Before declaring production readiness, create tests for:
+
+## Authentication
+
+* Unauthenticated access denied
+* Expired session denied
+* Invalid session denied
+
+## Authorization
+
+* Customer A cannot access Customer B
+* Customer cannot access admin endpoints
+* Organization member permissions enforced
+
+## API
+
+* Invalid keys rejected
+* Revoked keys rejected
+* Rate limits enforced
+* Invalid input rejected
+
+## Billing
+
+* Trial expiration enforced
+* Active subscription works
+* Cancelled subscription handled
+* Failed payment handled
+* Invalid webhook rejected
+* Duplicate webhook handled safely
+
+## RLS
+
+Attempt cross-tenant access using:
+
+* IDs
+* UUIDs
+* API parameters
+* Query parameters
+* Request bodies
+
+All must fail.
+
+## Security
+
+Test common OWASP vulnerabilities relevant to the architecture.
+
+---
+
+# PRODUCTION READINESS
+
+Do not claim the application is secure merely because authentication works.
+
+Create a production-readiness checklist covering:
+
+* Authentication
+* Authorization
+* Tenant isolation
+* RLS
+* API security
+* Rate limiting
+* Secrets
+* Encryption
+* Billing
+* Webhooks
+* Trial enforcement
+* Logging
+* Monitoring
+* Backups
+* Disaster recovery
+* Dependency security
+* Security headers
+* CORS
+* CSRF
+* XSS
+* SSRF
+* File uploads
+* Abuse prevention
+
+---
+
+# IMPLEMENTATION PROCESS
+
+Work in phases.
+
+Phase 1:
+Audit the existing application.
+
+Phase 2:
+Create/update architecture and database design.
+
+Phase 3:
+Fix authentication and authorization.
+
+Phase 4:
+Implement tenant isolation and RLS.
+
+Phase 5:
+Secure APIs and credentials.
+
+Phase 6:
+Implement billing/trials.
+
+Phase 7:
+Implement website onboarding and PHP integration.
+
+Phase 8:
+Implement bot/security event processing.
+
+Phase 9:
+Implement rate limiting, caching, and real-time notifications.
+
+Phase 10:
+Implement dashboard, analytics, and customer controls.
+
+Phase 11:
+Implement audit logs and observability.
+
+Phase 12:
+Run security testing.
+
+Phase 13:
+Production-readiness review.
+
+For every phase:
+
+* Explain what will change.
+* Identify files affected.
+* Avoid unnecessary rewrites.
+* Preserve working functionality.
+* Run tests.
+* Report failures honestly.
+* Never mark a security requirement complete without testing it.
+
+The final result should be a secure, maintainable, multi-tenant SaaS rather than simply a working demo.

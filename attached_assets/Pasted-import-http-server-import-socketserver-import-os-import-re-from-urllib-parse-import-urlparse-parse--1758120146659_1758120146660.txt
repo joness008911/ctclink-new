@@ -1,0 +1,74 @@
+import http.server
+import socketserver
+import os
+import re
+from urllib.parse import urlparse, parse_qs
+
+# Configuration
+PORT = 8000
+DIRECTORY = os.getcwd()
+
+class QuantumRedirectHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        # Parse the URL
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path.strip('/')
+        query = parse_qs(parsed_url.query)
+        
+        # Print request info for debugging
+        print(f"Request: {self.path}")
+        print(f"Path: {path}")
+        print(f"Query: {query}")
+        
+        # Check if this is a random URL pattern (5-12 alphanumeric chars)
+        if re.match(r'^[a-zA-Z0-9]{5,12}$', path):
+            print(f"Random URL detected: {path}")
+            # In a real environment, this would be handled by .htaccess and r.php
+            # For our simulation, we'll show what would happen
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            
+            # Simulate the redirection that would happen
+            shortcode = query.get('c', [''])[0]
+            response = f"""
+            <html>
+            <head><title>Quantum Route Redirect Simulation</title></head>
+            <body>
+                <h1>Random URL Redirect Simulation</h1>
+                <p>This is a simulation of how the random URL redirection would work.</p>
+                <p>Random URL: <code>/{path}</code></p>
+                <p>This would be processed by <code>r.php</code>, which would include <code>quantum.php</code></p>
+                <p>Shortcode parameter: <code>{shortcode}</code></p>
+                <p>In a real environment with PHP, the visitor would be classified and redirected appropriately.</p>
+                <hr>
+                <p><a href="/">Back to admin panel</a></p>
+            </body>
+            </html>
+            """
+            self.wfile.write(response.encode())
+            return
+            
+        # If it's the admin panel (root path)
+        elif path == "" or path == "index.html":
+            # Serve the admin panel
+            try:
+                with open(os.path.join(DIRECTORY, "index.html"), 'rb') as file:
+                    self.send_response(200)
+                    self.send_header('Content-type', 'text/html')
+                    self.end_headers()
+                    self.wfile.write(file.read())
+                    return
+            except:
+                pass
+                
+        # For all other paths, use the default handler
+        return http.server.SimpleHTTPRequestHandler.do_GET(self)
+
+# Create and start the server
+Handler = QuantumRedirectHandler
+with socketserver.TCPServer(("", PORT), Handler) as httpd:
+    print(f"Serving at http://localhost:{PORT}")
+    print(f"Admin panel: http://localhost:{PORT}/")
+    print(f"Test a random URL: http://localhost:{PORT}/abcde123")
+    httpd.serve_forever()
