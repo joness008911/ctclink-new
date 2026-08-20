@@ -21,11 +21,36 @@ if (!process.env.DATABASE_URL) {
   }
 }
 
-if (!process.env.DATABASE_URL) {
-  throw new Error(
-    "DATABASE_URL must be set. Did you forget to provision a database?",
-  );
+export function isValidDatabaseUrl(url: string | undefined): boolean {
+  if (!url || typeof url !== "string") return false;
+  const trimmed = url.trim();
+  if (
+    trimmed === "" ||
+    trimmed === "your_postgresql_url_here" ||
+    trimmed.includes("your_postgresql_url") ||
+    trimmed === "base" ||
+    trimmed.startsWith("base")
+  ) {
+    return false;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "postgres:" || parsed.protocol === "postgresql:";
+  } catch {
+    return false;
+  }
 }
 
-const sql = neon(process.env.DATABASE_URL);
-export const db = drizzle(sql, { schema });
+export const isDatabaseConfigured = isValidDatabaseUrl(process.env.DATABASE_URL);
+
+let dbInstance: any = null;
+if (isDatabaseConfigured && process.env.DATABASE_URL) {
+  try {
+    const sql = neon(process.env.DATABASE_URL.trim());
+    dbInstance = drizzle(sql, { schema });
+  } catch (err) {
+    console.warn("Failed to initialize Neon database connection:", err);
+  }
+}
+
+export const db = dbInstance;

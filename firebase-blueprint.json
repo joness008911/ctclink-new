@@ -1,0 +1,109 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Administrator account credentials and profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "username", "password"]
+    },
+    "ClientUser": {
+      "title": "ClientUser",
+      "description": "End-user customer accounts with active subscription tiers and licenses",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "plan": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "username", "email"]
+    },
+    "ApiKey": {
+      "title": "ApiKey",
+      "description": "Client licenses and tracking API keys",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "key": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string" },
+        "userId": { "type": "string" },
+        "requestsCount": { "type": "number" },
+        "requestsLimit": { "type": "number" }
+      },
+      "required": ["id", "key", "userId"]
+    },
+    "Classification": {
+      "title": "Classification",
+      "description": "Traffic classification logs for IP analysis",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ipAddress": { "type": "string" },
+        "visitorType": { "type": "string" },
+        "detectionMethod": { "type": "string" },
+        "country": { "type": "string" },
+        "isp": { "type": "string" },
+        "apiKeyId": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ipAddress", "visitorType"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "Global application configuration settings including IP2Geo API keys",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["key", "value"]
+    },
+    "UserRedirectUrls": {
+      "title": "UserRedirectUrls",
+      "description": "Destination URLs for human vs bot traffic routing",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "humanUrl": { "type": "string" },
+        "botUrl": { "type": "string" }
+      },
+      "required": ["id", "userId", "humanUrl", "botUrl"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Admin users collection"
+    },
+    "/client_users/{clientUserId}": {
+      "schema": "ClientUser",
+      "description": "Registered client portal users"
+    },
+    "/api_keys/{apiKeyId}": {
+      "schema": "ApiKey",
+      "description": "Active API keys and licenses"
+    },
+    "/classifications/{classificationId}": {
+      "schema": "Classification",
+      "description": "Visitor logs and traffic classifications"
+    },
+    "/settings/{settingKey}": {
+      "schema": "Setting",
+      "description": "System settings and provider API credentials"
+    },
+    "/user_redirect_urls/{userId}": {
+      "schema": "UserRedirectUrls",
+      "description": "User specific redirect destination configurations"
+    }
+  }
+}

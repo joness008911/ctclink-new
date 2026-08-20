@@ -78,6 +78,10 @@ export default function UserLogin() {
           <div className="mx-auto w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center">
             <ShieldCheck className="w-8 h-8 text-primary" />
           </div>
+          <CardTitle className="text-2xl font-bold">Client User Portal</CardTitle>
+          <CardDescription className="text-base">
+            Step 1 of 2: Sign in with your client credentials
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -129,9 +133,19 @@ export default function UserLogin() {
               className="w-full"
               disabled={loginMutation.isPending}
             >
-              {loginMutation.isPending ? "Logging in..." : "Continue"}
+              {loginMutation.isPending ? "Logging in..." : "Continue to API Key"}
             </Button>
           </form>
+
+          <div className="mt-6 pt-4 border-t text-center">
+            <button
+              type="button"
+              onClick={() => navigate("/")}
+              className="text-xs text-muted-foreground hover:underline"
+            >
+              ← Back to CleanTraffic Home
+            </button>
+          </div>
 
         </CardContent>
       </Card>

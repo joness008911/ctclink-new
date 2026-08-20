@@ -49,7 +49,10 @@ import {
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import * as ipaddr from "ipaddr.js";
-import { db } from "./db";
+import bcrypt from "bcrypt";
+import { db, isDatabaseConfigured } from "./db";
+import { isFirestoreAvailable } from "./firebase";
+import { FirestoreStorage } from "./firestoreStorage";
 import { eq, desc, sql, count, lt } from "drizzle-orm";
 
 // IP2Geo Cache for performance optimization
@@ -218,7 +221,7 @@ export interface IStorage {
   getRecentAuditLogs(limit?: number): Promise<AuditLog[]>;
 }
 
-export class MemStorage {
+export class MemStorage implements IStorage {
   private users: Map<string, User>;
   private classifications: Map<string, Classification>;
   private detectionRules: DetectionRules | undefined;
@@ -226,6 +229,8 @@ export class MemStorage {
   private countryWhitelist: Map<string, CountryWhitelist>;
   private ispWhitelist: Map<string, IspWhitelist>;
   private ispBlacklist: Map<string, IspBlacklist>;
+  private ipBlocklist: Map<string, IpBlocklist>;
+  private cidrBlocklist: Map<string, CidrBlocklist>;
   private clientIpWhitelist: Map<string, ClientIpWhitelist>;
   private clientUsers: Map<string, ClientUser>;
   private redirectUrls: Map<string, UserRedirectUrls>;
@@ -244,6 +249,8 @@ export class MemStorage {
     this.redirectUrls = new Map();
     this.settings = new Map();
     this.auditLogsData = [];
+    this.ipBlocklist = new Map();
+    this.cidrBlocklist = new Map();
     
     // Initialize default detection rules
     this.detectionRules = {
@@ -260,6 +267,83 @@ export class MemStorage {
       },
       updatedAt: new Date()
     };
+
+    // Seed default admin user (admin / admin123)
+    const adminPasswordHash = bcrypt.hashSync("admin123", 10);
+    const adminId = randomUUID();
+    this.users.set(adminId, {
+      id: adminId,
+      username: "admin",
+      password: adminPasswordHash
+    });
+
+    // Seed default demo API key
+    const demoApiKeyId = randomUUID();
+    const demoApiKey: ApiKey = {
+      id: demoApiKeyId,
+      keyName: "Demo API Key",
+      keyValue: "ct_live_demo_key_2026",
+      callLimit: 100000,
+      callCount: 142,
+      status: "active",
+      enabled: true,
+      expirationPeriod: "unlimited",
+      expiresAt: null,
+      lastUsed: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.apiKeys.set(demoApiKeyId, demoApiKey);
+
+    // Seed default client user (demo / demo123)
+    const clientUserId = randomUUID();
+    this.clientUsers.set(clientUserId, {
+      id: clientUserId,
+      username: "demo",
+      password: bcrypt.hashSync("demo123", 10),
+      email: "demo@cleantraffic.io",
+      status: "active",
+      apiKeyId: demoApiKeyId,
+      tosAccepted: new Date(),
+      complianceStatus: "compliant",
+      subscriptionStatus: "active",
+      trialEndsAt: null,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    // Seed sample classifications for initial analytics dashboard
+    const sampleCountries = [
+      { country: "United States", code: "US", city: "Ashburn", isp: "Amazon.com, Inc.", type: "Bot" as const, action: "Blocked" as const, method: "Datacenter ASN" },
+      { country: "United States", code: "US", city: "Los Angeles", isp: "Comcast Cable", type: "Human" as const, action: "Allowed" as const, method: "Residential ISP" },
+      { country: "Germany", code: "DE", city: "Frankfurt", isp: "Hetzner Online GmbH", type: "Bot" as const, action: "Blocked" as const, method: "Hosting Provider" },
+      { country: "United Kingdom", code: "GB", city: "London", isp: "Virgin Media", type: "Human" as const, action: "Allowed" as const, method: "Residential ISP" },
+      { country: "France", code: "FR", city: "Paris", isp: "OVH SAS", type: "Bot" as const, action: "Blocked" as const, method: "Known Scraper" },
+      { country: "Japan", code: "JP", city: "Tokyo", isp: "NTT Communications", type: "Human" as const, action: "Allowed" as const, method: "Mobile Carrier" },
+    ];
+    sampleCountries.forEach((sample, idx) => {
+      const classId = randomUUID();
+      const timestamp = new Date(Date.now() - idx * 300000);
+      this.classifications.set(classId, {
+        id: classId,
+        ipAddress: `198.51.100.${idx + 10}`,
+        visitorType: sample.type,
+        detectionMethod: sample.method,
+        location: `${sample.city}, ${sample.country}`,
+        country: sample.country,
+        city: sample.city,
+        countryCode: sample.code,
+        region: sample.city,
+        connectionType: sample.type === "Bot" ? "Data Center" : "Broadband",
+        isp: sample.isp,
+        browser: sample.type === "Bot" ? "Headless Chrome 120" : "Chrome 122.0.0",
+        deviceType: sample.type === "Bot" ? "Server" : "Desktop",
+        timestamp,
+        apiKeyId: demoApiKeyId
+      });
+    });
   }
 
   async getUser(id: string): Promise<User | undefined> {
@@ -876,6 +960,101 @@ export class MemStorage {
 
   async setClientWhitelistEnabled(enabled: boolean): Promise<void> {
     this.settings.set('clientWhitelistEnabled', enabled ? 'true' : 'false');
+  }
+
+  // IP Blocklist methods
+  async getIpBlocklist(): Promise<IpBlocklist[]> {
+    return Array.from(this.ipBlocklist.values())
+      .sort((a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime());
+  }
+
+  async addIpToBlocklist(ip: InsertIpBlocklist): Promise<IpBlocklist> {
+    const id = randomUUID();
+    const newIp: IpBlocklist = {
+      ...ip,
+      id,
+      reason: ip.reason ?? null,
+      enabled: ip.enabled ?? true,
+      addedAt: new Date(),
+    };
+    this.ipBlocklist.set(id, newIp);
+    return newIp;
+  }
+
+  async removeIpFromBlocklist(id: string): Promise<boolean> {
+    return this.ipBlocklist.delete(id);
+  }
+
+  async toggleIpBlocklist(id: string, enabled: boolean): Promise<boolean> {
+    const entry = this.ipBlocklist.get(id);
+    if (entry) {
+      entry.enabled = enabled;
+      this.ipBlocklist.set(id, entry);
+      return true;
+    }
+    return false;
+  }
+
+  async isIpBlocked(ipAddress: string): Promise<boolean> {
+    const entry = Array.from(this.ipBlocklist.values()).find(e => e.ipAddress === ipAddress);
+    return entry ? entry.enabled : false;
+  }
+
+  // CIDR Blocklist methods
+  async getCidrBlocklist(): Promise<CidrBlocklist[]> {
+    return Array.from(this.cidrBlocklist.values())
+      .sort((a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime());
+  }
+
+  async addCidrToBlocklist(cidr: InsertCidrBlocklist): Promise<CidrBlocklist> {
+    const id = randomUUID();
+    const newCidr: CidrBlocklist = {
+      ...cidr,
+      id,
+      reason: cidr.reason ?? null,
+      enabled: cidr.enabled ?? true,
+      addedAt: new Date(),
+    };
+    this.cidrBlocklist.set(id, newCidr);
+    return newCidr;
+  }
+
+  async removeCidrFromBlocklist(id: string): Promise<boolean> {
+    return this.cidrBlocklist.delete(id);
+  }
+
+  async toggleCidrBlocklist(id: string, enabled: boolean): Promise<boolean> {
+    const entry = this.cidrBlocklist.get(id);
+    if (entry) {
+      entry.enabled = enabled;
+      this.cidrBlocklist.set(id, entry);
+      return true;
+    }
+    return false;
+  }
+
+  async isIpInBlockedCidrRange(ipAddress: string): Promise<boolean> {
+    const enabledRanges = Array.from(this.cidrBlocklist.values()).filter(e => e.enabled);
+    if (enabledRanges.length === 0) return false;
+
+    let parsedIp: ReturnType<typeof ipaddr.parse>;
+    try {
+      parsedIp = ipaddr.parse(ipAddress);
+    } catch {
+      return false;
+    }
+
+    for (const entry of enabledRanges) {
+      try {
+        const [rangeAddr, prefixLength] = ipaddr.parseCIDR(entry.cidrRange);
+        if (parsedIp.kind() === rangeAddr.kind() && parsedIp.match(rangeAddr, prefixLength)) {
+          return true;
+        }
+      } catch {
+        // Skip invalid CIDR
+      }
+    }
+    return false;
   }
 
   // Domain Pool methods (in-memory implementation)
@@ -1808,5 +1987,9 @@ export class DatabaseStorage {
   }
 }
 
-// Using DatabaseStorage with permanent database
-export const storage = new DatabaseStorage();
+// Primary storage: Cloud Firestore for persistent storage, fallback to SQL database or MemStorage
+export const storage: IStorage = isFirestoreAvailable
+  ? new FirestoreStorage()
+  : (isDatabaseConfigured && db !== null)
+  ? new DatabaseStorage()
+  : new MemStorage();

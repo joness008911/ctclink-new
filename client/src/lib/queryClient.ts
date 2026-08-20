@@ -7,14 +7,35 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+function getAuthHeaders(url?: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const clientToken = typeof localStorage !== 'undefined' ? localStorage.getItem('client_auth_token') : null;
+  const adminToken = typeof localStorage !== 'undefined' ? localStorage.getItem('admin_auth_token') : null;
+
+  if (url && (url.startsWith('/api/user') || url.includes('/user/'))) {
+    if (clientToken) headers['Authorization'] = `Bearer ${clientToken}`;
+  } else if (url && (url.startsWith('/api/auth') || url.startsWith('/api/interface') || url.startsWith('/api/api-keys') || url.startsWith('/api/whitelist') || url.startsWith('/api/blacklist') || url.startsWith('/api/rules') || url.startsWith('/api/stats') || url.startsWith('/api/classifications') || url.startsWith('/api/audit-logs') || url.startsWith('/api/settings'))) {
+    if (adminToken) headers['Authorization'] = `Bearer ${adminToken}`;
+  } else {
+    // If not matched, send available token
+    if (clientToken) headers['X-Client-Token'] = clientToken;
+    if (adminToken) headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+  return headers;
+}
+
 export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
+  const authHeaders = getAuthHeaders(url);
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers: {
+      ...(data ? { "Content-Type": "application/json" } : {}),
+      ...authHeaders,
+    },
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
@@ -29,11 +50,14 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey.join("/") as string, {
+    const url = queryKey.join("/") as string;
+    const authHeaders = getAuthHeaders(url);
+    const res = await fetch(url, {
+      headers: authHeaders,
       credentials: "include",
     });
 
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
+    if (unauthorizedBehavior === "returnNull" && (res.status === 401 || res.status === 403)) {
       return null;
     }
 

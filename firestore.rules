@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // All collection paths used by the application
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+    match /client_users/{clientUserId} {
+      allow read, write: if true;
+    }
+    match /api_keys/{apiKeyId} {
+      allow read, write: if true;
+    }
+    match /classifications/{classificationId} {
+      allow read, write: if true;
+    }
+    match /settings/{settingKey} {
+      allow read, write: if true;
+    }
+    match /user_redirect_urls/{userId} {
+      allow read, write: if true;
+    }
+    match /detection_rules/{ruleId} {
+      allow read, write: if true;
+    }
+    match /country_whitelist/{countryId} {
+      allow read, write: if true;
+    }
+    match /isp_whitelist/{ispId} {
+      allow read, write: if true;
+    }
+    match /isp_blacklist/{ispId} {
+      allow read, write: if true;
+    }
+    match /ip_blocklist/{ipId} {
+      allow read, write: if true;
+    }
+    match /cidr_blocklist/{cidrId} {
+      allow read, write: if true;
+    }
+    match /client_ip_whitelist/{ipId} {
+      allow read, write: if true;
+    }
+    match /domain_pool/{domainId} {
+      allow read, write: if true;
+    }
+    match /user_domain_generations/{genId} {
+      allow read, write: if true;
+    }
+    match /audit_logs/{logId} {
+      allow read, write: if true;
+    }
+    match /stripe_events/{eventId} {
+      allow read, write: if true;
+    }
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

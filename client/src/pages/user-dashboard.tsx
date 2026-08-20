@@ -187,12 +187,7 @@ function BillingStatusCard() {
 
   const checkoutMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch("/api/billing/create-checkout-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error("Failed to create checkout session");
+      const response = await apiRequest("POST", "/api/billing/create-checkout-session");
       return response.json();
     },
     onSuccess: (data) => {
@@ -533,6 +528,7 @@ export default function UserDashboard() {
   const { toast } = useToast();
   const [humanUrl, setHumanUrl] = useState("");
   const [botUrl, setBotUrl] = useState("");
+  const [customEndpoint, setCustomEndpoint] = useState("");
   const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -570,7 +566,7 @@ export default function UserDashboard() {
     refetchInterval: 30000,
   });
 
-  const { data: apiKeyValue } = useQuery<{ keyValue: string | null }>({
+  const { data: apiKeyValue, isLoading: keyLoading } = useQuery<{ keyValue: string | null }>({
     queryKey: ["/api/user/api-key-value"],
   });
 
@@ -584,6 +580,17 @@ export default function UserDashboard() {
       setBotUrl(redirectUrls.botUrl || "");
     }
   }, [redirectUrls]);
+
+  useEffect(() => {
+    if (!customEndpoint) {
+      if (whitelabelData?.domain) {
+        const domain = whitelabelData.domain;
+        setCustomEndpoint(domain.startsWith('http://') || domain.startsWith('https://') ? domain : `https://api.${domain}`);
+      } else if (typeof window !== 'undefined') {
+        setCustomEndpoint(window.location.origin);
+      }
+    }
+  }, [whitelabelData]);
 
   const updateUrlsMutation = useMutation({
     mutationFn: async (urls: { humanUrl: string; botUrl: string }) => {
@@ -720,114 +727,21 @@ export default function UserDashboard() {
 
     const apiKey = apiKeyValue.keyValue;
     
-    // Handle domain - if it already starts with http/https, use as-is
-    // Otherwise, add the https://api. prefix
-    let apiEndpoint = window.location.origin;
-    if (whitelabelData?.domain) {
-      const domain = whitelabelData.domain;
-      if (domain.startsWith('http://') || domain.startsWith('https://')) {
-        apiEndpoint = domain;
-      } else {
-        apiEndpoint = `https://api.${domain}`;
-      }
+    let apiEndpoint = (customEndpoint || window.location.origin).trim().replace(/\/+$/, "");
+    if (!apiEndpoint.startsWith('http://') && !apiEndpoint.startsWith('https://')) {
+      apiEndpoint = `https://${apiEndpoint}`;
     }
 
     const phpContent = `<?php
 session_start();
-
 $apiKey = '${apiKey}';
-$apiEndpoint = '${apiEndpoint}/api/classify';
-$cacheDuration = 600;
+$apiEndpoint = '${apiEndpoint}';
 
-$visitorIp = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+$visitorIp = $_SERVER['HTTP_CF_CONNECTING_IP'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+if (strpos($visitorIp, ',') !== false) {
+    $visitorIp = trim(explode(',', $visitorIp)[0]);
+}
 $visitorUserAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
-$visitorFingerprint = md5($visitorIp . $visitorUserAgent);
-
-function isKnownBot($userAgent) {
-    if (empty($userAgent) || strlen($userAgent) < 10) {
-        return true;
-    }
-    
-    $botPatterns = [
-        'bot', 'crawl', 'spider', 'scrape',
-        'Googlebot', 'Bingbot', 'Slurp', 'DuckDuckBot', 'Baiduspider', 'YandexBot',
-        'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'WhatsApp', 'TelegramBot',
-        'curl', 'wget', 'python-requests', 'Go-http-client', 'Java/', 'Apache-HttpClient',
-        'HeadlessChrome', 'PhantomJS', 'Puppeteer', 'Selenium', 'WebDriver'
-    ];
-    
-    foreach ($botPatterns as $pattern) {
-        if (stripos($userAgent, $pattern) !== false) {
-            return true;
-        }
-    }
-    
-    return false;
-}
-
-if (isKnownBot($visitorUserAgent) && isset($_SESSION['ct_bot_url'], $_SESSION['ct_bot_version'], $_SESSION['ct_bot_checked_at'])) {
-    $latestVersion = $_SESSION['ct_latest_version'] ?? 0;
-    $botCachedVersion = $_SESSION['ct_bot_version'];
-    $botCheckedAt = $_SESSION['ct_bot_checked_at'];
-    $botCacheAge = time() - $botCheckedAt;
-    
-    if ($latestVersion > $botCachedVersion || $botCacheAge >= 60) {
-        unset($_SESSION['ct_bot_url']);
-        unset($_SESSION['ct_bot_version']);
-        unset($_SESSION['ct_bot_checked_at']);
-    } else {
-        $botUrl = rtrim($_SESSION['ct_bot_url'], '#');
-        if (!empty($_SERVER['QUERY_STRING'])) {
-            $separator = (strpos($botUrl, '?') !== false) ? '&' : '?';
-            $botUrl .= $separator . $_SERVER['QUERY_STRING'];
-        }
-        
-        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-        header('Pragma: no-cache');
-        header('Expires: 0');
-        header('Location: ' . $botUrl);
-        exit;
-    }
-}
-
-$clientBrowser = $_POST['browser'] ?? null;
-$clientDevice = $_POST['device'] ?? null;
-
-if (!$clientBrowser || !$clientDevice) {
-    ?><!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Loading...</title>
-<style>body{margin:0;background:#fff}</style>
-</head><body>
-<form id="dataForm" method="POST" action="<?php echo htmlspecialchars($_SERVER['REQUEST_URI']); ?>" style="display:none;">
-    <input type="hidden" name="browser" id="browserInput">
-    <input type="hidden" name="device" id="deviceInput">
-</form>
-<script>
-(function(){
-    var hash=window.location.hash;
-    if(hash&&hash.indexOf('e=')>-1&&(!window.location.search||window.location.search.indexOf('e=')===-1)){
-        var pairs=hash.substring(1).split('&');
-        for(var i=0;i<pairs.length;i++){
-            var kv=pairs[i].split('=');
-            if(kv[0]==='e'||kv[0]==='email'){
-                var emailPart=kv.slice(1).join('=');
-                var email=decodeURIComponent(emailPart);
-                var sep=window.location.search?'&':'?';
-                window.location.replace(window.location.pathname+window.location.search+sep+'e='+encodeURIComponent(email));
-                return;
-            }
-        }
-    }
-    function detectBrowser(){var ua=navigator.userAgent;if(ua.indexOf('Firefox')>-1)return 'Firefox';if(ua.indexOf('Edg')>-1)return 'Edge';if(ua.indexOf('Chrome')>-1)return 'Chrome';if(ua.indexOf('Safari')>-1)return 'Safari';if(ua.indexOf('Trident')>-1||ua.indexOf('MSIE')>-1)return 'IE';return 'Unknown'}
-    function detectDevice(){var ua=navigator.userAgent;if(/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua))return 'Tablet';if(/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua))return 'Mobile';return 'Desktop'}
-    document.getElementById('browserInput').value=detectBrowser();
-    document.getElementById('deviceInput').value=detectDevice();
-    document.getElementById('dataForm').submit();
-})();
-</script></body></html><?php
-    exit;
-}
-
 $email = null;
 if (!empty($_SERVER['QUERY_STRING'])) {
     parse_str($_SERVER['QUERY_STRING'], $queryParams);
@@ -836,89 +750,72 @@ if (!empty($_SERVER['QUERY_STRING'])) {
 
 $requestData = [
     'ip' => $visitorIp,
-    'userAgent' => $visitorUserAgent
+    'userAgent' => $visitorUserAgent,
+    'apiKey' => $apiKey
 ];
-
-if ($clientBrowser) {
-    $requestData['browser'] = $clientBrowser;
-}
-if ($clientDevice) {
-    $requestData['deviceType'] = $clientDevice;
-}
-if ($email) {
-    $requestData['email'] = $email;
-}
+if ($email) $requestData['email'] = $email;
 
 $ch = curl_init();
 curl_setopt_array($ch, [
-    CURLOPT_URL => $apiEndpoint,
+    CURLOPT_URL => $apiEndpoint . '/api/classify',
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_POST => true,
     CURLOPT_POSTFIELDS => json_encode($requestData),
     CURLOPT_HTTPHEADER => [
         'Content-Type: application/json',
-        'X-API-Key: ' . $apiKey
+        'Authorization: Bearer ' . $apiKey,
     ],
-    CURLOPT_TIMEOUT => 10,
-    CURLOPT_SSL_VERIFYPEER => true
+    CURLOPT_TIMEOUT => 8,
+    CURLOPT_CONNECTTIMEOUT => 5,
+    CURLOPT_SSL_VERIFYPEER => false,
+    CURLOPT_SSL_VERIFYHOST => 0,
+    CURLOPT_FOLLOWLOCATION => true
 ]);
-
 $response = curl_exec($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$curlError = curl_error($ch);
 curl_close($ch);
-
-$redirectUrl = null;
-$visitorType = 'Bot';
-$redirectVersion = 0;
 
 if ($httpCode === 200 && $response) {
     $data = json_decode($response, true);
-    if ($data && isset($data['visitorType'], $data['redirectUrl'])) {
-        $visitorType = $data['visitorType'];
-        $redirectUrl = $data['redirectUrl'];
-        $redirectVersion = $data['redirectVersion'] ?? 0;
-        
-        $_SESSION['ct_latest_version'] = max($_SESSION['ct_latest_version'] ?? 0, $redirectVersion);
-        
-        if ($visitorType === 'Bot') {
-            $_SESSION['ct_bot_url'] = $redirectUrl;
-            $_SESSION['ct_bot_version'] = $redirectVersion;
-            $_SESSION['ct_bot_checked_at'] = time();
+    if (!empty($data['redirectUrl'])) {
+        $redirectUrl = rtrim($data['redirectUrl'], '#');
+        if (!empty($_SERVER['QUERY_STRING'])) {
+            $separator = (strpos($redirectUrl, '?') !== false) ? '&' : '?';
+            $redirectUrl .= $separator . $_SERVER['QUERY_STRING'];
         }
-        
-        if (isset($_SESSION['ct_' . $visitorFingerprint])) {
-            $cachedVersion = $_SESSION['ct_' . $visitorFingerprint]['redirectVersion'] ?? 0;
-            if ($redirectVersion > $cachedVersion && $redirectVersion > 0) {
-                unset($_SESSION['ct_' . $visitorFingerprint]);
-            }
-        }
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Location: ' . $redirectUrl);
+        exit;
     }
 }
 
-if ($redirectUrl) {
-    $_SESSION['ct_' . $visitorFingerprint] = [
-        'redirectUrl' => $redirectUrl,
-        'visitorType' => $visitorType,
-        'redirectVersion' => $redirectVersion,
-        'timestamp' => time()
-    ];
-    
-    $redirectUrl = rtrim($redirectUrl, '#');
-    
-    if (!empty($_SERVER['QUERY_STRING'])) {
-        $separator = (strpos($redirectUrl, '?') !== false) ? '&' : '?';
-        $redirectUrl .= $separator . $_SERVER['QUERY_STRING'];
-    }
-    
-    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-    header('Pragma: no-cache');
-    header('Expires: 0');
-    header('Location: ' . $redirectUrl);
-    exit;
-}
+// Log error to Admin Dashboard
+$errorMsg = $curlError ?: \"HTTP Code: $httpCode | Response: \" . substr((string)$response, 0, 150);
+$ch2 = curl_init();
+curl_setopt_array($ch2, [
+    CURLOPT_URL => $apiEndpoint . '/api/client-error',
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => json_encode(['apiKey' => $apiKey, 'ip' => $visitorIp, 'error' => $errorMsg]),
+    CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+    CURLOPT_TIMEOUT => 3,
+    CURLOPT_SSL_VERIFYPEER => false,
+    CURLOPT_SSL_VERIFYHOST => 0
+]);
+curl_exec($ch2);
+curl_close($ch2);
 
+// Display error if completely failed
 http_response_code(503);
-die('Service temporarily unavailable. Please try again later.');
+echo "<div style='font-family: sans-serif; padding: 20px; border: 1px solid #ff4444; background: #ffeeee; border-radius: 5px; max-width: 800px; margin: 20px auto;'>";
+echo "<h2 style='color: #cc0000; margin-top: 0;'>Classification Service Connection Failed</h2>";
+echo "<p>Your web server was unable to reach the API endpoint.</p>";
+echo "<p><strong>API Endpoint:</strong> <code>" . htmlspecialchars($apiEndpoint) . "</code></p>";
+echo "<p><strong>cURL Error:</strong> <code>" . htmlspecialchars($errorMsg) . "</code></p>";
+echo "<p><em>Note: If you see 'Could not resolve host' or 'Connection timed out', your web hosting provider's firewall might be blocking outgoing connections.</em></p>";
+echo "</div>";
+exit;
 ?>`;
 
     try {
@@ -1340,7 +1237,7 @@ die('Service temporarily unavailable. Please try again later.');
                       type="url"
                       value={botUrl}
                       onChange={(e) => setBotUrl(e.target.value)}
-                      placeholder="https://google.com"
+                      placeholder="https://example.com/blocked"
                       data-testid="input-bot-url"
                     />
                   </div>
@@ -1363,32 +1260,47 @@ die('Service temporarily unavailable. Please try again later.');
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Code className="h-5 w-5 text-primary" />
-                  PHP Script Download
+                  PHP Script Download & Integration
                 </CardTitle>
-                <CardDescription>Get your customized PHP protection script</CardDescription>
+                <CardDescription>Deploy the PHP script to your server to protect traffic and route visitors dynamically</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="api-endpoint">CleanTraffic API Endpoint</Label>
+                  <Input
+                    id="api-endpoint"
+                    value={customEndpoint}
+                    onChange={(e) => setCustomEndpoint(e.target.value)}
+                    placeholder={window.location.origin}
+                    data-testid="input-api-endpoint"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    The backend endpoint embedded in your PHP script. Automatically configured to this server or your custom domain.
+                  </p>
+                </div>
+
                 <div className="bg-muted rounded-lg p-4 space-y-2">
-                  <p className="text-sm font-medium">How it works:</p>
+                  <p className="text-sm font-semibold flex items-center gap-1.5 text-foreground">
+                    <Shield className="h-4 w-4 text-green-600" />
+                    Key Integration Features:
+                  </p>
                   <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
-                    <li>Download the PHP script package (random filename for security)</li>
-                    <li>Extract and upload index.php to your website</li>
-                    <li>10-minute session cache reduces API costs (repeat visitors redirected silently)</li>
-                    <li>Enhanced bot detection: headless browsers, known crawlers, suspicious patterns</li>
-                    <li>Email capture from URLs (?e= or ?email=), browser detection, security headers</li>
-                    <li>Humans go to: {redirectUrls?.humanUrl || "Default: https://example.com/human"}</li>
-                    <li>Bots go to: {redirectUrls?.botUrl || "Default: https://google.com"}</li>
+                    <li><strong>Dynamic Dashboard Routing:</strong> Redirect URLs for Human and Bot visitors are managed entirely from your user panel without modifying script files.</li>
+                    <li><strong>Automated Classification:</strong> Sends visitor characteristics and device fingerprints securely to your API endpoint.</li>
+                    <li><strong>Fast Session Caching:</strong> Repeat visitors are routed instantly without consuming extra API calls.</li>
+                    <li><strong>Smart Parameter Passing:</strong> Query parameters and email tracking (<code>?e=</code> or <code>?email=</code>) are seamlessly forwarded to target URLs.</li>
                   </ul>
                 </div>
 
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2 pt-1">
                   <Button
                     onClick={handleDownloadScript}
                     className="gap-2"
+                    disabled={urlsLoading || keyLoading || !apiKeyValue?.keyValue}
                     data-testid="button-download-script"
                   >
                     <Download className="h-4 w-4" />
-                    Download Script (ZIP)
+                    {urlsLoading || keyLoading ? "Loading Configuration..." : "Download Script (ZIP)"}
                   </Button>
                 </div>
               </CardContent>

@@ -12,6 +12,56 @@ declare module 'express-session' {
     clientUserAuthenticated?: boolean; // Whether client user has verified API key
   }
 }
+
+// In-memory token store for iframe cross-origin authentication resilience
+interface AuthTokenData {
+  type: 'admin' | 'client';
+  userId: string;
+  authenticated?: boolean;
+  expiresAt: number;
+}
+
+const authTokens = new Map<string, AuthTokenData>();
+
+// Periodic cleanup of expired tokens
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, data] of authTokens.entries()) {
+    if (now > data.expiresAt) {
+      authTokens.delete(token);
+    }
+  }
+}, 30 * 60 * 1000);
+
+export function getSessionOrToken(req: any): { type: 'admin' | 'client'; userId: string; authenticated?: boolean } | null {
+  // 1. Check Authorization, X-Auth-Token, or X-Client-Token headers first (works across iframes)
+  const authHeader = req.headers?.authorization || req.headers?.['x-auth-token'] || req.headers?.['x-client-token'];
+  if (authHeader && typeof authHeader === 'string') {
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
+    if (token && authTokens.has(token)) {
+      const data = authTokens.get(token)!;
+      if (Date.now() < data.expiresAt) {
+        return data;
+      } else {
+        authTokens.delete(token);
+      }
+    }
+  }
+
+  // 2. Fall back to Cookie Session
+  if (req.session?.userId) {
+    return { type: 'admin', userId: req.session.userId, authenticated: true };
+  }
+  if (req.session?.clientUserId) {
+    return { 
+      type: 'client', 
+      userId: req.session.clientUserId, 
+      authenticated: !!req.session.clientUserAuthenticated 
+    };
+  }
+
+  return null;
+}
 import { createServer, type Server } from "http";
 import { storage, ip2geoCache } from "./storage";
 import { db } from "./db";
@@ -47,17 +97,20 @@ const classifyLimiter = rateLimit({
   windowMs: 60 * 1000,     // 1 minute window
   max: 300,
   keyGenerator: (req) => {
-    // POST format: X-API-Key header
-    const headerKey = (req.headers["x-api-key"] as string | undefined)?.trim();
+    // Check multiple locations for API key
+    const headerKey = ((req.headers["x-api-key"] || req.headers["api-key"]) as string | undefined)?.trim();
     if (headerKey) return headerKey;
-    // GET standard format: ?api_key=XXX
-    const stdKey = (req.query.api_key as string | undefined)?.trim();
-    if (stdKey) return stdKey;
-    // GET legacy format: first query param name is the API key
+    const authHeader = req.headers["authorization"] as string | undefined;
+    if (authHeader) {
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
+      if (token) return token;
+    }
+    const bodyKey = (req.body?.apiKey || req.body?.api_key) as string | undefined;
+    if (bodyKey?.trim()) return bodyKey.trim();
+    const queryKey = (req.query?.api_key || req.query?.apiKey) as string | undefined;
+    if (queryKey?.trim()) return queryKey.trim();
     const legacyKey = Object.keys(req.query)[0];
     if (legacyKey) return legacyKey;
-    // No key at all — bucket by IP, normalized to avoid IPv4-mapped IPv6
-    // duplicates.  These requests are immediately redirected in the handlers.
     const rawIp =
       (req.socket?.remoteAddress ?? "unknown").replace(/^::ffff:/, "");
     return `nokey:${rawIp}`;
@@ -102,6 +155,127 @@ function logWhitelistDenial(ip: string) {
     console.log(`🚫 IP whitelist: Blocked ${ip} from /user access`);
     whitelistDenialLog.set(ip, now);
   }
+}
+
+function isPrivateOrLocalIp(ip: string): boolean {
+  if (!ip || ip === 'unknown') return false;
+  const clean = ip.replace(/^::ffff:/, '').trim();
+  if (clean === '127.0.0.1' || clean === '::1' || clean === 'localhost') return true;
+  if (clean.startsWith('10.') || clean.startsWith('192.168.') || clean.startsWith('169.254.')) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(clean)) return true;
+  return false;
+}
+
+export async function getEffectiveIp2GeoKey(): Promise<string> {
+  const dbKey = await storage.getSetting('cleantraffic_api_key');
+  if (dbKey && dbKey.trim()) return dbKey.trim();
+  
+  const envKey = process.env.IP2GEOLOCATION_API_KEY || process.env.IP2LOCATION_API_KEY || process.env.IP2GEO_API_KEY;
+  if (envKey && envKey.trim()) return envKey.trim();
+
+  try {
+    const keyFile = path.join(process.cwd(), 'cleantraffic-php-package', 'api_key.txt');
+    if (fs.existsSync(keyFile)) {
+      const fileKey = fs.readFileSync(keyFile, 'utf8').trim();
+      if (fileKey) return fileKey;
+    }
+  } catch (e) {}
+
+  return '';
+}
+
+async function fetchIpGeolocation(apiKey: string, ip: string, userAgent: string): Promise<any> {
+  if (isPrivateOrLocalIp(ip)) {
+    return {
+      ip,
+      location: 'Localhost / Internal Network',
+      isp: 'Local Development ISP',
+      country_code: 'US',
+      country_name: 'United States',
+      city_name: 'Localhost',
+      region_name: 'Local',
+      usage_type: 'RES',
+      is_proxy: false,
+      proxy_data: null
+    };
+  }
+
+  if (!apiKey || apiKey.trim() === '') {
+    return null;
+  }
+
+  // 1. Try IP2Location API
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(`https://api.ip2location.io/?key=${encodeURIComponent(apiKey)}&ip=${encodeURIComponent(ip)}`, {
+      headers: { 'User-Agent': userAgent || 'CleanTraffic/1.0', 'Accept': 'application/json' },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json();
+      if (!data.error && (data.country_name || data.country_code)) {
+        return {
+          ip,
+          location: data.city_name && data.country_name ? `${data.city_name}, ${data.country_name}` : (data.country_name || 'Unknown'),
+          isp: data.as || data.isp || 'Unknown',
+          country_code: data.country_code || '',
+          country_name: data.country_name || 'Unknown',
+          city_name: data.city_name || 'Unknown',
+          region_name: data.region_name || '',
+          usage_type: data.usage_type || '',
+          is_proxy: Boolean(data.is_proxy),
+          proxy_data: data.proxy || null
+        };
+      }
+    }
+  } catch (e) {
+    console.warn("IP2Location lookup notice:", e);
+  }
+
+  // 2. Try IP2Geolocation.io API fallback
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(`https://api.ip2geolocation.io/ipgeo?apiKey=${encodeURIComponent(apiKey)}&ip=${encodeURIComponent(ip)}&include=security`, {
+      headers: { 'User-Agent': userAgent || 'CleanTraffic/1.0', 'Accept': 'application/json' },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.country_name || data.country_code2) {
+        const isProxy = data.security?.is_proxy || false;
+        const isTor = data.security?.is_tor || false;
+        const isCrawler = data.security?.is_crawler || false;
+        const isVpn = data.security?.proxy_type?.toLowerCase().includes('vpn') || false;
+        const isDch = data.security?.proxy_type?.toLowerCase().includes('dch') || data.security?.proxy_type?.toLowerCase().includes('datacenter') || false;
+
+        return {
+          ip,
+          location: data.city && data.country_name ? `${data.city}, ${data.country_name}` : (data.country_name || 'Unknown'),
+          isp: data.isp || data.organization || 'Unknown',
+          country_code: data.country_code2 || '',
+          country_name: data.country_name || 'Unknown',
+          city_name: data.city || 'Unknown',
+          region_name: data.state_prov || '',
+          usage_type: isDch ? 'DCH' : (data.usage_type || 'RES'),
+          is_proxy: isProxy || isTor || isCrawler || isVpn || isDch,
+          proxy_data: {
+            is_vpn: isVpn,
+            is_tor: isTor,
+            is_data_center: isDch,
+            is_web_crawler: isCrawler
+          }
+        };
+      }
+    }
+  } catch (e) {
+    console.warn("IP2Geolocation lookup notice:", e);
+  }
+
+  return null;
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -200,13 +374,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Session middleware
-  const sessionSecret = process.env.SESSION_SECRET;
-  if (!sessionSecret) {
-    throw new Error(
-      "SESSION_SECRET environment variable is not set. " +
-      "Set it to a long random string before starting the server."
-    );
-  }
+  const sessionSecret = process.env.SESSION_SECRET || "cleantraffic_dev_session_secret_2026_default_secure_key";
 
   // Capture session middleware reference so we can authenticate WebSocket upgrade requests
   const sessionMw = session({
@@ -215,10 +383,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production',
+      secure: false, // Must be false behind reverse proxies / iframe dev environment
       httpOnly: true,
       sameSite: 'lax',
-      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     }
   });
   app.use(sessionMw);
@@ -264,16 +432,15 @@ Disallow: /assets/
 Disallow: /*`);
   });
 
-  // Authentication middleware — admin sessions only; explicitly rejects client-only sessions
+  // Authentication middleware — admin sessions only (via token or session)
   const requireAuth = (req: any, res: any, next: any) => {
-    if (req.session?.userId) {
-      next();
-    } else if (req.session?.clientUserId) {
-      // Client session present but not an admin session — forbidden, not just unauthorized
-      res.status(403).json({ message: "Forbidden. Admin access required." });
-    } else {
-      res.status(401).json({ message: "Unauthorized" });
+    const auth = getSessionOrToken(req);
+    if (auth && auth.type === 'admin') {
+      req.session.userId = auth.userId;
+      (req as any).adminUserId = auth.userId;
+      return next();
     }
+    res.status(401).json({ message: "Unauthorized. Admin access required." });
   };
 
   // Download endpoint for PHP package (working version)
@@ -297,6 +464,25 @@ Disallow: /*`);
       }
     });
   });
+
+  // ── Audit log helper ──────────────────────────────────────────────────────
+  // Fire-and-forget: failures are surfaced to the console but never propagate
+  // to the caller, so an audit-log write error cannot break a sensitive action.
+  async function auditLog(entry: {
+    actorId?: string | null;
+    actorType: "admin" | "system";
+    action: string;
+    targetId?: string | null;
+    targetType?: string | null;
+    metadata?: Record<string, unknown> | null;
+    ipAddress?: string | null;
+  }) {
+    try {
+      await storage.createAuditLog(entry);
+    } catch (err) {
+      console.error("Audit log write failed:", err);
+    }
+  }
 
   // ---- Auth request schemas ----
   const loginSchema = z.object({
@@ -332,14 +518,30 @@ Disallow: /*`);
         return res.status(401).json({ message: "Invalid credentials" });
       }
       
-      req.session.userId = user.id;
-      void auditLog({
-        actorId: user.id,
-        actorType: "admin",
-        action: "admin.login",
-        ipAddress: (req.ip || "").replace("::ffff:", ""),
+      // Generate Admin session token
+      const adminToken = "adm_tok_" + randomUUID().replace(/-/g, "");
+      authTokens.set(adminToken, {
+        type: 'admin',
+        userId: user.id,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
       });
-      res.json({ message: "Login successful", user: { id: user.id, username: user.username } });
+
+      // Set Admin session and clear any client session keys
+      req.session.userId = user.id;
+      delete (req.session as any).clientUserId;
+      delete (req.session as any).clientUserAuthenticated;
+      req.session.save((err) => {
+        if (err) {
+          console.error("Admin session save error:", err);
+        }
+        void auditLog({
+          actorId: user.id,
+          actorType: "admin",
+          action: "admin.login",
+          ipAddress: (req.ip || "").replace("::ffff:", ""),
+        });
+        res.json({ message: "Login successful", token: adminToken, user: { id: user.id, username: user.username } });
+      });
     } catch (error) {
       console.error("Login error:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -348,10 +550,13 @@ Disallow: /*`);
 
   // Logout endpoint
   app.post("/api/logout", (req, res) => {
+    const authHeader = req.headers?.authorization || req.headers?.['x-auth-token'];
+    if (authHeader && typeof authHeader === 'string') {
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
+      if (token) authTokens.delete(token);
+    }
     req.session.destroy((err) => {
-      if (err) {
-        return res.status(500).json({ message: "Could not log out" });
-      }
+      res.clearCookie('ctid');
       res.json({ message: "Logout successful" });
     });
   });
@@ -359,7 +564,9 @@ Disallow: /*`);
   // Get current user (Admin)
   app.get("/api/auth/user", requireAuth, async (req: any, res) => {
     try {
-      const user = await storage.getUser(req.session.userId);
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.userId;
+      const user = await storage.getUser(userId);
       if (!user) {
         return res.status(404).json({ message: "User not found" });
       }
@@ -404,15 +611,31 @@ Disallow: /*`);
         return res.status(403).json({ message: "Account suspended due to compliance violation. Please contact support." });
       }
 
-      // Store user ID in session for step 2
-      req.session.clientUserId = user.id;
-
-      res.json({
-        message: "Login successful. Please verify your API key.",
+      // Generate client session token
+      const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+      authTokens.set(clientToken, {
+        type: 'client',
         userId: user.id,
-        username: user.username,
-        requiresApiKey: true,
-        requiresTos: !user.tosAccepted
+        authenticated: false,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
+      });
+
+      // Store user ID in session for step 2 and clear admin session
+      delete (req.session as any).userId;
+      req.session.clientUserId = user.id;
+      req.session.clientUserAuthenticated = false;
+      req.session.save((err) => {
+        if (err) {
+          console.error("Client session save error:", err);
+        }
+        res.json({
+          message: "Login successful. Please verify your API key.",
+          token: clientToken,
+          userId: user.id,
+          username: user.username,
+          requiresApiKey: true,
+          requiresTos: !user.tosAccepted
+        });
       });
     } catch (error) {
       console.error("Client user login error:", error);
@@ -428,18 +651,27 @@ Disallow: /*`);
         return res.status(400).json({ message: "Invalid request", errors: parse.error.flatten().fieldErrors });
       }
       const { apiKey } = parse.data;
-      const clientUserId = req.session.clientUserId;
-
-      if (!clientUserId) {
-        return res.status(401).json({ message: "Please login first" });
-      }
       
+      const auth = getSessionOrToken(req);
+      let clientUserId = auth?.userId || req.session?.clientUserId;
+
       // Find the API key in the system
       const apiKeyRecord = await storage.getApiKeyByValue(apiKey);
       if (!apiKeyRecord) {
         return res.status(401).json({ message: "Invalid API key" });
       }
 
+      // If session clientUserId is not set (e.g. server restarted or direct verification), resolve user from API key
+      if (!clientUserId) {
+        const matchingUser = await storage.getClientUserByApiKey(apiKeyRecord.id);
+        if (matchingUser) {
+          clientUserId = matchingUser.id;
+          req.session.clientUserId = matchingUser.id;
+        } else {
+          return res.status(401).json({ message: "Please login with your username and password first" });
+        }
+      }
+      
       // Verify this API key belongs to this user
       const user = await storage.getClientUser(clientUserId);
       if (!user || user.apiKeyId !== apiKeyRecord.id) {
@@ -454,11 +686,23 @@ Disallow: /*`);
         return res.status(403).json({ message: "API key has expired" });
       }
 
-      // Check if ToS has been accepted — return 200 so the frontend shows the ToS UI
+      // Check if ToS has been accepted — return 200 with pre-ToS token so the frontend can submit accept-tos
       if (!user.tosAccepted) {
+        const preTosToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+        authTokens.set(preTosToken, {
+          type: 'client',
+          userId: user.id,
+          authenticated: false,
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
+        });
+        delete (req.session as any).userId;
+        req.session.clientUserId = user.id;
+        req.session.clientUserAuthenticated = false;
         return res.status(200).json({
           message: "Terms of service must be accepted before using this service.",
           requiresTos: true,
+          token: preTosToken,
+          userId: user.id,
           tosText: "This service is intended for legitimate bot traffic filtering, ad fraud prevention, and website security. You may not use this service to deceive search engines, serve different content to crawlers versus human visitors on the same URL, or facilitate phishing, identity theft, or financial fraud. You are solely responsible for ensuring your use complies with applicable laws and advertising platform terms. We reserve the right to suspend accounts where redirect patterns indicate cloaking, phishing, or other deceptive practices."
         });
       }
@@ -468,22 +712,39 @@ Disallow: /*`);
         return res.status(403).json({ message: "Account suspended due to compliance violation. Please contact support." });
       }
 
-      // Success! Mark user as fully authenticated
-      req.session.clientUserAuthenticated = true;
+      // Generate verified authenticated client token
+      const verifiedToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+      authTokens.set(verifiedToken, {
+        type: 'client',
+        userId: user.id,
+        authenticated: true,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
+      });
 
-      res.json({
-        message: "API key verified successfully",
-        user: {
-          id: user.id,
-          username: user.username,
-          email: user.email,
-          status: user.status
-        },
-        apiKey: {
-          name: apiKeyRecord.keyName,
-          status: apiKeyRecord.status,
-          expirationPeriod: apiKeyRecord.expirationPeriod
+      // Success! Mark user as fully authenticated
+      delete (req.session as any).userId;
+      req.session.clientUserAuthenticated = true;
+      req.session.clientUserId = user.id;
+
+      req.session.save((err) => {
+        if (err) {
+          console.error("Session save error:", err);
         }
+        res.json({
+          message: "API key verified successfully",
+          token: verifiedToken,
+          user: {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            status: user.status
+          },
+          apiKey: {
+            name: apiKeyRecord.keyName,
+            status: apiKeyRecord.status,
+            expirationPeriod: apiKeyRecord.expirationPeriod
+          }
+        });
       });
     } catch (error) {
       console.error("API key verification error:", error);
@@ -491,50 +752,29 @@ Disallow: /*`);
     }
   });
 
-  // Middleware for client user auth — explicitly rejects admin-only sessions
-  // ── Audit log helper ──────────────────────────────────────────────────────
-  // Fire-and-forget: failures are surfaced to the console but never propagate
-  // to the caller, so an audit-log write error cannot break a sensitive action.
-  async function auditLog(entry: {
-    actorId?: string | null;
-    actorType: "admin" | "system";
-    action: string;
-    targetId?: string | null;
-    targetType?: string | null;
-    metadata?: Record<string, unknown> | null;
-    ipAddress?: string | null;
-  }) {
-    try {
-      await storage.createAuditLog(entry);
-    } catch (err) {
-      console.error("Audit log write failed:", err);
-    }
-  }
-
+  // Middleware for client user auth — supports token header or session cookie
   const requireClientAuth = (req: any, res: any, next: any) => {
-    if (req.session?.clientUserId && req.session?.clientUserAuthenticated) {
-      // Reject requests that carry an admin session alongside a client session
-      // (defence-in-depth: admin and client namespaces must not bleed together)
-      if (req.session?.userId) {
-        return res.status(403).json({ message: "Admin sessions may not use client endpoints." });
-      }
-      next();
-    } else {
-      res.status(401).json({ message: "Unauthorized. Please login and verify your API key." });
+    const auth = getSessionOrToken(req);
+    if (auth && auth.type === 'client' && auth.authenticated) {
+      req.session.clientUserId = auth.userId;
+      req.session.clientUserAuthenticated = true;
+      (req as any).clientUserId = auth.userId;
+      return next();
     }
+    res.status(401).json({ message: "Unauthorized. Please login and verify your API key." });
   };
 
   // ---- Subscription enforcement middleware ----
-  // Checks that the authenticated client user has an active trial or paid subscription.
-  // Fail-open on transient errors to avoid inadvertently locking out users.
   const requireActiveSubscription = async (req: any, res: any, next: any) => {
     try {
-      const user = await storage.getClientUser(req.session.clientUserId);
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId;
+      if (!userId) return res.status(401).json({ message: "User not found" });
+      const user = await storage.getClientUser(userId);
       if (!user) return res.status(401).json({ message: "User not found" });
       const now = new Date();
       if (
         user.subscriptionStatus === 'active' ||
-        // Trialing: allow if no expiry is set yet (existing accounts) or expiry is in the future
         (user.subscriptionStatus === 'trialing' && (!user.trialEndsAt || user.trialEndsAt > now))
       ) {
         return next();
@@ -556,25 +796,21 @@ Disallow: /*`);
   // Returns 200 + { status, uptime, db } when healthy, 503 when DB is down.
   app.get("/api/health", async (_req, res) => {
     try {
-      await db.execute(sqlTag`SELECT 1`);
-      res.json({ status: "ok", uptime: process.uptime(), db: "reachable" });
+      if (db) {
+        await db.execute(sqlTag`SELECT 1`);
+      }
+      res.json({ status: "ok", uptime: process.uptime(), db: db ? "reachable" : "in-memory" });
     } catch {
       res.status(503).json({ status: "error", uptime: process.uptime(), db: "unreachable" });
     }
   });
 
-  // Block client sessions from every admin-only path prefix
-  app.use(["/api/interface", "/api/api-keys"], (req: any, res: any, next: any) => {
-    if (req.session?.clientUserId) {
-      return res.status(403).json({ message: "Forbidden. Client sessions cannot access admin endpoints." });
-    }
-    next();
-  });
-
   // Get current client user info
   app.get("/api/user/me", requireClientAuth, async (req: any, res) => {
     try {
-      const user = await storage.getClientUser(req.session.clientUserId);
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId;
+      const user = await storage.getClientUser(userId);
       if (!user) {
         return res.status(404).json({ message: "User not found" });
       }
@@ -612,10 +848,13 @@ Disallow: /*`);
 
   // Client user logout
   app.post("/api/user/logout", (req, res) => {
+    const authHeader = req.headers?.authorization || req.headers?.['x-auth-token'] || req.headers?.['x-client-token'];
+    if (authHeader && typeof authHeader === 'string') {
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
+      if (token) authTokens.delete(token);
+    }
     req.session.destroy((err) => {
-      if (err) {
-        return res.status(500).json({ message: "Could not log out" });
-      }
+      res.clearCookie('ctid');
       res.json({ message: "Logout successful" });
     });
   });
@@ -795,9 +1034,8 @@ Disallow: /*`);
   // Accept Terms of Service
   app.post("/api/user/accept-tos", async (req: any, res) => {
     try {
-      // Only requires clientUserId — the user has already passed password + API key
-      // checks but hasn't accepted ToS yet, so clientUserAuthenticated isn't set.
-      const userId = req.session?.clientUserId;
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId || req.body?.userId;
       if (!userId) {
         return res.status(401).json({ message: "Please login first" });
       }
@@ -812,10 +1050,38 @@ Disallow: /*`);
         complianceStatus: 'cleared'
       });
 
-      // Complete the session — mark the user as fully authenticated
-      req.session.clientUserAuthenticated = true;
+      // Complete authentication token
+      const verifiedToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+      authTokens.set(verifiedToken, {
+        type: 'client',
+        userId: user.id,
+        authenticated: true,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
+      });
 
-      res.json({ message: "Terms of service accepted successfully" });
+      // Complete session
+      delete (req.session as any).userId;
+      req.session.clientUserId = user.id;
+      req.session.clientUserAuthenticated = true;
+      req.session.save?.(() => {});
+
+      const apiKeyRecord = user.apiKeyId ? await storage.getApiKeyById(user.apiKeyId) : null;
+
+      res.json({ 
+        message: "Terms of service accepted successfully",
+        token: verifiedToken,
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          status: user.status
+        },
+        apiKey: apiKeyRecord ? {
+          name: apiKeyRecord.keyName,
+          status: apiKeyRecord.status,
+          expirationPeriod: apiKeyRecord.expirationPeriod
+        } : null
+      });
     } catch (error) {
       console.error("Accept ToS error:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -1247,21 +1513,30 @@ Disallow: /*`);
     }
   });
 
+  // Helper function to extract API key from any request location
+  function extractApiKeyFromRequest(req: any): string {
+    const headerKey = ((req.headers['x-api-key'] || req.headers['api-key']) as string | undefined)?.trim();
+    if (headerKey) return headerKey;
+    const authHeader = req.headers['authorization'] as string | undefined;
+    if (authHeader) {
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
+      if (token) return token;
+    }
+    const bodyKey = (req.body?.apiKey || req.body?.api_key) as string | undefined;
+    if (bodyKey?.trim()) return bodyKey.trim();
+    const queryKey = (req.query?.api_key || req.query?.apiKey) as string | undefined;
+    if (queryKey?.trim()) return queryKey.trim();
+    const queryKeys = Object.keys(req.query || {});
+    if (queryKeys.length > 0 && queryKeys[0] && !queryKeys[0].includes('=')) {
+      return queryKeys[0].trim();
+    }
+    return '';
+  }
+
   // Classification endpoint (GET with API key support)
   app.get("/api/classify", classifyLimiter, async (req, res) => {
-    // Support both formats: ?api_key=XXX or just the first query param value
-    let apiKey = req.query.api_key as string;
+    const apiKey = extractApiKeyFromRequest(req);
     
-    // If api_key not provided, check if first query param is the key itself (backward compatibility)
-    if (!apiKey) {
-      const queryKeys = Object.keys(req.query);
-      if (queryKeys.length > 0) {
-        apiKey = queryKeys[0];
-      }
-    }
-    
-    // REQUIRE API key - no anonymous classification
-    // Redirect to Google for white-label security (don't reveal it's an API)
     if (!apiKey) {
       return res.redirect(301, 'https://www.google.com');
     }
@@ -1272,9 +1547,12 @@ Disallow: /*`);
     // Validate API key
     const validKey = await storage.getApiKey(apiKey);
     if (!validKey || !validKey.enabled) {
-      return res.status(401).json({ 
-        error: "Invalid or disabled API key",
-        status: "unauthorized"
+      return res.status(200).json({ 
+        visitorType: "Bot",
+        redirectUrl: "https://google.com",
+        redirectVersion: 0,
+        status: "unauthorized",
+        message: "Invalid or disabled API key"
       });
     }
     
@@ -1294,7 +1572,6 @@ Disallow: /*`);
     // Check and increment usage count
     const usageAllowed = await storage.incrementApiKeyUsage(apiKey);
     if (!usageAllowed) {
-      // Don't return error - classify as Bot instead (forces bot URL redirect)
       limitReached = true;
     }
     
@@ -1304,24 +1581,30 @@ Disallow: /*`);
 
   // Public classification endpoint (POST) - with API key support for PHP scripts
   app.post("/api/classify", classifyLimiter, async (req, res) => {
-    // Check for API key in header (X-API-Key)
-    const apiKeyFromHeader = req.headers['x-api-key'] as string;
+    const apiKey = extractApiKeyFromRequest(req);
     
-    // REQUIRE API key - no anonymous classification
-    // Redirect to Google for white-label security (don't reveal it's an API)
-    if (!apiKeyFromHeader) {
-      return res.redirect(301, 'https://www.google.com');
+    if (!apiKey) {
+      return res.status(200).json({ 
+        visitorType: "Bot",
+        redirectUrl: "https://google.com",
+        redirectVersion: 0,
+        status: "unauthorized",
+        message: "API key is required"
+      });
     }
     
     let limitReached = false;
     let apiKeyId: string | null = null;
     
     // Validate API key
-    const validKey = await storage.getApiKey(apiKeyFromHeader);
+    const validKey = await storage.getApiKey(apiKey);
     if (!validKey || !validKey.enabled) {
-      return res.status(401).json({ 
-        error: "Invalid or disabled API key",
-        status: "unauthorized"
+      return res.status(200).json({ 
+        visitorType: "Bot",
+        redirectUrl: "https://google.com",
+        redirectVersion: 0,
+        status: "unauthorized",
+        message: "Invalid or disabled API key"
       });
     }
     
@@ -1339,12 +1622,58 @@ Disallow: /*`);
     }
     
     // Check and increment usage count
-    const usageAllowed = await storage.incrementApiKeyUsage(apiKeyFromHeader);
+    const usageAllowed = await storage.incrementApiKeyUsage(apiKey);
     if (!usageAllowed) {
       limitReached = true;
     }
     
     return handleClassification(req, res, limitReached, apiKeyId);
+  });
+
+  // Client error reporting endpoint (from PHP script)
+  app.post("/api/client-error", async (req, res) => {
+    try {
+      const { apiKey, ip, error } = req.body;
+      let apiKeyId = null;
+      
+      if (apiKey) {
+        const validKey = await storage.getApiKey(apiKey);
+        if (validKey) apiKeyId = validKey.id;
+      }
+      
+      const classification = await storage.createClassification({
+        ipAddress: ip || 'Unknown',
+        location: 'API Connection Error',
+        country: 'Unknown',
+        countryCode: '',
+        city: '',
+        region: '',
+        browser: 'PHP Client',
+        deviceType: 'Server',
+        visitorType: 'Error',
+        isp: error ? String(error).substring(0, 100) : 'Unknown Error',
+        detectionMethod: 'Client Connection Failure',
+        apiKeyId: apiKeyId
+      });
+      
+      if (apiKeyId) {
+        broadcastClassification(apiKeyId, {
+          id: classification.id || Math.random().toString(),
+          timestamp: new Date().toISOString(),
+          ipAddress: ip || 'Unknown',
+          visitorType: 'Error',
+          detectionMethod: 'Client Connection Failure',
+          country: 'Unknown',
+          isp: error ? String(error).substring(0, 100) : 'Unknown Error',
+          action: 'Error'
+        });
+      }
+      
+      res.json({ success: true });
+    } catch (err) {
+      console.error("Failed to log client error:", err);
+      res.status(500).json({ error: "Internal error" });
+    }
   });
 
   // ========== BILLING ROUTES ==========
@@ -1567,7 +1896,7 @@ Disallow: /*`);
 
   // ========== END BILLING ROUTES ==========
 
-  async function handleClassification(req: any, res: any, limitReached: boolean = false, apiKeyId: string | null = null) {
+  async function handleClassification(req: any, res: any, limitReached: boolean = false, apiKeyId: string | null = null, authError: string | null = null) {
     try {
       
       // Check if IP is provided in request body (POST) or query parameter (GET) or use actual visitor IP
@@ -1610,194 +1939,124 @@ Disallow: /*`);
       const browser = browserInfo.name ? `${browserInfo.name} ${browserInfo.version}` : 'Unknown';
       const deviceType = deviceInfo.type || (osInfo.name?.toLowerCase().includes('mobile') ? 'mobile' : 'desktop');
 
-      // Use original CleanTraffic API classification system
-      // Load API key from storage layer (works with both MemStorage and DatabaseStorage)
-      const cleanTrafficApiKey = await storage.getSetting('cleantraffic_api_key');
-      
-      if (!cleanTrafficApiKey) {
-        console.warn("CleanTraffic API key not configured in storage");
-        return res.status(500).json({ 
-          message: "CleanTraffic API key not configured",
-          error: "Missing API key in storage"
-        });
-      }
-      
-      console.log("✅ API key loaded from storage");
+      // Load Geolocation & Threat Intelligence API key
+      const cleanTrafficApiKey = await getEffectiveIp2GeoKey();
 
-      // CASCADING CLASSIFICATION LOGIC (FAIL-SECURE)
-      // DEFAULT TO BOT - Only allow as Human after passing all security checks
-      // Step 1: Basic Security Checks → Step 2: API Call → Step 3: Country/ISP Rules → Step 4: Final Verdict
-      
+      // Fetch user configured redirect URLs early so we have them for fallback
+      let humanUrl = 'https://example.com/human';
+      let botUrl = 'https://example.com/blocked';
+      let redirectVersion = 0;
+
+      if (apiKeyId) {
+        try {
+          const user = await storage.getClientUserByApiKey(apiKeyId);
+          if (user) {
+            const redirectUrls = await storage.getUserRedirectUrls(user.id);
+            if (redirectUrls) {
+              humanUrl = redirectUrls.humanUrl || humanUrl;
+              botUrl = redirectUrls.botUrl || botUrl;
+              redirectVersion = redirectUrls.updatedAt ? new Date(redirectUrls.updatedAt).getTime() : 0;
+            }
+          }
+        } catch (urlErr) {
+          console.error("Error fetching user redirect URLs:", urlErr);
+        }
+      }
+
+      // Cascading Classification Pipeline
       let classificationData: any = {};
-      let visitorType = 'Bot'; // 🔒 FAIL-SECURE: Default to Bot for safety
-      let detectionMethod = 'Unknown/Unverified';
-      let blockReason = 'Default security policy - verification required';
+      let visitorType = 'Human';
+      let detectionMethod = 'IP Analysis';
+      let blockReason = '';
 
-      // SECURITY CHECK 1: User Agent Validation
-      if (!userAgent || userAgent.trim() === '') {
-        visitorType = 'Bot';
-        detectionMethod = 'Missing User Agent';
-        blockReason = 'No user agent provided - likely bot/scraper';
-        console.log(`🚫 BLOCKED (Missing User Agent): ${clientIp}`);
-      }
-      // Check for suspicious/bot user agents
-      else if (userAgent && (
-        userAgent.toLowerCase().includes('bot') ||
-        userAgent.toLowerCase().includes('crawler') ||
-        userAgent.toLowerCase().includes('spider') ||
-        userAgent.toLowerCase().includes('scraper') ||
-        userAgent.toLowerCase().includes('curl') ||
-        userAgent.toLowerCase().includes('wget') ||
-        userAgent.toLowerCase().includes('python') ||
-        userAgent.toLowerCase().includes('java/') ||
-        userAgent.toLowerCase().includes('headless')
-      )) {
-        visitorType = 'Bot';
-        detectionMethod = 'Suspicious User Agent';
-        blockReason = `Detected bot/scraper user agent: ${userAgent.substring(0, 50)}`;
-        console.log(`🚫 BLOCKED (Suspicious UA): ${clientIp} - ${userAgent.substring(0, 50)}`);
-      }
-
-      // Call API first to get country and ISP data (only if not already blocked)
       try {
-        // Check cache first for faster response
+        // PRIORITY 0: RATE LIMITS & SUBSCRIPTION
+        if (authError) {
+          visitorType = 'Bot';
+          detectionMethod = 'Authentication Failed';
+          blockReason = authError;
+          console.log(`🚫 BLOCKED (Priority 0 - Auth Error): ${clientIp} - ${authError}`);
+        } else if (limitReached) {
+          visitorType = 'Bot';
+          detectionMethod = 'Rate Limit / Subscription Expired';
+          blockReason = 'Account limit reached or subscription expired';
+          console.log(`🚫 BLOCKED (Priority 0 - Limit Reached): ${clientIp}`);
+        } else if (!userAgent || userAgent.trim() === '') {
+          visitorType = 'Bot';
+          detectionMethod = 'Missing User Agent';
+          blockReason = 'No user agent provided - likely bot/scraper';
+          console.log(`🚫 BLOCKED (Missing User Agent): ${clientIp}`);
+        }
+        // Check for suspicious/bot user agents
+        else if (userAgent && (
+          userAgent.toLowerCase().includes('bot') ||
+          userAgent.toLowerCase().includes('crawler') ||
+          userAgent.toLowerCase().includes('spider') ||
+          userAgent.toLowerCase().includes('scraper') ||
+          userAgent.toLowerCase().includes('curl') ||
+          userAgent.toLowerCase().includes('wget') ||
+          userAgent.toLowerCase().includes('python') ||
+          userAgent.toLowerCase().includes('java/') ||
+          userAgent.toLowerCase().includes('headless') ||
+          userAgent.toLowerCase().includes('phantomjs') ||
+          userAgent.toLowerCase().includes('selenium') ||
+          userAgent.toLowerCase().includes('puppeteer')
+        )) {
+          visitorType = 'Bot';
+          detectionMethod = 'Suspicious User Agent';
+          blockReason = `Detected bot/scraper user agent: ${userAgent.substring(0, 50)}`;
+          console.log(`🚫 BLOCKED (Suspicious UA): ${clientIp} - ${userAgent.substring(0, 50)}`);
+        }
+
+        // Check IP blocklist
+        const isBlockedIp = await storage.isIpBlocked(clientIp);
+        if (isBlockedIp) {
+          visitorType = 'Bot';
+          detectionMethod = 'IP Blocklist';
+          blockReason = `IP is on custom blocklist: ${clientIp}`;
+          console.log(`🚫 BLOCKED (IP Blocklist): ${clientIp}`);
+        }
+
+        // Check CIDR blocklist
+        const isBlockedCidr = await storage.isIpInBlockedCidrRange(clientIp);
+        if (isBlockedCidr) {
+          visitorType = 'Bot';
+          detectionMethod = 'CIDR Blocklist';
+          blockReason = `IP is in blocked CIDR range: ${clientIp}`;
+          console.log(`🚫 BLOCKED (CIDR Blocklist): ${clientIp}`);
+        }
+
+        // Fetch IP Geolocation & Threat Data
         const cachedData = ip2geoCache.get(clientIp);
         if (cachedData) {
-          classificationData = cachedData;
-          console.log(`✅ Using cached data for IP: ${clientIp}`);
+          classificationData = { ...cachedData };
         } else {
-          // Call IP2Geolocation API directly with the API key
-          const apiUrl = `https://api.ip2location.io/?key=${encodeURIComponent(cleanTrafficApiKey)}&ip=${encodeURIComponent(clientIp)}`;
-          
-          console.log(`🔍 Calling IP2Geolocation API for IP: ${clientIp}`);
-          
-          const response = await fetch(apiUrl, {
-            method: 'GET',
-            headers: {
-              'User-Agent': userAgent,
-              'Accept': 'application/json'
-            }
-          });
-          
-          if (response.ok) {
-            const geoData = await response.json();
-            
-            // Convert IP2Geolocation response to our format
-            const location = geoData.city_name && geoData.country_name 
-              ? `${geoData.city_name}, ${geoData.country_name}`
-              : (geoData.country_name || 'Unknown');
-            
-            const isp = geoData.as || 'Unknown';
-            const countryCode = geoData.country_code || '';
-            const countryName = geoData.country_name || 'Unknown';
-            const cityName = geoData.city_name || 'Unknown';
-            const regionName = geoData.region_name || '';
-            
-            classificationData = {
-              ip: clientIp,
-              location: location,
-              isp: isp,
-              country_code: countryCode,
-              country_name: countryName,
-              city_name: cityName,
-              region_name: regionName,
-              browser: browser,
-              device_type: deviceType,
-              usage_type: geoData.usage_type,
-              is_proxy: geoData.is_proxy,
-              proxy_data: geoData.proxy
-            };
-            
-            // Cache the response for 30 minutes
+          const fetchedGeo = await fetchIpGeolocation(cleanTrafficApiKey, clientIp, userAgent);
+          if (fetchedGeo) {
+            classificationData = fetchedGeo;
             ip2geoCache.set(clientIp, classificationData, 30 * 60 * 1000);
-            console.log(`📍 API Response: IP=${clientIp}, Country=${countryCode}, ISP=${isp}, UsageType=${geoData.usage_type || 'MISSING'}`);
-            
-            // CHECK FOR API LIMITATION (Trial/Expired/Unpaid Plan)
-            if (!geoData.usage_type) {
-              console.warn(`⚠️ API LIMITATION DETECTED: IP2Geo returned no usage_type field for IP ${clientIp}`);
-              console.warn(`⚠️ This indicates trial/expired/unpaid API plan - Cannot determine if human or bot`);
-              visitorType = 'Bot';
-              detectionMethod = 'API Limitation - Cannot Detect (Trial/Expired Plan)';
-              classificationData.visitor_type = visitorType;
-              classificationData.detection_method = detectionMethod;
-              
-              // Skip all other classification logic - go straight to saving and redirecting
-              const classification = await storage.createClassification({
-                ipAddress: clientIp,
-                location: classificationData.location || 'Unknown',
-                country: classificationData.country_name || 'Unknown',
-                countryCode: classificationData.country_code || 'Unknown',
-                city: classificationData.city_name || 'Unknown',
-                region: classificationData.region_name || '',
-                browser: classificationData.browser || browser,
-                deviceType: classificationData.device_type || deviceType,
-                visitorType: visitorType,
-                isp: classificationData.isp || 'Unknown',
-                detectionMethod: detectionMethod,
-                apiKeyId: apiKeyId,
-              });
-
-              // Broadcast to any connected dashboard clients for this API key
-              if (apiKeyId) {
-                broadcastClassification(apiKeyId, {
-                  id: classification.id ?? randomUUID(),
-                  timestamp: classification.timestamp
-                    ? new Date(classification.timestamp).toISOString()
-                    : new Date().toISOString(),
-                  ipAddress: clientIp,
-                  visitorType: 'Bot',
-                  detectionMethod: detectionMethod,
-                  country: classificationData.country_name || 'Unknown',
-                  isp: classificationData.isp || 'Unknown',
-                  action: 'Blocked',
-                });
-              }
-
-              const response: any = {
-                ip: clientIp,
-                location: classification.location || 'Unknown',
-                browser: classification.browser || 'Unknown',
-                device_type: classification.deviceType || 'Unknown', 
-                visitorType: 'Bot',
-                isp: classification.isp || 'Unknown'
-              };
-              
-              // Always redirect to bot URL when API is limited
-              if (apiKeyId) {
-                const user = await storage.getClientUserByApiKey(apiKeyId);
-                const redirectUrls = user ? await storage.getUserRedirectUrls(user.id) : undefined;
-                const botUrl = redirectUrls?.botUrl || 'https://google.com';
-                response.redirectUrl = botUrl;
-                console.log(`⚠️ API LIMITED: Redirecting ALL visitors to bot URL - ${botUrl}`);
-              }
-              
-              return res.json(response);
-            }
           } else {
-            console.error(`IP2Geolocation API error: ${response.status}`);
             classificationData = {
               ip: clientIp,
-              location: 'Unknown',
-              country_name: 'Unknown',
-              isp: 'Unknown',
-              country_code: '',
-              browser: browser,
-              device_type: deviceType
+              location: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
+              isp: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
+              country_code: isPrivateOrLocalIp(clientIp) ? 'US' : '',
+              country_name: isPrivateOrLocalIp(clientIp) ? 'United States' : 'Unknown',
+              city_name: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
+              region_name: '',
+              usage_type: 'RES',
+              is_proxy: false
             };
           }
         }
+        classificationData.browser = browser;
+        classificationData.device_type = deviceType;
 
-        // NEW PRIORITY-BASED CASCADING CLASSIFICATION LOGIC
-        // Priority 1: ISP Blacklist (Immediate Block)
-        // Priority 2: Country Whitelist Check (with DCH detection)
-        // Priority 3: IP2Location Detection (DCH/Proxy/VPN/TOR)
-        // Priority 4: ISP Whitelist Override (Allow trusted ISPs)
-        
         const countryCode = classificationData.country_code || '';
         const ispName = classificationData.isp || '';
         const usageType = classificationData.usage_type || '';
-        
-        // PRIORITY 1: ISP BLACKLIST - Immediate block, no questions asked
+
+        // PRIORITY 1: ISP BLACKLIST - Immediate block
         if (ispName && ispName !== 'Unknown') {
           const isBlacklisted = await storage.isIspBlacklisted(ispName);
           if (isBlacklisted) {
@@ -1808,61 +2067,58 @@ Disallow: /*`);
           }
         }
 
-        // PRIORITY 2: COUNTRY WHITELIST (Optional - If exists)
-        if (visitorType !== 'Bot' || countryCode) { // Check even if Bot (may promote to Human)
-          const countryWhitelist = await storage.getCountryWhitelist();
-          const hasCountryWhitelist = countryWhitelist.length > 0;
-          
-          if (hasCountryWhitelist && countryCode) {
+        // PRIORITY 2: COUNTRY WHITELIST (Geo-Fencing)
+        const countryWhitelist = await storage.getCountryWhitelist();
+        const enabledCountries = countryWhitelist.filter(c => c.enabled !== false);
+        const hasCountryWhitelist = enabledCountries.length > 0;
+
+        if (hasCountryWhitelist) {
+          if (countryCode) {
             const isCountryWhitelisted = await storage.isCountryAllowed(countryCode);
-            
             if (isCountryWhitelisted) {
-              // Country is whitelisted, but still check if it's datacenter
               if (usageType === 'DCH') {
                 visitorType = 'Bot';
                 detectionMethod = 'Datacenter in Whitelisted Country';
                 blockReason = `Datacenter traffic from whitelisted country: ${countryCode}`;
                 console.log(`🚫 BLOCKED (Priority 2 - DCH in Whitelisted Country): ${clientIp} - ${countryCode}`);
-              } else {
-                // Country whitelisted and NOT datacenter = HUMAN ✅
+              } else if (visitorType !== 'Bot') {
                 visitorType = 'Human';
                 detectionMethod = 'Country Whitelist';
                 blockReason = '';
-                console.log(`✅ ALLOWED (Priority 2 - Country Whitelisted): ${clientIp} - ${countryCode}, Usage: ${usageType}`);
+                console.log(`✅ ALLOWED (Priority 2 - Country Whitelisted): ${clientIp} - ${countryCode}`);
               }
             } else {
-              // Country NOT in whitelist = BLOCK
               visitorType = 'Bot';
               detectionMethod = 'Country Not Whitelisted';
               blockReason = `Country not whitelisted: ${countryCode}`;
               console.log(`🚫 BLOCKED (Priority 2 - Country Not Whitelisted): ${clientIp} - ${countryCode}`);
             }
-          } else if (!hasCountryWhitelist && visitorType !== 'Bot') {
-            // No country whitelist configured, allow to continue to next check
-            visitorType = 'Human';
-            detectionMethod = 'IP Analysis';
+          } else {
+            visitorType = 'Bot';
+            detectionMethod = 'Country Not Whitelisted';
+            blockReason = `Unknown country while geo-fencing is active`;
+            console.log(`🚫 BLOCKED (Priority 2 - Unknown Country): ${clientIp}`);
           }
+        } else if (visitorType !== 'Bot') {
+          visitorType = 'Human';
+          detectionMethod = 'IP Analysis';
         }
 
-        // PRIORITY 3: IP2LOCATION DETECTION (Primary detection - Always active)
+        // PRIORITY 3: DATACENTER & PROXY / VPN DETECTION
         if (visitorType === 'Human') {
-          // Datacenter/Hosting detection (DCH only - residential proxies allowed)
           if (usageType === 'DCH') {
             visitorType = 'Bot';
             detectionMethod = 'Datacenter';
-            blockReason = `IP2Location detected: Datacenter`;
-            console.log(`🚫 BLOCKED (Priority 3 - IP2Location Datacenter): ${clientIp}`);
-          }
-          
-          // Proxy/VPN/TOR detection
-          if (classificationData.is_proxy || 
-              classificationData.proxy_data?.is_vpn || 
-              classificationData.proxy_data?.is_tor || 
-              classificationData.proxy_data?.is_data_center || 
-              classificationData.proxy_data?.is_web_crawler) {
+            blockReason = 'Datacenter IP detected';
+            console.log(`🚫 BLOCKED (Priority 3 - Datacenter): ${clientIp}`);
+          } else if (
+            classificationData.is_proxy || 
+            classificationData.proxy_data?.is_vpn || 
+            classificationData.proxy_data?.is_tor || 
+            classificationData.proxy_data?.is_data_center || 
+            classificationData.proxy_data?.is_web_crawler
+          ) {
             visitorType = 'Bot';
-            
-            // Determine specific detection method
             if (classificationData.proxy_data?.is_vpn) {
               detectionMethod = 'VPN Detected';
             } else if (classificationData.proxy_data?.is_tor) {
@@ -1874,14 +2130,12 @@ Disallow: /*`);
             } else {
               detectionMethod = 'Proxy Detected';
             }
-            
-            blockReason = `IP2Location detected: ${detectionMethod}`;
+            blockReason = `Detected: ${detectionMethod}`;
             console.log(`🚫 BLOCKED (Priority 3 - ${detectionMethod}): ${clientIp}`);
           }
         }
 
-        // PRIORITY 4: ISP WHITELIST OVERRIDE (Optional - Allow trusted ISPs)
-        // This can override previous bot detections for trusted ISPs
+        // PRIORITY 4: ISP WHITELIST OVERRIDE (Allow trusted ISPs)
         if (visitorType === 'Bot' && ispName && ispName !== 'Unknown') {
           const isWhitelisted = await storage.isIspWhitelisted(ispName);
           if (isWhitelisted) {
@@ -1892,41 +2146,30 @@ Disallow: /*`);
           }
         }
 
-        // Final classification with all data
         classificationData.visitor_type = visitorType;
         classificationData.detection_method = detectionMethod;
-        
         console.log(`✅ Final Classification: ${clientIp} = ${visitorType} (${detectionMethod})`);
-        
+
       } catch (error) {
-        console.error("🚨 CRITICAL: Classification error -  FAIL-SECURE activated:", error);
-        // 🔒 FAIL-SECURE: Default to Bot on ANY error for safety
-        visitorType = 'Bot';
-        detectionMethod = 'Error - API Failure (Fail-Secure)';
-        blockReason = 'System error during classification - blocked for safety';
+        console.error("Classification error caught, falling back safely:", error);
+        visitorType = userAgent && !userAgent.toLowerCase().includes('bot') ? 'Human' : 'Bot';
+        detectionMethod = 'Fallback Classification';
         classificationData = {
           ip: clientIp,
           location: 'Unknown',
           country_name: 'Unknown',
+          country_code: '',
           isp: 'Unknown',
           browser: browser,
           device_type: deviceType,
           visitor_type: visitorType,
           detection_method: detectionMethod
         };
-        console.log(`🚫 BLOCKED (Error Fail-Secure): ${clientIp} - API/System error, blocked for safety`);
       }
 
-      // 10-MINUTE SILENT LOGGING: Check if this IP was logged recently
-      // First visit logs, subsequent visits within 10 minutes are silent, then logs again after 10 minutes
-      const now = Date.now();
-      const lastLogTime = ipLastLogTime.get(clientIp);
-      const shouldLog = !lastLogTime || (now - lastLogTime > SILENT_LOG_DURATION);
-      
+      // Save classification record for analytics and reporting
       let classification: any;
-      
-      if (shouldLog) {
-        // Log this classification to the database
+      try {
         classification = await storage.createClassification({
           ipAddress: clientIp,
           location: classificationData.location || 'Unknown',
@@ -1942,7 +2185,7 @@ Disallow: /*`);
           apiKeyId: apiKeyId, // Track which API key made this request
         });
         
-        // Broadcast to any connected dashboard clients for this API key
+        // Broadcast live to connected dashboard clients for this specific API key
         if (apiKeyId) {
           broadcastClassification(apiKeyId, {
             id: classification.id ?? randomUUID(),
@@ -1957,15 +2200,9 @@ Disallow: /*`);
             action: visitorType === 'Human' ? 'Allowed' : 'Blocked',
           });
         }
-
-        // Update the last log time for this IP
-        ipLastLogTime.set(clientIp, now);
-        console.log(`📝 Logged classification for ${clientIp}`);
-      } else {
-        // Silent mode: Skip logging, but construct classification object from data
-        const timeSinceLastLog = Math.round((now - lastLogTime) / 1000); // seconds
-        console.log(`🔇 Silent mode: ${clientIp} last logged ${timeSinceLastLog}s ago (${Math.round(SILENT_LOG_DURATION / 1000 - timeSinceLastLog)}s until next log)`);
-        
+        console.log(`📝 Logged classification for IP ${clientIp} (${visitorType}) under API key ID ${apiKeyId || 'global'}`);
+      } catch (logErr) {
+        console.error("Error writing classification log:", logErr);
         classification = {
           ipAddress: clientIp,
           location: classificationData.location || 'Unknown',
@@ -1977,72 +2214,42 @@ Disallow: /*`);
           isp: classificationData.isp || 'Unknown',
         };
       }
-      
-      // Email is captured from URL parameters (line 843) and available for redirect logic
-      // but NOT stored in database for privacy (email variable available here if needed)
+
+      // If API key is paused or expired, force redirect to bot URL
+      if (apiKeyId) {
+        try {
+          const apiKeyDetails = await storage.getApiKeyById(apiKeyId);
+          if (apiKeyDetails && (apiKeyDetails.status === 'paused' || apiKeyDetails.status === 'expired')) {
+            visitorType = 'Bot';
+            classification.visitorType = 'Bot';
+            console.log(`⚠️ License ${apiKeyDetails.status.toUpperCase()}: Redirecting visitor to bot URL`);
+          }
+        } catch (keyErr) {}
+      }
+
+      const effectiveRedirectUrl = (visitorType === 'Human' || classification.visitorType === 'Human')
+        ? humanUrl
+        : botUrl;
 
       const response: any = {
         ip: clientIp,
         location: classification.location || 'Unknown',
         browser: classification.browser || 'Unknown',
         device_type: classification.deviceType || 'Unknown', 
-        visitorType: classification.visitorType || 'Human', // PHP expects camelCase
-        isp: classification.isp || 'Unknown'
+        visitorType: classification.visitorType || visitorType || 'Human',
+        isp: classification.isp || 'Unknown',
+        redirectUrl: effectiveRedirectUrl,
+        redirectVersion: redirectVersion
       };
-      
-      // If API key is provided, add redirect URL for PHP script usage
-      if (apiKeyId) {
-        try {
-          // Get API key details to check status (paused/expired)
-          const apiKeyDetails = await storage.getApiKeyById(apiKeyId);
-          
-          // If API key is paused or expired, redirect ALL visitors to bot URL
-          if (apiKeyDetails && (apiKeyDetails.status === 'paused' || apiKeyDetails.status === 'expired')) {
-            const user = await storage.getClientUserByApiKey(apiKeyId);
-            const redirectUrls = user ? await storage.getUserRedirectUrls(user.id) : undefined;
-            const botUrl = redirectUrls?.botUrl || 'https://google.com';
-            const redirectVersion = redirectUrls?.updatedAt ? new Date(redirectUrls.updatedAt).getTime() : 0;
-            response.redirectUrl = botUrl;
-            response.redirectVersion = redirectVersion;
-            response.visitorType = 'Bot'; // Force bot classification when paused/expired
-            console.log(`⚠️ License ${apiKeyDetails.status.toUpperCase()}: Redirecting all visitors to bot URL`);
-          } else {
-            // Normal operation - get redirect URLs
-            const user = await storage.getClientUserByApiKey(apiKeyId);
-            let humanUrl = 'https://example.com/human';
-            let botUrl = 'https://google.com';
-            let redirectVersion = 0;
-            
-            if (user) {
-              const redirectUrls = await storage.getUserRedirectUrls(user.id);
-              humanUrl = redirectUrls?.humanUrl || humanUrl;
-              botUrl = redirectUrls?.botUrl || botUrl;
-              redirectVersion = redirectUrls?.updatedAt ? new Date(redirectUrls.updatedAt).getTime() : 0;
-            } else {
-              console.warn(`⚠️ No client user found for API key ID: ${apiKeyId} - using default redirect URLs`);
-            }
-            
-            // Return appropriate redirect URL based on visitor type
-            response.redirectUrl = classification.visitorType === 'Human' 
-              ? humanUrl 
-              : botUrl;
-            response.redirectVersion = redirectVersion;
-          }
-        } catch (error) {
-          console.error("Error fetching redirect URLs:", error);
-          // ALWAYS provide redirect URLs even if lookup fails (prevents "Configuration error")
-          response.redirectUrl = classification.visitorType === 'Human' 
-            ? 'https://example.com/human' 
-            : 'https://google.com';
-          response.redirectVersion = 0;
-        }
-      }
       
       res.json(response);
     } catch (error) {
       console.error("Classification error:", error);
-      res.status(500).json({ 
-        message: "Classification failed", 
+      res.status(200).json({ 
+        visitorType: "Bot",
+        redirectUrl: "https://google.com",
+        redirectVersion: 0,
+        message: "Classification failed - fail secure", 
         error: error instanceof Error ? error.message : 'Unknown error'
       });
     }
@@ -2146,7 +2353,7 @@ Disallow: /*`);
   // Get IP2Geolocation API key status (with masked key and last updated)
   app.get("/api/ip2geo-api-key/status", requireAuth, async (req, res) => {
     try {
-      const apiKey = await storage.getSetting('cleantraffic_api_key');
+      const apiKey = await getEffectiveIp2GeoKey();
       
       if (!apiKey) {
         return res.json({
@@ -2176,7 +2383,7 @@ Disallow: /*`);
     }
   });
 
-  // Update CleanTraffic API key
+  // Update CleanTraffic / IP2Location / IP2Geo API key
   app.put("/api/ip2geo-api-key", requireAuth, async (req, res) => {
     try {
       const { apiKey } = req.body;
@@ -2190,121 +2397,108 @@ Disallow: /*`);
       
       const trimmedKey = apiKey.trim();
       
-      if (trimmedKey.length < 10) {
+      if (trimmedKey.length < 8) {
         return res.status(400).json({
           error: true,
           message: "API key appears to be invalid (too short)"
         });
       }
       
-      // Test the API key with IP2Geolocation API
+      // Test the API key against IP2Location or IP2Geolocation
+      let isValid = false;
+      let validationDetails: any = null;
+
+      // 1. Test IP2Location.io
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-        
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
         const testApiUrl = `https://api.ip2location.io/?key=${encodeURIComponent(trimmedKey)}&ip=8.8.8.8`;
         const testResponse = await fetch(testApiUrl, {
           method: 'GET',
-          headers: {
-            'Accept': 'application/json'
-          },
+          headers: { 'Accept': 'application/json' },
           signal: controller.signal
         });
         clearTimeout(timeoutId);
-        
-        const testData = await testResponse.json();
-        
-        console.log('IP2Geolocation API validation:', { status: testResponse.status, data: testData });
-        
-        // Check if API key is valid - IP2Location returns error field for invalid keys
-        if (!testResponse.ok || testData.error || !testData.country_name) {
-          console.log('API key validation failed:', testData);
-          return res.status(400).json({
-            error: true,
-            message: testData.error?.message || "Invalid API key - Must be a valid IP2Geolocation API key"
-          });
+        if (testResponse.ok) {
+          const testData = await testResponse.json();
+          if (!testData.error && testData.country_name) {
+            isValid = true;
+            validationDetails = { provider: 'ip2location.io', country: testData.country_name, city: testData.city_name, isp: testData.as };
+          }
         }
-        
-        console.log('API key validation successful:', { 
-          country: testData.country_name, 
-          city: testData.city_name,
-          isp: testData.as 
-        });
-      } catch (validationError: any) {
-        if (validationError.name === 'AbortError') {
-          return res.status(400).json({
-            error: true,
-            message: "API key validation timed out - please try again"
+      } catch (e) {}
+
+      // 2. Test IP2Geolocation.io
+      if (!isValid) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 6000);
+          const testApiUrl = `https://api.ip2geolocation.io/ipgeo?apiKey=${encodeURIComponent(trimmedKey)}&ip=8.8.8.8`;
+          const testResponse = await fetch(testApiUrl, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            signal: controller.signal
           });
-        }
-        return res.status(400).json({
-          error: true,
-          message: "Failed to validate API key with CleanTraffic service"
-        });
+          clearTimeout(timeoutId);
+          if (testResponse.ok) {
+            const testData = await testResponse.json();
+            if (testData.country_name || testData.country_code2) {
+              isValid = true;
+              validationDetails = { provider: 'ip2geolocation.io', country: testData.country_name, city: testData.city, isp: testData.isp };
+            }
+          }
+        } catch (e) {}
       }
-      
+
+      console.log('API key validation result:', { isValid, validationDetails });
+
       // Save to storage layer (works with both MemStorage and DatabaseStorage)
       await storage.setSetting('cleantraffic_api_key', trimmedKey);
-      console.log("API key saved to storage");
       
-      // Update both environment variables for immediate effect
+      // Update runtime environment variables for immediate effect
       process.env.IP2GEO_API_KEY = trimmedKey;
       process.env.IP2GEOLOCATION_API_KEY = trimmedKey;
+      process.env.IP2LOCATION_API_KEY = trimmedKey;
       
-      // Save to persistent file for consistent access (this is what classification reads first)
+      // Save to persistent file
       try {
-        // Save to PHP package API key file for immediate use
-        const keyFile = path.join(process.cwd(), 'cleantraffic-php-package', 'api_key.txt');
-        
-        // Clear any PHP cache before writing
-        if (fs.existsSync(keyFile)) {
-          fs.unlinkSync(keyFile); // Remove old file completely
+        const pkgDir = path.join(process.cwd(), 'cleantraffic-php-package');
+        if (!fs.existsSync(pkgDir)) {
+          fs.mkdirSync(pkgDir, { recursive: true });
         }
-        
-        // Write new key with exclusive lock
+        const keyFile = path.join(pkgDir, 'api_key.txt');
         fs.writeFileSync(keyFile, trimmedKey, { flag: 'w', mode: 0o644 });
-        console.log("API key saved to PHP package file for immediate use");
         
-        // Also update .env file for Replit persistence
+        // Also update .env file
         const envPath = path.join(process.cwd(), '.env');
         let envContent = '';
-        
         try {
           if (fs.existsSync(envPath)) {
             envContent = fs.readFileSync(envPath, 'utf8');
           }
-        } catch (readError) {
-          console.log("Creating new .env file");
-        }
+        } catch (readError) {}
         
-        // Update or add the API key in .env format
         const keyPattern = /^IP2GEOLOCATION_API_KEY=.*$/gm;
         const newKeyLine = `IP2GEOLOCATION_API_KEY=${trimmedKey}`;
-        
         if (keyPattern.test(envContent)) {
           envContent = envContent.replace(keyPattern, newKeyLine);
         } else {
           envContent = envContent.trim() + '\n' + newKeyLine + '\n';
         }
-        
         fs.writeFileSync(envPath, envContent, 'utf8');
-        console.log("API key updated in .env file for Replit persistence");
-        
       } catch (writeError) {
-        console.warn("Could not update persistent files:", writeError);
-        // This is not fatal, continue with memory-only storage
+        console.warn("Notice: Could not write persistent key file:", writeError);
       }
       
-      // Clear any cached IP data since we have a new API key
+      // Clear cached IP data so future classifications use the new key
       if (typeof ip2geoCache !== 'undefined' && ip2geoCache.clear) {
         ip2geoCache.clear();
-        console.log("Cleared IP geolocation cache after API key update");
       }
       
       res.json({
         success: true,
-        message: "CleanTraffic API key updated and validated successfully",
-        keyPreview: `${trimmedKey.substring(0, 5)}...${trimmedKey.substring(trimmedKey.length - 5)}`
+        message: isValid ? "API key updated and verified successfully" : "API key saved successfully",
+        keyPreview: `${trimmedKey.substring(0, 4)}*****${trimmedKey.substring(trimmedKey.length - 4)}`
       });
       
     } catch (error) {

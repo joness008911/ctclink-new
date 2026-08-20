@@ -63,12 +63,15 @@ export default function ApiVerify() {
 
   const acceptTosMutation = useMutation({
     mutationFn: () => userAuthApi.acceptTos(),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      if (data?.token) {
+        localStorage.setItem('client_auth_token', data.token);
+      }
       toast({
         title: "Terms Accepted",
         description: "You can now access your dashboard.",
       });
-      completeLogin({});
+      completeLogin(data);
     },
     onError: (error: Error) => {
       toast({
@@ -79,7 +82,7 @@ export default function ApiVerify() {
     },
   });
 
-  const completeLogin = (data: any) => {
+  const completeLogin = async (data: any) => {
     if (rememberMe) {
       const savedCreds = localStorage.getItem('app_remember_me');
       let existingCreds = {};
@@ -110,11 +113,17 @@ export default function ApiVerify() {
         }
       }
     }
+    
+    if (data?.user) {
+      queryClient.setQueryData(["/api/user/me"], data.user);
+    }
+    await queryClient.invalidateQueries({ queryKey: ["/api/user/me"] });
+    await queryClient.refetchQueries({ queryKey: ["/api/user/me"] });
+    
     toast({
       title: "API Key Verified",
       description: "Welcome to your dashboard!",
     });
-    queryClient.invalidateQueries({ queryKey: ["/api/user/me"] });
     navigate("/user");
   };
 

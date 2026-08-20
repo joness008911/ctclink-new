@@ -1,0 +1,13 @@
+I have investigated the issue and understand exactly why this is happening. 
+
+**Here is why you are seeing this behavior:**
+1. **Why you get sent to Google & see no activity:** Currently, if the backend API receives a request from your PHP script with an invalid or missing API key, it rejects it instantly with a hardcoded `google.com` redirect. Crucially, it does this *before* it logs the visit to the database. Because it isn't logged, your dashboard shows 0 activity, making it look like the API was never called.
+2. **Why the API key might be missing:** If you copied the PHP snippet from the dashboard slightly before the page fully finished loading your credentials from the database, the script might have generated with an empty API key (`$apiKey = '';`).
+3. **The PHP Fallback:** If the PHP script completely fails to connect to the backend (e.g., due to your web host's firewall), the script itself has a built-in fail-safe that was defaulting to `google.com` if your custom bot URL wasn't available at the time of copying.
+
+**Here is exactly what I will fix:**
+1. **Remove ALL `google.com` fallbacks:** I will rip out the hardcoded Google links from both the PHP generator and the backend API. If the API key is missing, or if the server is unreachable, it will strictly fall back to the Custom Bot URL you configured in your dashboard.
+2. **Log Every Single Hit:** I will restructure the API so that *every* request is logged to the database and visible in the Admin dashboard, even if the API key is completely invalid or missing.
+3. **Dashboard Script Safety:** I will update the user dashboard so that the PHP script area shows a loading spinner and prevents you from copying it until your API key and custom redirect URLs are 100% loaded and injected into the script.
+
+Do I have your approval to implement these fixes?
