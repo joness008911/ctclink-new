@@ -67,6 +67,8 @@ import { storage, ip2geoCache } from "./storage";
 import { db } from "./db";
 import { sql as sqlTag } from "drizzle-orm";
 import session from "express-session";
+import createMemoryStore from "memorystore";
+const MemoryStore = createMemoryStore(session);
 import { insertClassificationSchema } from "@shared/schema";
 import { UAParser } from "ua-parser-js";
 import path from "path";
@@ -378,6 +380,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Capture session middleware reference so we can authenticate WebSocket upgrade requests
   const sessionMw = session({
+    store: new MemoryStore({
+      checkPeriod: 86400000 // prune expired entries every 24h
+    }),
     name: 'ctid', // Obscure the default 'connect.sid' identifier
     secret: sessionSecret,
     resave: false,
@@ -1661,11 +1666,11 @@ Disallow: /*`);
           id: classification.id || Math.random().toString(),
           timestamp: new Date().toISOString(),
           ipAddress: ip || 'Unknown',
-          visitorType: 'Error',
+          visitorType: 'Bot',
           detectionMethod: 'Client Connection Failure',
           country: 'Unknown',
           isp: error ? String(error).substring(0, 100) : 'Unknown Error',
-          action: 'Error'
+          action: 'Blocked'
         });
       }
       

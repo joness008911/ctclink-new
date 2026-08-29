@@ -104,41 +104,54 @@ app.use((req, res, next) => {
   next();
 });
 
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
 (async () => {
-  // Run pending database migrations if a valid Postgres database is configured
-  if (isValidDatabaseUrl(process.env.DATABASE_URL)) {
-    try {
-      execSync("npx drizzle-kit migrate", { stdio: "pipe" });
-      log("Database migrations applied");
-    } catch (err: any) {
-      const msg = (err.stderr?.toString() || err.stdout?.toString() || err.message || String(err)).slice(0, 500);
-      console.warn("Database migration notice:\n" + msg);
+  try {
+    // Run pending database migrations if a valid Postgres database is configured
+    if (isValidDatabaseUrl(process.env.DATABASE_URL)) {
+      try {
+        execSync("npx drizzle-kit migrate", { stdio: "pipe" });
+        log("Database migrations applied");
+      } catch (err: any) {
+        const msg = (err.stderr?.toString() || err.stdout?.toString() || err.message || String(err)).slice(0, 500);
+        console.warn("Database migration notice:\n" + msg);
+      }
     }
+
+    const server = await registerRoutes(app);
+    
+    app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+      const status = err.status || err.statusCode || 500;
+      const message = err.message || "Internal Server Error";
+
+      res.status(status).json({ message });
+      throw err;
+    });
+
+    // Setup Vite in development or serve static build in production
+    if (process.env.NODE_ENV !== "production") {
+      await setupVite(app, server);
+    } else {
+      serveStatic(app);
+    }
+
+    // Bind to port from environment variable (Railway/Render/Cloud Run) or default 3000
+    const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+    server.listen({
+      port,
+      host: "0.0.0.0",
+    }, () => {
+      log(`serving on port ${port}`);
+    });
+  } catch (startupError) {
+    console.error("🚨 Fatal error during server startup:", startupError);
+    process.exit(1);
   }
-
-  const server = await registerRoutes(app);
-  
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-
-    res.status(status).json({ message });
-    throw err;
-  });
-
-  // Setup Vite in development or serve static build in production
-  if (process.env.NODE_ENV !== "production") {
-    await setupVite(app, server);
-  } else {
-    serveStatic(app);
-  }
-
-  // Bind to port 3000 (standard ingress port) and host 0.0.0.0
-  const port = 3000;
-  server.listen({
-    port,
-    host: "0.0.0.0",
-  }, () => {
-    log(`serving on port ${port}`);
-  });
 })();
