@@ -25,54 +25,59 @@ declare global {
   }
 }
 
-// Helper to decode JWT token from Google Identity Services
-function decodeJwt(token: string) {
-  try {
-    const base64Url = token.split(".")[1];
-    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-    const jsonPayload = decodeURIComponent(
-      atob(base64)
-        .split("")
-        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-        .join("")
-    );
-    return JSON.parse(jsonPayload);
-  } catch (e) {
-    return null;
-  }
+export interface GoogleAuthErrorInfo {
+  isDomainError: boolean;
+  domain: string;
+  originalMessage: string;
+  instructions: string[];
 }
 
-// Google OAuth via standard Google Identity Services or Firebase Popup
-export async function loginWithGooglePopup() {
-  // Strategy 1: If Google Identity Services (GSI) or OAuth token client is available
+export async function loginWithGooglePopup(): Promise<{
+  email: string;
+  name: string;
+  googleId: string;
+  idToken?: string;
+  photoURL?: string | null;
+}> {
+  const currentHost = window.location.host;
+  const currentOrigin = window.location.origin;
+
+  // Strategy 1: Google Identity Services (GSI)
   const clientId = firebaseConfig.oAuthClientId;
 
   if (window.google?.accounts?.oauth2 && clientId) {
-    return new Promise<{ email: string; name: string; googleId: string; idToken?: string }>(
-      (resolve, reject) => {
+    try {
+      const gsiResult = await new Promise<{
+        email: string;
+        name: string;
+        googleId: string;
+        idToken?: string;
+        photoURL?: string | null;
+      }>((resolve, reject) => {
         try {
           const client = window.google.accounts.oauth2.initTokenClient({
             client_id: clientId,
             scope: "email profile openid",
             callback: async (tokenResponse: any) => {
               if (tokenResponse.error) {
-                reject(new Error(tokenResponse.error_description || tokenResponse.error));
+                const err = new Error(tokenResponse.error_description || tokenResponse.error);
+                (err as any).code = tokenResponse.error;
+                reject(err);
                 return;
               }
               try {
-                // Fetch user info from Google's standard userinfo endpoint
                 const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
                   headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
                 });
-                if (!res.ok) throw new Error("Failed to fetch Google profile");
+                if (!res.ok) throw new Error("Failed to fetch Google profile info");
                 const data = await res.json();
                 resolve({
                   email: data.email || "",
                   name: data.name || "",
                   googleId: data.sub || data.id,
                   idToken: tokenResponse.access_token,
-                  photoURL: data.picture,
-                } as any);
+                  photoURL: data.picture || null,
+                });
               } catch (e) {
                 reject(e);
               }
@@ -82,8 +87,16 @@ export async function loginWithGooglePopup() {
         } catch (err) {
           reject(err);
         }
+      });
+      return gsiResult;
+    } catch (gsiError: any) {
+      console.warn("GSI auth attempt encountered error, trying Firebase popup fallback:", gsiError);
+      // If user closed popup intentionally, rethrow
+      if (gsiError.code === "popup_closed" || gsiError.code === "access_denied") {
+        const isDomain = String(gsiError.message || "").toLowerCase().includes("origin") || gsiError.code === "origin_mismatch";
+        if (!isDomain) throw gsiError;
       }
-    );
+    }
   }
 
   // Strategy 2: Firebase Auth signInWithPopup
@@ -96,23 +109,31 @@ export async function loginWithGooglePopup() {
       name: user.displayName || "",
       googleId: user.uid,
       idToken,
-      photoURL: user.photoURL,
+      photoURL: user.photoURL || null,
     };
   } catch (error: any) {
-    // If running in restricted iframe or provider is not configured
-    if (
+    console.error("Google Auth error:", error);
+
+    const isDomainOrConfigError =
       error.code === "auth/internal-error" ||
       error.code === "auth/unauthorized-domain" ||
       error.code === "auth/operation-not-allowed" ||
-      error.code === "auth/popup-blocked"
-    ) {
-      const helpfulError = new Error(
-        "Google Sign-In is restricted inside the preview iframe. Please sign up or sign in below with your work email & password, or open this app in a new tab."
+      error.code === "auth/configuration-not-found" ||
+      error.code === "origin_mismatch" ||
+      String(error.message || "").includes("origin_mismatch") ||
+      String(error.message || "").includes("authorized domain");
+
+    if (isDomainOrConfigError) {
+      const helpfulError: any = new Error(
+        `Google Sign-In on "${currentHost}" requires domain authorization in Firebase Console or Google Cloud.`
       );
-      (helpfulError as any).code = error.code;
+      helpfulError.isDomainError = true;
+      helpfulError.host = currentHost;
+      helpfulError.origin = currentOrigin;
+      helpfulError.code = error.code || "auth/unauthorized-domain";
       throw helpfulError;
     }
+
     throw error;
   }
 }
-

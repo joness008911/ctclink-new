@@ -7,6 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
   ShieldCheck,
@@ -17,10 +24,11 @@ import {
   Eye,
   EyeOff,
   Globe,
-  FileCode2,
+  Copy,
+  Check,
+  AlertTriangle,
+  ExternalLink,
   Sparkles,
-  Layers,
-  HelpCircle,
 } from "lucide-react";
 
 export default function UserLogin() {
@@ -40,7 +48,12 @@ export default function UserLogin() {
   const [tosAccepted, setTosAccepted] = useState(true);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
-  // Load saved credentials for remember me (signin mode)
+  // Domain Help Dialog for Railway / Custom deployments
+  const [domainHelpOpen, setDomainHelpOpen] = useState(false);
+  const [domainHelpHost, setDomainHelpHost] = useState("");
+  const [copiedHost, setCopiedHost] = useState(false);
+
+  // Load saved credentials for remember me
   useEffect(() => {
     const saved = localStorage.getItem("app_user_saved_email");
     if (saved) {
@@ -57,7 +70,6 @@ export default function UserLogin() {
         title: "Trial Activated!",
         description: data.message || "Your 7-day free trial has been created.",
       });
-      // Directly reload/navigate to user dashboard
       window.location.href = "/user";
     },
     onError: (error: any) => {
@@ -143,16 +155,40 @@ export default function UserLogin() {
         idToken: googleUser.idToken,
       });
     } catch (err: any) {
-      if (err.code !== "auth/popup-closed-by-user") {
+      if (err.isDomainError || err.code === "auth/unauthorized-domain" || err.code === "origin_mismatch" || err.code === "auth/internal-error") {
+        setDomainHelpHost(err.host || window.location.host);
+        setDomainHelpOpen(true);
+      } else if (err.code !== "auth/popup-closed-by-user" && err.code !== "popup_closed" && err.code !== "cancelled") {
         toast({
-          title: "Google Auth Error",
-          description: err.message || "Failed to authenticate with Google",
+          title: "Google Auth Notice",
+          description: err.message || "Could not complete Google sign-in. Use email & password below.",
           variant: "destructive",
         });
       }
     } finally {
       setIsGoogleLoading(false);
     }
+  };
+
+  const handle1ClickDemo = () => {
+    setEmail("demo@cleantraffic.io");
+    setPassword("demo123");
+    setAuthMode("signin");
+    loginMutation.mutate({
+      username: "demo",
+      password: "demo123",
+    });
+  };
+
+  const copyHostToClipboard = () => {
+    const hostToCopy = domainHelpHost || window.location.host;
+    navigator.clipboard.writeText(hostToCopy);
+    setCopiedHost(true);
+    setTimeout(() => setCopiedHost(false), 2000);
+    toast({
+      title: "Copied to Clipboard",
+      description: `Domain "${hostToCopy}" copied.`,
+    });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -221,7 +257,7 @@ export default function UserLogin() {
             </span>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 sm:gap-4">
             <button
               onClick={() => navigate("/")}
               className="text-sm text-neutral-400 hover:text-white transition-colors hidden sm:block"
@@ -263,7 +299,6 @@ export default function UserLogin() {
           
           {/* Left Column: Product Value & Free Trial Benefits */}
           <div className="lg:col-span-5 bg-gradient-to-br from-[#1a1a1a] via-[#161616] to-[#121212] border border-white/10 rounded-2xl p-6 sm:p-8 flex flex-col justify-between relative overflow-hidden shadow-2xl">
-            {/* Subtle background glow */}
             <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
 
             <div>
@@ -323,15 +358,25 @@ export default function UserLogin() {
               </div>
             </div>
 
-            <div className="pt-8 mt-8 border-t border-white/10">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-neutral-800 flex items-center justify-center text-xs font-bold text-neutral-300">
-                  CT
+            {/* Quick Demo Access banner on left column */}
+            <div className="pt-6 mt-6 border-t border-white/10">
+              <div className="bg-[#202020] border border-white/10 rounded-xl p-3.5 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Quick Sandbox Access
+                  </p>
+                  <p className="text-[11px] text-neutral-400 mt-0.5">Test dashboard in 1 click (no setup)</p>
                 </div>
-                <div className="text-xs text-neutral-400">
-                  <span className="font-medium text-neutral-200">256-bit Encrypted Session</span>
-                  <p className="text-neutral-500">Strict tenant isolation & data privacy</p>
-                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handle1ClickDemo}
+                  disabled={isPending}
+                  className="h-8 text-xs border-emerald-500/40 text-emerald-400 hover:bg-emerald-500 hover:text-black transition-all"
+                >
+                  1-Click Demo
+                </Button>
               </div>
             </div>
           </div>
@@ -431,9 +476,16 @@ export default function UserLogin() {
                     Password
                   </Label>
                   {authMode === "signin" && (
-                    <span className="text-xs text-neutral-500">
-                      Need help? Support 24/7
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEmail("demo@cleantraffic.io");
+                        setPassword("demo123");
+                      }}
+                      className="text-xs text-emerald-400 hover:text-emerald-300 underline"
+                    >
+                      Fill Demo Credentials
+                    </button>
                   )}
                 </div>
                 <div className="relative">
@@ -538,6 +590,78 @@ export default function UserLogin() {
           </div>
         </div>
       </main>
+
+      {/* ── Dialog: Railway / Custom Domain OAuth Setup Helper ─────────────── */}
+      <Dialog open={domainHelpOpen} onOpenChange={setDomainHelpOpen}>
+        <DialogContent className="bg-[#1a1a1a] border border-white/10 text-white max-w-lg">
+          <DialogHeader>
+            <div className="w-10 h-10 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-2">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <DialogTitle className="text-xl font-bold text-white">
+              Domain Whitelist Notice (Railway / Custom Hosting)
+            </DialogTitle>
+            <DialogDescription className="text-neutral-300 text-sm mt-1">
+              Google OAuth security requires new deployment domains to be added to Authorized Domains in Firebase & Google Cloud.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div>
+              <p className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-1.5">
+                Your Deployment Domain
+              </p>
+              <div className="flex items-center gap-2 bg-[#121212] border border-white/10 rounded-lg p-2.5">
+                <code className="text-sm text-emerald-400 font-mono flex-1 select-all break-all">
+                  {domainHelpHost || window.location.host}
+                </code>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={copyHostToClipboard}
+                  className="h-8 border-white/10 text-xs gap-1.5"
+                >
+                  {copiedHost ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedHost ? "Copied" : "Copy"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2 text-xs text-neutral-300 bg-[#222222] p-3.5 rounded-xl border border-white/5">
+              <p className="font-semibold text-white">How to enable Google Sign-In for Railway:</p>
+              <ol className="list-decimal list-inside space-y-1 text-neutral-400 leading-relaxed">
+                <li>Open <strong>Firebase Console &gt; Authentication &gt; Settings &gt; Authorized domains</strong>.</li>
+                <li>Add <strong className="text-white">{domainHelpHost || window.location.host}</strong> to the list.</li>
+                <li>Under <strong>Sign-in method</strong>, ensure <strong>Google</strong> is enabled.</li>
+              </ol>
+            </div>
+
+            <div className="pt-2 flex flex-col sm:flex-row gap-2">
+              <Button
+                type="button"
+                onClick={() => {
+                  setDomainHelpOpen(false);
+                  setAuthMode("signup");
+                }}
+                className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold h-10 text-xs"
+              >
+                Sign Up with Work Email (Instant)
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setDomainHelpOpen(false);
+                  handle1ClickDemo();
+                }}
+                className="flex-1 border-white/10 text-white hover:bg-white/5 h-10 text-xs"
+              >
+                1-Click Demo Sandbox
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Footer ──────────────────────────────────────────────────────── */}
       <footer className="border-t border-white/5 py-6 px-4 text-center text-xs text-neutral-500">
