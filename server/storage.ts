@@ -53,7 +53,7 @@ import bcrypt from "bcrypt";
 import { db, isDatabaseConfigured } from "./db";
 import { isFirestoreAvailable } from "./firebase";
 import { FirestoreStorage } from "./firestoreStorage";
-import { eq, desc, sql, count, lt } from "drizzle-orm";
+import { eq, desc, sql, count, lt, or } from "drizzle-orm";
 
 // IP2Geo Cache for performance optimization
 interface CachedIPData {
@@ -174,6 +174,8 @@ export interface IStorage {
   createClientUser(user: InsertClientUser): Promise<ClientUser>;
   getClientUser(id: string): Promise<ClientUser | undefined>;
   getClientUserByUsername(username: string): Promise<ClientUser | undefined>;
+  getClientUserByEmail(email: string): Promise<ClientUser | undefined>;
+  getClientUserByUsernameOrEmail(identifier: string): Promise<ClientUser | undefined>;
   updateClientUser(id: string, updates: Partial<ClientUser>): Promise<ClientUser | undefined>;
   getClientUserByApiKey(apiKeyId: string): Promise<ClientUser | undefined>;
   getAllClientUsers(): Promise<ClientUser[]>;
@@ -301,11 +303,13 @@ export class MemStorage implements IStorage {
       id: clientUserId,
       username: "demo",
       password: bcrypt.hashSync("demo123", 10),
+      fullName: "Demo User",
       email: "demo@cleantraffic.io",
       status: "active",
       apiKeyId: demoApiKeyId,
       tosAccepted: new Date(),
       complianceStatus: "compliant",
+      newsletter: false,
       subscriptionStatus: "active",
       trialEndsAt: null,
       stripeCustomerId: null,
@@ -759,11 +763,13 @@ export class MemStorage implements IStorage {
     const newUser: ClientUser = {
       ...user,
       id,
+      fullName: user.fullName ?? null,
+      newsletter: user.newsletter ?? false,
       status: user.status ?? "active",
       email: user.email ?? null,
       apiKeyId: user.apiKeyId ?? null,
-      tosAccepted: null,
-      complianceStatus: "pending",
+      tosAccepted: user.tosAccepted ?? null,
+      complianceStatus: user.complianceStatus ?? "pending",
       subscriptionStatus: user.subscriptionStatus ?? "trialing",
       trialEndsAt: user.trialEndsAt ?? null,
       stripeCustomerId: user.stripeCustomerId ?? null,
@@ -781,7 +787,21 @@ export class MemStorage implements IStorage {
 
   async getClientUserByUsername(username: string): Promise<ClientUser | undefined> {
     return Array.from(this.clientUsers.values())
-      .find(user => user.username === username);
+      .find(user => user.username.toLowerCase() === username.toLowerCase());
+  }
+
+  async getClientUserByEmail(email: string): Promise<ClientUser | undefined> {
+    return Array.from(this.clientUsers.values())
+      .find(user => user.email && user.email.toLowerCase() === email.toLowerCase());
+  }
+
+  async getClientUserByUsernameOrEmail(identifier: string): Promise<ClientUser | undefined> {
+    const cleanId = identifier.trim().toLowerCase();
+    return Array.from(this.clientUsers.values())
+      .find(user => 
+        user.username.toLowerCase() === cleanId || 
+        (user.email && user.email.toLowerCase() === cleanId)
+      );
   }
 
   async updateClientUser(id: string, updates: Partial<ClientUser>): Promise<ClientUser | undefined> {
@@ -1587,6 +1607,39 @@ export class DatabaseStorage {
         .select()
         .from(clientUsers)
         .where(eq(clientUsers.username, username));
+      const [user] = result || [];
+      return user;
+    } catch (error) {
+      if (error instanceof TypeError && error.message.includes("reading 'map'")) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  async getClientUserByEmail(email: string): Promise<ClientUser | undefined> {
+    try {
+      const result = await db
+        .select()
+        .from(clientUsers)
+        .where(eq(clientUsers.email, email));
+      const [user] = result || [];
+      return user;
+    } catch (error) {
+      if (error instanceof TypeError && error.message.includes("reading 'map'")) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  async getClientUserByUsernameOrEmail(identifier: string): Promise<ClientUser | undefined> {
+    try {
+      const cleanId = identifier.trim();
+      const result = await db
+        .select()
+        .from(clientUsers)
+        .where(or(eq(clientUsers.username, cleanId), eq(clientUsers.email, cleanId)));
       const [user] = result || [];
       return user;
     } catch (error) {

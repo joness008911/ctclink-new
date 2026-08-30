@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { z } from "zod";
 import Stripe from "stripe";
-import { randomUUID } from "crypto";
+import { randomUUID, randomBytes } from "crypto";
 import rateLimit from "express-rate-limit";
 
 // Extend session types
@@ -583,8 +583,286 @@ Disallow: /*`);
   });
 
   // ========== CLIENT USER AUTHENTICATION ROUTES ==========
-  
-  // Step 1: Client user login with username/password
+
+  const clientRegisterSchema = z.object({
+    fullName: z.string().max(100).optional(),
+    username: z.string().min(3).max(50).trim().optional(),
+    email: z.string().email("Please enter a valid email address").max(100).trim(),
+    password: z.string().min(8, "Password must be at least 8 characters").max(256),
+    newsletter: z.boolean().optional(),
+    tosAccepted: z.boolean().refine((v) => v === true, {
+      message: "You must accept the terms of use and privacy policy.",
+    }),
+  });
+
+  const googleAuthSchema = z.object({
+    email: z.string().email().max(100).trim(),
+    name: z.string().max(100).optional(),
+    googleId: z.string().min(1).max(256),
+    idToken: z.string().optional(),
+  });
+
+  // Helper to provision trial resources (API key, default redirect URLs) for a client user
+  async function provisionTrialForClientUser(userId: string, usernameOrEmail: string) {
+    const keyVal = "ct_live_" + randomBytes(16).toString("hex");
+    const trialDays = 7;
+    const expiresAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+
+    const apiKey = await storage.createApiKey({
+      keyName: `Trial - ${usernameOrEmail}`,
+      keyValue: keyVal,
+      callLimit: 5000,
+      expirationPeriod: "weekly",
+      status: "active",
+      expiresAt,
+    });
+
+    await storage.updateClientUser(userId, {
+      apiKeyId: apiKey.id,
+      subscriptionStatus: "trialing",
+      trialEndsAt: expiresAt,
+      complianceStatus: "cleared",
+      status: "active",
+    });
+
+    await storage.setUserRedirectUrls(userId, {
+      humanUrl: "https://example.com/human",
+      botUrl: "https://google.com",
+    });
+
+    return apiKey;
+  }
+
+  // Self-serve registration endpoint
+  app.post("/api/user/register", authLimiter, async (req, res) => {
+    try {
+      const parse = clientRegisterSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Invalid registration data", errors: parse.error.flatten().fieldErrors });
+      }
+      const { fullName, email, password, newsletter, tosAccepted } = parse.data;
+      const cleanEmail = email.toLowerCase().trim();
+
+      // Check if email already exists
+      const existingEmail = await storage.getClientUserByEmail(cleanEmail);
+      if (existingEmail) {
+        return res.status(400).json({ message: "An account with this email address already exists. Please log in." });
+      }
+
+      // Generate or normalize username
+      let username = parse.data.username?.trim().toLowerCase();
+      if (!username) {
+        const prefix = cleanEmail.split("@")[0].replace(/[^a-z0-9_]/g, "_");
+        username = `${prefix}_${randomBytes(3).toString("hex")}`;
+      }
+
+      // Check if username taken
+      const existingUser = await storage.getClientUserByUsername(username);
+      if (existingUser) {
+        username = `${username}_${randomBytes(2).toString("hex")}`;
+      }
+
+      // Hash password
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const trialDays = 7;
+      const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+
+      // Create client user record
+      const newUser = await storage.createClientUser({
+        username,
+        password: hashedPassword,
+        fullName: fullName || null,
+        email: cleanEmail,
+        status: "active",
+        subscriptionStatus: "trialing",
+        trialEndsAt,
+        tosAccepted: new Date(),
+        complianceStatus: "cleared",
+        newsletter: !!newsletter,
+      });
+
+      // Provision trial API key & redirect URLs
+      const apiKey = await provisionTrialForClientUser(newUser.id, username);
+
+      // Generate authenticated client token
+      const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+      authTokens.set(clientToken, {
+        type: "client",
+        userId: newUser.id,
+        authenticated: true,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+
+      // Establish session
+      delete (req.session as any).userId;
+      req.session.clientUserId = newUser.id;
+      req.session.clientUserAuthenticated = true;
+
+      req.session.save((err) => {
+        if (err) console.error("Registration session save error:", err);
+        res.status(201).json({
+          message: "Registration successful! Your 7-day free trial has been activated.",
+          token: clientToken,
+          user: {
+            id: newUser.id,
+            username: newUser.username,
+            email: newUser.email,
+            fullName: newUser.fullName,
+            status: "active",
+            subscriptionStatus: "trialing",
+            trialDaysRemaining: 7,
+            trialEndsAt,
+          },
+          apiKey: {
+            name: apiKey.keyName,
+            status: apiKey.status,
+            callLimit: apiKey.callLimit,
+            expirationPeriod: apiKey.expirationPeriod,
+          },
+        });
+      });
+    } catch (error) {
+      console.error("Client registration error:", error);
+      res.status(500).json({ message: "Registration failed. Please try again." });
+    }
+  });
+
+  // Google OAuth sign-in / sign-up endpoint
+  app.post("/api/user/google-auth", authLimiter, async (req, res) => {
+    try {
+      const parse = googleAuthSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Invalid Google authentication payload", errors: parse.error.flatten().fieldErrors });
+      }
+      const { email, name, googleId } = parse.data;
+      const cleanEmail = email.toLowerCase().trim();
+
+      // Check if user already exists
+      let user = await storage.getClientUserByEmail(cleanEmail);
+
+      if (user) {
+        // User exists: verify active status
+        if (user.status !== "active") {
+          return res.status(403).json({ message: `Account is ${user.status}. Please contact support.` });
+        }
+        if (user.complianceStatus === "suspended") {
+          return res.status(403).json({ message: "Account suspended due to compliance policy. Please contact support." });
+        }
+
+        // If user lacks an API key for any reason, auto-provision
+        let apiKey = user.apiKeyId ? await storage.getApiKeyById(user.apiKeyId) : null;
+        if (!apiKey) {
+          apiKey = await provisionTrialForClientUser(user.id, user.username);
+        }
+
+        // Generate verified client token
+        const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+        authTokens.set(clientToken, {
+          type: "client",
+          userId: user.id,
+          authenticated: true,
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        });
+
+        delete (req.session as any).userId;
+        req.session.clientUserId = user.id;
+        req.session.clientUserAuthenticated = true;
+
+        const now = new Date();
+        const trialDaysRemaining = user.trialEndsAt
+          ? Math.max(0, Math.ceil((user.trialEndsAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
+          : null;
+
+        return req.session.save((err) => {
+          if (err) console.error("Google auth session save error:", err);
+          res.json({
+            message: "Google sign-in successful",
+            token: clientToken,
+            user: {
+              id: user.id,
+              username: user.username,
+              email: user.email,
+              fullName: user.fullName || name,
+              status: user.status,
+              subscriptionStatus: user.subscriptionStatus,
+              trialDaysRemaining,
+              trialEndsAt: user.trialEndsAt,
+            },
+            apiKey: apiKey ? {
+              name: apiKey.keyName,
+              status: apiKey.status,
+              callLimit: apiKey.callLimit,
+              expirationPeriod: apiKey.expirationPeriod,
+            } : null,
+          });
+        });
+      }
+
+      // New user from Google: auto-register with 7-day trial
+      const prefix = cleanEmail.split("@")[0].replace(/[^a-z0-9_]/g, "_");
+      let username = `${prefix}_${randomBytes(3).toString("hex")}`;
+      const randomPassword = randomBytes(24).toString("hex");
+      const hashedPassword = await bcrypt.hash(randomPassword, 10);
+      const trialDays = 7;
+      const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+
+      const newUser = await storage.createClientUser({
+        username,
+        password: hashedPassword,
+        fullName: name || null,
+        email: cleanEmail,
+        status: "active",
+        subscriptionStatus: "trialing",
+        trialEndsAt,
+        tosAccepted: new Date(),
+        complianceStatus: "cleared",
+        newsletter: true,
+      });
+
+      const apiKey = await provisionTrialForClientUser(newUser.id, username);
+
+      const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+      authTokens.set(clientToken, {
+        type: "client",
+        userId: newUser.id,
+        authenticated: true,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+
+      delete (req.session as any).userId;
+      req.session.clientUserId = newUser.id;
+      req.session.clientUserAuthenticated = true;
+
+      req.session.save((err) => {
+        if (err) console.error("Google new user session save error:", err);
+        res.status(201).json({
+          message: "Welcome to CleanTraffic! Your 7-day free trial has been activated.",
+          token: clientToken,
+          user: {
+            id: newUser.id,
+            username: newUser.username,
+            email: newUser.email,
+            fullName: newUser.fullName,
+            status: "active",
+            subscriptionStatus: "trialing",
+            trialDaysRemaining: 7,
+            trialEndsAt,
+          },
+          apiKey: {
+            name: apiKey.keyName,
+            status: apiKey.status,
+            callLimit: apiKey.callLimit,
+            expirationPeriod: apiKey.expirationPeriod,
+          },
+        });
+      });
+    } catch (error) {
+      console.error("Google auth error:", error);
+      res.status(500).json({ message: "Google authentication failed. Please try again." });
+    }
+  });
+
+  // Client user login with username or email + password
   app.post("/api/user/login", authLimiter, async (req, res) => {
     try {
       const parse = loginSchema.safeParse(req.body);
@@ -593,112 +871,42 @@ Disallow: /*`);
       }
       const { username, password } = parse.data;
 
-      // Find client user by username
-      const user = await storage.getClientUserByUsername(username);
+      // Find client user by username OR email
+      const user = await storage.getClientUserByUsernameOrEmail(username);
       if (!user) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
       // Use bcrypt to compare passwords
       const passwordMatch = await bcrypt.compare(password, user.password);
-      
       if (!passwordMatch) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
       // Check if user account is active
-      if (user.status !== 'active') {
+      if (user.status !== "active") {
         return res.status(403).json({ message: `Account is ${user.status}. Please contact support.` });
       }
-      
+
       // Check compliance status before allowing login
-      if (user.complianceStatus === 'suspended') {
+      if (user.complianceStatus === "suspended") {
         return res.status(403).json({ message: "Account suspended due to compliance violation. Please contact support." });
       }
 
-      // Generate client session token
-      const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
-      authTokens.set(clientToken, {
-        type: 'client',
-        userId: user.id,
-        authenticated: false,
-        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
-      });
-
-      // Store user ID in session for step 2 and clear admin session
-      delete (req.session as any).userId;
-      req.session.clientUserId = user.id;
-      req.session.clientUserAuthenticated = false;
-      req.session.save((err) => {
-        if (err) {
-          console.error("Client session save error:", err);
-        }
-        res.json({
-          message: "Login successful. Please verify your API key.",
-          token: clientToken,
-          userId: user.id,
-          username: user.username,
-          requiresApiKey: true,
-          requiresTos: !user.tosAccepted
-        });
-      });
-    } catch (error) {
-      console.error("Client user login error:", error);
-      res.status(500).json({ message: "Internal server error" });
-    }
-  });
-
-  // Step 2: Verify API key for client user
-  app.post("/api/user/verify-api-key", async (req, res) => {
-    try {
-      const parse = apiKeySchema.safeParse(req.body);
-      if (!parse.success) {
-        return res.status(400).json({ message: "Invalid request", errors: parse.error.flatten().fieldErrors });
-      }
-      const { apiKey } = parse.data;
-      
-      const auth = getSessionOrToken(req);
-      let clientUserId = auth?.userId || req.session?.clientUserId;
-
-      // Find the API key in the system
-      const apiKeyRecord = await storage.getApiKeyByValue(apiKey);
-      if (!apiKeyRecord) {
-        return res.status(401).json({ message: "Invalid API key" });
+      // If user doesn't have an API key yet, auto-provision one
+      let apiKey = user.apiKeyId ? await storage.getApiKeyById(user.apiKeyId) : null;
+      if (!apiKey) {
+        apiKey = await provisionTrialForClientUser(user.id, user.username);
       }
 
-      // If session clientUserId is not set (e.g. server restarted or direct verification), resolve user from API key
-      if (!clientUserId) {
-        const matchingUser = await storage.getClientUserByApiKey(apiKeyRecord.id);
-        if (matchingUser) {
-          clientUserId = matchingUser.id;
-          req.session.clientUserId = matchingUser.id;
-        } else {
-          return res.status(401).json({ message: "Please login with your username and password first" });
-        }
-      }
-      
-      // Verify this API key belongs to this user
-      const user = await storage.getClientUser(clientUserId);
-      if (!user || user.apiKeyId !== apiKeyRecord.id) {
-        return res.status(403).json({ message: "API key does not match your account" });
-      }
-
-      // Check API key status
-      if (apiKeyRecord.status === 'paused') {
-        return res.status(403).json({ message: "API key is paused" });
-      }
-      if (apiKeyRecord.status === 'expired') {
-        return res.status(403).json({ message: "API key has expired" });
-      }
-
-      // Check if ToS has been accepted — return 200 with pre-ToS token so the frontend can submit accept-tos
+      // Check if ToS is accepted
       if (!user.tosAccepted) {
         const preTosToken = "ct_cli_" + randomUUID().replace(/-/g, "");
         authTokens.set(preTosToken, {
-          type: 'client',
+          type: "client",
           userId: user.id,
           authenticated: false,
-          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         });
         delete (req.session as any).userId;
         req.session.clientUserId = user.id;
@@ -708,33 +916,145 @@ Disallow: /*`);
           requiresTos: true,
           token: preTosToken,
           userId: user.id,
-          tosText: "This service is intended for legitimate bot traffic filtering, ad fraud prevention, and website security. You may not use this service to deceive search engines, serve different content to crawlers versus human visitors on the same URL, or facilitate phishing, identity theft, or financial fraud. You are solely responsible for ensuring your use complies with applicable laws and advertising platform terms. We reserve the right to suspend accounts where redirect patterns indicate cloaking, phishing, or other deceptive practices."
         });
       }
 
-      // Check compliance status
-      if (user.complianceStatus === 'suspended') {
+      // Fully authenticated client session
+      const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+      authTokens.set(clientToken, {
+        type: "client",
+        userId: user.id,
+        authenticated: true,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+
+      delete (req.session as any).userId;
+      req.session.clientUserId = user.id;
+      req.session.clientUserAuthenticated = true;
+
+      const now = new Date();
+      const trialDaysRemaining = user.trialEndsAt
+        ? Math.max(0, Math.ceil((user.trialEndsAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
+        : null;
+
+      req.session.save((err) => {
+        if (err) {
+          console.error("Client session save error:", err);
+        }
+        res.json({
+          message: "Login successful",
+          token: clientToken,
+          userId: user.id,
+          username: user.username,
+          user: {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            fullName: user.fullName,
+            status: user.status,
+            subscriptionStatus: user.subscriptionStatus,
+            trialDaysRemaining,
+            trialEndsAt: user.trialEndsAt,
+          },
+          apiKey: apiKey ? {
+            name: apiKey.keyName,
+            status: apiKey.status,
+            expirationPeriod: apiKey.expirationPeriod,
+            callLimit: apiKey.callLimit,
+          } : null,
+          requiresApiKey: false,
+          requiresTos: false,
+        });
+      });
+    } catch (error) {
+      console.error("Client user login error:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Verify / Attach API key for client user (optional secondary step)
+  app.post("/api/user/verify-api-key", async (req, res) => {
+    try {
+      const parse = apiKeySchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Invalid request", errors: parse.error.flatten().fieldErrors });
+      }
+      const { apiKey } = parse.data;
+
+      const auth = getSessionOrToken(req);
+      let clientUserId = auth?.userId || req.session?.clientUserId;
+
+      const apiKeyRecord = await storage.getApiKeyByValue(apiKey);
+      if (!apiKeyRecord) {
+        return res.status(401).json({ message: "Invalid API key" });
+      }
+
+      if (!clientUserId) {
+        const matchingUser = await storage.getClientUserByApiKey(apiKeyRecord.id);
+        if (matchingUser) {
+          clientUserId = matchingUser.id;
+          req.session.clientUserId = matchingUser.id;
+        } else {
+          return res.status(401).json({ message: "Please login with your username and password first" });
+        }
+      }
+
+      const user = await storage.getClientUser(clientUserId);
+      if (!user) {
+        return res.status(403).json({ message: "User account not found" });
+      }
+
+      // If user doesn't have an apiKeyId or wants to attach this valid key
+      if (!user.apiKeyId) {
+        await storage.updateClientUser(user.id, { apiKeyId: apiKeyRecord.id });
+      } else if (user.apiKeyId !== apiKeyRecord.id) {
+        return res.status(403).json({ message: "API key does not match your account" });
+      }
+
+      if (apiKeyRecord.status === "paused") {
+        return res.status(403).json({ message: "API key is paused" });
+      }
+      if (apiKeyRecord.status === "expired") {
+        return res.status(403).json({ message: "API key has expired" });
+      }
+
+      if (!user.tosAccepted) {
+        const preTosToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+        authTokens.set(preTosToken, {
+          type: "client",
+          userId: user.id,
+          authenticated: false,
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        });
+        delete (req.session as any).userId;
+        req.session.clientUserId = user.id;
+        req.session.clientUserAuthenticated = false;
+        return res.status(200).json({
+          message: "Terms of service must be accepted before using this service.",
+          requiresTos: true,
+          token: preTosToken,
+          userId: user.id,
+        });
+      }
+
+      if (user.complianceStatus === "suspended") {
         return res.status(403).json({ message: "Account suspended due to compliance violation. Please contact support." });
       }
 
-      // Generate verified authenticated client token
       const verifiedToken = "ct_cli_" + randomUUID().replace(/-/g, "");
       authTokens.set(verifiedToken, {
-        type: 'client',
+        type: "client",
         userId: user.id,
         authenticated: true,
-        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       });
 
-      // Success! Mark user as fully authenticated
       delete (req.session as any).userId;
       req.session.clientUserAuthenticated = true;
       req.session.clientUserId = user.id;
 
       req.session.save((err) => {
-        if (err) {
-          console.error("Session save error:", err);
-        }
+        if (err) console.error("Session save error:", err);
         res.json({
           message: "API key verified successfully",
           token: verifiedToken,
@@ -742,13 +1062,13 @@ Disallow: /*`);
             id: user.id,
             username: user.username,
             email: user.email,
-            status: user.status
+            status: user.status,
           },
           apiKey: {
             name: apiKeyRecord.keyName,
             status: apiKeyRecord.status,
-            expirationPeriod: apiKeyRecord.expirationPeriod
-          }
+            expirationPeriod: apiKeyRecord.expirationPeriod,
+          },
         });
       });
     } catch (error) {

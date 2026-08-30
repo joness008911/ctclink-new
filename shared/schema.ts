@@ -113,11 +113,13 @@ export const clientUsers = pgTable("client_users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
+  fullName: text("full_name"),
   email: text("email"),
   apiKeyId: varchar("api_key_id").references(() => apiKeys.id, { onDelete: 'set null' }),
   status: text("status").default("active").notNull(), // active, suspended, expired
   tosAccepted: timestamp("tos_accepted"), // Terms of service acceptance timestamp
   complianceStatus: text("compliance_status").default("pending").notNull(), // pending, cleared, flagged, suspended
+  newsletter: boolean("newsletter").default(false),
   // Billing fields
   subscriptionStatus: text("subscription_status").default("trialing").notNull(), // trialing, active, past_due, cancelled
   trialEndsAt: timestamp("trial_ends_at"), // null = no trial configured yet
@@ -219,8 +221,9 @@ export const insertClientUserSchema = createInsertSchema(clientUsers).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
-  tosAccepted: true,
-  complianceStatus: true,
+}).extend({
+  tosAccepted: z.date().nullable().optional(),
+  complianceStatus: z.string().optional(),
 });
 
 export const insertUserRedirectUrlsSchema = createInsertSchema(userRedirectUrls).omit({

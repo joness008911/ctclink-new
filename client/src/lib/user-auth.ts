@@ -3,8 +3,12 @@ import { apiRequest } from "./queryClient";
 export interface ClientUser {
   id: string;
   username: string;
+  fullName?: string | null;
   email: string | null;
   status: string;
+  subscriptionStatus?: string;
+  trialEndsAt?: string | Date | null;
+  trialDaysRemaining?: number | null;
   createdAt: Date;
   apiKey?: {
     name: string;
@@ -15,8 +19,24 @@ export interface ClientUser {
 }
 
 export interface UserLoginCredentials {
-  username: string;
+  username: string; // Accepts username or email
   password: string;
+}
+
+export interface UserRegisterPayload {
+  fullName?: string;
+  username?: string;
+  email: string;
+  password: string;
+  newsletter?: boolean;
+  tosAccepted: boolean;
+}
+
+export interface GoogleAuthPayload {
+  email: string;
+  name?: string;
+  googleId: string;
+  idToken?: string;
 }
 
 export interface VerifyApiKeyPayload {
@@ -24,6 +44,24 @@ export interface VerifyApiKeyPayload {
 }
 
 export const userAuthApi = {
+  register: async (payload: UserRegisterPayload): Promise<any> => {
+    const response = await apiRequest("POST", "/api/user/register", payload);
+    const data = await response.json();
+    if (data.token) {
+      localStorage.setItem('client_auth_token', data.token);
+    }
+    return data;
+  },
+
+  googleAuth: async (payload: GoogleAuthPayload): Promise<any> => {
+    const response = await apiRequest("POST", "/api/user/google-auth", payload);
+    const data = await response.json();
+    if (data.token) {
+      localStorage.setItem('client_auth_token', data.token);
+    }
+    return data;
+  },
+
   login: async (credentials: UserLoginCredentials): Promise<any> => {
     const response = await apiRequest("POST", "/api/user/login", credentials);
     const data = await response.json();

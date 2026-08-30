@@ -898,11 +898,13 @@ export class FirestoreStorage implements IStorage {
       id,
       username: user.username,
       password: user.password,
+      fullName: user.fullName || null,
       email: user.email || null,
       apiKeyId: user.apiKeyId || null,
       status: user.status || "active",
-      tosAccepted: null,
-      complianceStatus: "pending",
+      tosAccepted: user.tosAccepted ? new Date(user.tosAccepted) : null,
+      complianceStatus: user.complianceStatus || "cleared",
+      newsletter: user.newsletter ?? false,
       subscriptionStatus: user.subscriptionStatus || "trialing",
       trialEndsAt: user.trialEndsAt ? new Date(user.trialEndsAt) : null,
       stripeCustomerId: user.stripeCustomerId || null,
@@ -915,6 +917,7 @@ export class FirestoreStorage implements IStorage {
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       trialEndsAt: record.trialEndsAt ? record.trialEndsAt.toISOString() : null,
+      tosAccepted: record.tosAccepted ? record.tosAccepted.toISOString() : null,
     });
     return record;
   }
@@ -949,6 +952,35 @@ export class FirestoreStorage implements IStorage {
         trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
         tosAccepted: data.tosAccepted ? new Date(data.tosAccepted) : null,
       } as ClientUser;
+    } catch (e) {
+      return undefined;
+    }
+  }
+
+  async getClientUserByEmail(email: string): Promise<ClientUser | undefined> {
+    try {
+      const q = query(collection(this.db, "client_users"), where("email", "==", email), limit(1));
+      const snaps = await getDocs(q);
+      if (snaps.empty) return undefined;
+      const data = snaps.docs[0].data();
+      return {
+        ...data,
+        createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
+        updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
+        trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
+        tosAccepted: data.tosAccepted ? new Date(data.tosAccepted) : null,
+      } as ClientUser;
+    } catch (e) {
+      return undefined;
+    }
+  }
+
+  async getClientUserByUsernameOrEmail(identifier: string): Promise<ClientUser | undefined> {
+    try {
+      const cleanId = identifier.trim();
+      const byUser = await this.getClientUserByUsername(cleanId);
+      if (byUser) return byUser;
+      return await this.getClientUserByEmail(cleanId);
     } catch (e) {
       return undefined;
     }

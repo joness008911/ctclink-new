@@ -68,6 +68,8 @@ function MainRouter() {
       <Route path="/" component={Landing} />
 
       {/* Client User Portal Endpoints */}
+      <Route path="/signup" component={UserPortal} />
+      <Route path="/signin" component={UserPortal} />
       <Route path="/api-verify" component={ApiVerify} />
       <Route path="/user" component={UserPortal} />
       <Route path="/user/:rest*" component={UserPortal} />
