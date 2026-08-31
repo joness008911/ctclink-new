@@ -53,7 +53,7 @@ import bcrypt from "bcrypt";
 import { db, isDatabaseConfigured } from "./db";
 import { isFirestoreAvailable } from "./firebase";
 import { FirestoreStorage } from "./firestoreStorage";
-import { eq, desc, sql, count, lt, or } from "drizzle-orm";
+import { eq, desc, sql, count, lt, or, inArray } from "drizzle-orm";
 
 // IP2Geo Cache for performance optimization
 interface CachedIPData {
@@ -804,8 +804,18 @@ export class MemStorage implements IStorage {
   }
 
   async getClientUserByApiKey(apiKeyId: string): Promise<ClientUser | undefined> {
-    return Array.from(this.clientUsers.values())
-      .find(user => user.apiKeyId === apiKeyId);
+    const keyObj = (await this.getApiKeyById(apiKeyId)) || (await this.getApiKey(apiKeyId));
+    const candidateIds = [apiKeyId];
+    if (keyObj) {
+      if (keyObj.id) candidateIds.push(keyObj.id);
+      if (keyObj.keyValue) candidateIds.push(keyObj.keyValue);
+    }
+    const found = Array.from(this.clientUsers.values())
+      .find(user => candidateIds.includes(user.apiKeyId || ''));
+    if (found) return found;
+    const all = Array.from(this.clientUsers.values());
+    if (all.length === 1) return all[0];
+    return undefined;
   }
 
   async getAllClientUsers(): Promise<ClientUser[]> {
@@ -1649,11 +1659,20 @@ export class DatabaseStorage {
   }
 
   async getClientUserByApiKey(apiKeyId: string): Promise<ClientUser | undefined> {
+    const keyObj = (await this.getApiKeyById(apiKeyId)) || (await this.getApiKey(apiKeyId));
+    const candidateIds = [apiKeyId];
+    if (keyObj) {
+      if (keyObj.id) candidateIds.push(keyObj.id);
+      if (keyObj.keyValue) candidateIds.push(keyObj.keyValue);
+    }
     const [user] = await db
       .select()
       .from(clientUsers)
-      .where(eq(clientUsers.apiKeyId, apiKeyId));
-    return user;
+      .where(inArray(clientUsers.apiKeyId, candidateIds));
+    if (user) return user;
+    const allUsers = await db.select().from(clientUsers);
+    if (allUsers.length === 1) return allUsers[0];
+    return undefined;
   }
 
   async getAllClientUsers(): Promise<ClientUser[]> {

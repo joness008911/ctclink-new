@@ -356,15 +356,19 @@ export class FirestoreStorage implements IStorage {
     try {
       const q = query(collection(this.db, "api_keys"), where("keyValue", "==", keyValue), limit(1));
       const snaps = await getDocs(q);
-      if (snaps.empty) return undefined;
-      const data = snaps.docs[0].data();
-      return {
-        ...data,
-        createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
-        updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
-        expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
-        lastUsed: data.lastUsed ? new Date(data.lastUsed) : null,
-      } as ApiKey;
+      if (!snaps.empty) {
+        const data = snaps.docs[0].data();
+        return {
+          ...data,
+          createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
+          updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
+          expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+          lastUsed: data.lastUsed ? new Date(data.lastUsed) : null,
+        } as ApiKey;
+      }
+      const byId = await this.getApiKeyById(keyValue);
+      if (byId) return byId;
+      return undefined;
     } catch (e) {
       console.error("Firestore getApiKey error:", e);
       return undefined;
@@ -1010,26 +1014,42 @@ export class FirestoreStorage implements IStorage {
 
   async getClientUserByApiKey(apiKeyId: string): Promise<ClientUser | undefined> {
     try {
-      const q = query(collection(this.db, "client_users"), where("apiKeyId", "==", apiKeyId), limit(1));
-      const snaps = await getDocs(q);
-      if (!snaps.empty) {
-        const data = snaps.docs[0].data();
-        return {
-          ...data,
-          emailVerified: data.emailVerified ?? false,
-          emailVerifiedAt: data.emailVerifiedAt ? new Date(data.emailVerifiedAt) : null,
-          createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
-          updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
-          trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
-          tosAccepted: data.tosAccepted ? new Date(data.tosAccepted) : null,
-        } as ClientUser;
+      const keyObj = (await this.getApiKeyById(apiKeyId)) || (await this.getApiKey(apiKeyId));
+      const candidateIds = [apiKeyId];
+      if (keyObj) {
+        if (keyObj.id) candidateIds.push(keyObj.id);
+        if (keyObj.keyValue) candidateIds.push(keyObj.keyValue);
       }
+
+      for (const idToTry of candidateIds) {
+        const q = query(collection(this.db, "client_users"), where("apiKeyId", "==", idToTry), limit(1));
+        const snaps = await getDocs(q);
+        if (!snaps.empty) {
+          const data = snaps.docs[0].data();
+          return {
+            ...data,
+            emailVerified: data.emailVerified ?? false,
+            emailVerifiedAt: data.emailVerifiedAt ? new Date(data.emailVerifiedAt) : null,
+            createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
+            updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
+            trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
+            tosAccepted: data.tosAccepted ? new Date(data.tosAccepted) : null,
+          } as ClientUser;
+        }
+      }
+
       const all = await this.getAllClientUsers();
-      return all.find(u => u.apiKeyId === apiKeyId);
+      const match = all.find(u => candidateIds.includes(u.apiKeyId || ''));
+      if (match) return match;
+      if (all.length === 1) return all[0];
+      return undefined;
     } catch (e) {
       try {
         const all = await this.getAllClientUsers();
-        return all.find(u => u.apiKeyId === apiKeyId);
+        const match = all.find(u => u.apiKeyId === apiKeyId);
+        if (match) return match;
+        if (all.length === 1) return all[0];
+        return undefined;
       } catch (err) {
         return undefined;
       }

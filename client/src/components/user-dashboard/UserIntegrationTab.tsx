@@ -58,6 +58,8 @@ session_start();
 
 $apiKey = '${apiKeyValue || 'ctc_your_api_key_here'}';
 $apiEndpoint = '${effectiveEndpoint}';
+$configuredBotUrl = '${botUrl || ''}';
+$configuredHumanUrl = '${humanUrl || ''}';
 
 // Extract Visitor IP with Cloudflare / Proxy awareness
 $visitorIp = $_SERVER['HTTP_CF_CONNECTING_IP'] 
@@ -76,19 +78,24 @@ if (!empty($_SERVER['QUERY_STRING'])) {
     $email = $queryParams['e'] ?? $queryParams['email'] ?? null;
 }
 
-// Session Fast Cache
+// Session Fast Cache (short 60-second TTL to ensure instantaneous URL update sync)
 $cacheKey = 'ctc_decision_' . md5($visitorIp . '_' . $apiKey);
-if (isset($_SESSION[$cacheKey]) && (time() - $_SESSION[$cacheKey]['time']) < 1800) {
-    $target = $_SESSION[$cacheKey]['target'];
-    header('Location: ' . $target);
+$bypassCache = isset($_GET['nocache']) || isset($_GET['preview_test']);
+if (!$bypassCache && isset($_SESSION[$cacheKey]) && (time() - $_SESSION[$cacheKey]['time']) < 60) {
+    $destination = $_SESSION[$cacheKey]['target'];
+    if (!empty($_SERVER['QUERY_STRING'])) {
+        $sep = (strpos($destination, '?') !== false) ? '&' : '?';
+        $destination .= $sep . $_SERVER['QUERY_STRING'];
+    }
+    header('Location: ' . $destination);
     exit;
 }
 
 // Evaluate with CleanTraffic Cloak Engine
-$ch = curl_init($apiEndpoint . '/api/classify');
+$ch = curl_init(rtrim($apiEndpoint, '/') . '/api/classify');
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_POST, true);
-curl_setopt($ch, CURLOPT_TIMEOUT, 3);
+curl_setopt($ch, CURLOPT_TIMEOUT, 4);
 curl_setopt($ch, CURLOPT_HTTPHEADER, [
     'Content-Type: application/json',
     'Authorization: Bearer ' . $apiKey,
@@ -106,19 +113,55 @@ $response = curl_exec($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
-$destination = '${botUrl || 'https://example.com/safe-article'}';
+$destination = null;
 
 if ($httpCode === 200 && $response) {
     $data = json_decode($response, true);
-    if (!empty($data['redirectUrl'])) {
-        $destination = $data['redirectUrl'];
-    } elseif (isset($data['isHuman']) && $data['isHuman'] === true) {
-        $destination = '${humanUrl || 'https://example.com/money-page'}';
+    if (is_array($data)) {
+        // Priority 1: Exact dynamic redirect URL resolved by server for this API key
+        if (!empty($data['redirectUrl'])) {
+            $destination = $data['redirectUrl'];
+        } elseif (!empty($data['redirect_url'])) {
+            $destination = $data['redirect_url'];
+        } elseif (!empty($data['destination'])) {
+            $destination = $data['destination'];
+        } elseif (!empty($data['url'])) {
+            $destination = $data['url'];
+        }
+        
+        // Priority 2: Fallback to role-specific URL returned by server
+        if (empty($destination)) {
+            $isHuman = (!empty($data['isHuman']) && $data['isHuman'] === true) 
+                || (!empty($data['is_human']) && $data['is_human'] === true)
+                || (isset($data['visitorType']) && $data['visitorType'] === 'Human')
+                || (isset($data['visitor_type']) && $data['visitor_type'] === 'Human');
+                
+            if ($isHuman) {
+                $destination = $data['humanUrl'] ?? $data['human_url'] ?? $configuredHumanUrl;
+            } else {
+                $destination = $data['botUrl'] ?? $data['bot_url'] ?? $configuredBotUrl;
+            }
+        }
     }
 }
 
-// Store session cache & forward visitor
+// Fail-secure fallback: if destination could not be determined, defer to configured Bot URL
+if (empty($destination)) {
+    $destination = !empty($configuredBotUrl) ? $configuredBotUrl : 'about:blank';
+}
+
+// Store session cache
 $_SESSION[$cacheKey] = ['target' => $destination, 'time' => time()];
+
+// Forward original query parameters to destination
+if (!empty($_SERVER['QUERY_STRING']) && $destination !== 'about:blank') {
+    $sep = (strpos($destination, '?') !== false) ? '&' : '?';
+    $destination .= $sep . $_SERVER['QUERY_STRING'];
+}
+
+// Execute redirect
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
 header('Location: ' . $destination);
 exit;
 `;

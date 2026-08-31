@@ -3569,6 +3569,8 @@ Disallow: /*`);
           const apiKeyDetails = await storage.getApiKeyById(apiKeyId);
           if (apiKeyDetails && (apiKeyDetails.status === 'paused' || apiKeyDetails.status === 'expired')) {
             visitorType = 'Bot';
+            detectionMethod = `License ${apiKeyDetails.status.toUpperCase()}`;
+            blockReason = `API key license status is ${apiKeyDetails.status}`;
             if (classification) classification.visitorType = 'Bot';
             console.log(`⚠️ License ${apiKeyDetails.status.toUpperCase()}: Visitor classified as Bot`);
           }
@@ -3577,6 +3579,20 @@ Disallow: /*`);
 
       const isHumanVisitor = (visitorType === 'Human' || classification.visitorType === 'Human') && !limitReached && !authError;
       const effectiveRedirectUrl = isHumanVisitor ? configuredHumanUrl : configuredBotUrl;
+
+      // Comprehensive tracing and audit log for traffic routing decisions
+      console.log(`[TRAFFIC_ROUTING_TRACE]
+================================================================================
+  Visitor IP:              ${clientIp}
+  API Key ID:              ${apiKeyId || '[None / Global]'}
+  Account Owner:           ${ownerUser ? `${ownerUser.username} (${ownerUser.id})` : '[Unassigned / Not Found]'}
+  Detected Visitor Type:   ${isHumanVisitor ? 'Human' : 'Bot'}
+  Triggering Condition:    ${blockReason ? `Blocked by: ${blockReason}` : (detectionMethod || classificationData.detection_method || 'Clean Traffic Passed')}
+  Detection Method:        ${detectionMethod || classificationData.detection_method || 'IP Analysis'}
+  Configured Bot URL:      ${configuredBotUrl || '[None / Empty]'}
+  Configured Human URL:    ${configuredHumanUrl || '[None / Empty]'}
+  Final Redirect URL:      ${effectiveRedirectUrl || '[None / Empty]'}
+================================================================================`);
 
       const response: any = {
         ip: clientIp,
@@ -3587,10 +3603,21 @@ Disallow: /*`);
         browser: classification.browser || browser || 'Unknown',
         device_type: classification.deviceType || deviceType || 'Unknown', 
         visitorType: isHumanVisitor ? 'Human' : 'Bot',
+        visitor_type: isHumanVisitor ? 'Human' : 'Bot',
         isHuman: isHumanVisitor,
+        is_human: isHumanVisitor,
+        action: isHumanVisitor ? 'Allowed' : 'Blocked',
         detection_method: classificationData.detection_method || classification.detectionMethod || detectionMethod || 'IP Analysis',
+        block_reason: blockReason || null,
         isp: classification.isp || classificationData.isp || 'Unknown',
         redirectUrl: effectiveRedirectUrl || null,
+        redirect_url: effectiveRedirectUrl || null,
+        destination: effectiveRedirectUrl || null,
+        url: effectiveRedirectUrl || null,
+        humanUrl: configuredHumanUrl || null,
+        human_url: configuredHumanUrl || null,
+        botUrl: configuredBotUrl || null,
+        bot_url: configuredBotUrl || null,
         redirectVersion: redirectVersion,
         configured: Boolean(effectiveRedirectUrl),
         status: "success"
