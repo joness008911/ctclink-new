@@ -228,8 +228,6 @@ export default function UserDashboard() {
               apiKeyValue={apiKeyValue?.keyValue || null}
               customEndpoint={customEndpoint}
               setCustomEndpoint={setCustomEndpoint}
-              humanUrl={redirectUrls?.humanUrl}
-              botUrl={redirectUrls?.botUrl}
             />
           )}
 

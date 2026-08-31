@@ -11,7 +11,8 @@ import {
   Terminal, 
   Cpu,
   Layers,
-  Sparkles
+  Sparkles,
+  Key
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,16 +23,12 @@ interface UserIntegrationTabProps {
   apiKeyValue: string | null;
   customEndpoint: string;
   setCustomEndpoint: (val: string) => void;
-  humanUrl?: string;
-  botUrl?: string;
 }
 
 export function UserIntegrationTab({
   apiKeyValue,
   customEndpoint,
   setCustomEndpoint,
-  humanUrl,
-  botUrl,
 }: UserIntegrationTabProps) {
   const { toast } = useToast();
   const [copiedCode, setCopiedCode] = useState(false);
@@ -53,13 +50,16 @@ export function UserIntegrationTab({
 /**
  * CleanTraffic Cloak - High-Performance Traffic Defense Integration Script
  * Auto-generated for API Key: ${apiKeyValue || 'ctc_your_api_key_here'}
+ * 
+ * IMPORTANT:
+ * - All Human and Bot destination URLs are dynamically managed from your Dashboard.
+ * - No URLs are hardcoded in this script.
+ * - Changing URLs in your dashboard takes effect immediately across all domains.
  */
 session_start();
 
 $apiKey = '${apiKeyValue || 'ctc_your_api_key_here'}';
 $apiEndpoint = '${effectiveEndpoint}';
-$configuredBotUrl = '${botUrl || ''}';
-$configuredHumanUrl = '${humanUrl || ''}';
 
 // Extract Visitor IP with Cloudflare / Proxy awareness
 $visitorIp = $_SERVER['HTTP_CF_CONNECTING_IP'] 
@@ -78,7 +78,7 @@ if (!empty($_SERVER['QUERY_STRING'])) {
     $email = $queryParams['e'] ?? $queryParams['email'] ?? null;
 }
 
-// Session Fast Cache (short 60-second TTL to ensure instantaneous URL update sync)
+// Session Fast Cache (60-second TTL to ensure instantaneous dashboard sync)
 $cacheKey = 'ctc_decision_' . md5($visitorIp . '_' . $apiKey);
 $bypassCache = isset($_GET['nocache']) || isset($_GET['preview_test']);
 if (!$bypassCache && isset($_SESSION[$cacheKey]) && (time() - $_SESSION[$cacheKey]['time']) < 60) {
@@ -91,11 +91,11 @@ if (!$bypassCache && isset($_SESSION[$cacheKey]) && (time() - $_SESSION[$cacheKe
     exit;
 }
 
-// Evaluate with CleanTraffic Cloak Engine
+// Communicate with central classification endpoint
 $ch = curl_init(rtrim($apiEndpoint, '/') . '/api/classify');
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_POST, true);
-curl_setopt($ch, CURLOPT_TIMEOUT, 4);
+curl_setopt($ch, CURLOPT_TIMEOUT, 5);
 curl_setopt($ch, CURLOPT_HTTPHEADER, [
     'Content-Type: application/json',
     'Authorization: Bearer ' . $apiKey,
@@ -118,48 +118,40 @@ $destination = null;
 if ($httpCode === 200 && $response) {
     $data = json_decode($response, true);
     if (is_array($data)) {
-        // Priority 1: Exact dynamic redirect URL resolved by server for this API key
         if (!empty($data['redirectUrl'])) {
             $destination = $data['redirectUrl'];
         } elseif (!empty($data['redirect_url'])) {
             $destination = $data['redirect_url'];
-        } elseif (!empty($data['destination'])) {
-            $destination = $data['destination'];
-        } elseif (!empty($data['url'])) {
-            $destination = $data['url'];
-        }
-        
-        // Priority 2: Fallback to role-specific URL returned by server
-        if (empty($destination)) {
-            $isHuman = (!empty($data['isHuman']) && $data['isHuman'] === true) 
-                || (!empty($data['is_human']) && $data['is_human'] === true)
-                || (isset($data['visitorType']) && $data['visitorType'] === 'Human')
-                || (isset($data['visitor_type']) && $data['visitor_type'] === 'Human');
-                
-            if ($isHuman) {
-                $destination = $data['humanUrl'] ?? $data['human_url'] ?? $configuredHumanUrl;
-            } else {
-                $destination = $data['botUrl'] ?? $data['bot_url'] ?? $configuredBotUrl;
-            }
         }
     }
+} elseif ($httpCode === 401 || $httpCode === 403) {
+    // API key is invalid, revoked, expired, or disabled
+    $data = json_decode($response, true);
+    $errorMsg = is_array($data) ? ($data['message'] ?? 'API key authorization failed.') : 'API key authorization failed.';
+    http_response_code($httpCode);
+    header('Content-Type: text/html; charset=utf-8');
+    echo "<!DOCTYPE html><html><head><title>Access Denied</title><style>body{font-family:sans-serif;padding:40px;background:#0f172a;color:#f8fafc;}h2{color:#ef4444;}p{color:#94a3b8;}</style></head><body><h2>Security Cloak Error</h2><p>" . htmlspecialchars($errorMsg) . "</p></body></html>";
+    exit;
 }
 
-// Fail-secure fallback: if destination could not be determined, defer to configured Bot URL
+// If no destination URL is configured on the dashboard or system default
 if (empty($destination)) {
-    $destination = !empty($configuredBotUrl) ? $configuredBotUrl : 'about:blank';
+    http_response_code(404);
+    header('Content-Type: text/html; charset=utf-8');
+    echo "<!DOCTYPE html><html><head><title>Routing Unconfigured</title><style>body{font-family:sans-serif;padding:40px;background:#0f172a;color:#f8fafc;}h2{color:#f59e0b;}p{color:#94a3b8;}</style></head><body><h2>Routing Notice</h2><p>No destination redirect URL has been configured in the dashboard for this account.</p></body></html>";
+    exit;
 }
 
-// Store session cache
+// Store decision in session cache
 $_SESSION[$cacheKey] = ['target' => $destination, 'time' => time()];
 
-// Forward original query parameters to destination
-if (!empty($_SERVER['QUERY_STRING']) && $destination !== 'about:blank') {
+// Append query string parameters seamlessly
+if (!empty($_SERVER['QUERY_STRING'])) {
     $sep = (strpos($destination, '?') !== false) ? '&' : '?';
     $destination .= $sep . $_SERVER['QUERY_STRING'];
 }
 
-// Execute redirect
+// Execute redirection
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
 header('Location: ' . $destination);
@@ -268,6 +260,39 @@ exit;
               className="bg-[#0e1422] border-[#25344f] text-white text-xs font-mono h-8"
             />
           </div>
+        </div>
+      </div>
+
+      {/* Architecture Highlights */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-[#101726] border border-[#1c2638] rounded-xl p-4 space-y-1.5">
+          <div className="flex items-center gap-2 text-blue-400 font-semibold text-xs">
+            <Key className="h-4 w-4" />
+            1. Dedicated API Key
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            Your unique API key ties all requests directly to your account. No other user can access or modify your routing settings.
+          </p>
+        </div>
+
+        <div className="bg-[#101726] border border-[#1c2638] rounded-xl p-4 space-y-1.5">
+          <div className="flex items-center gap-2 text-emerald-400 font-semibold text-xs">
+            <Shield className="h-4 w-4" />
+            2. Dashboard Controlled URLs
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            No destination URLs are stored inside the script. Update Human or Bot URLs in your dashboard, and they update live instantly.
+          </p>
+        </div>
+
+        <div className="bg-[#101726] border border-[#1c2638] rounded-xl p-4 space-y-1.5">
+          <div className="flex items-center gap-2 text-purple-400 font-semibold text-xs">
+            <Layers className="h-4 w-4" />
+            3. Multi-Domain Deployment
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            Deploy this exact script across unlimited campaign domains. They all sync dynamically with your single dashboard configuration.
+          </p>
         </div>
       </div>
 

@@ -2870,111 +2870,152 @@ Disallow: /*`);
     return '';
   }
 
-  // Classification endpoint (GET with API key support)
-  app.get("/api/classify", classifyLimiter, async (req, res) => {
-    const apiKey = extractApiKeyFromRequest(req);
-    
-    if (!apiKey) {
-      return res.status(401).json({ 
-        visitorType: "Bot",
-        isHuman: false,
-        redirectUrl: null,
-        redirectVersion: 0,
-        status: "unauthorized",
-        message: "API key is required"
-      });
-    }
-    
-    let limitReached = false;
-    let apiKeyId: string | null = null;
-    
-    // Validate API key
-    const validKey = await storage.getApiKey(apiKey);
-    if (!validKey || !validKey.enabled) {
-      return res.status(401).json({ 
-        visitorType: "Bot",
-        isHuman: false,
-        redirectUrl: null,
-        redirectVersion: 0,
-        status: "unauthorized",
-        message: "Invalid or disabled API key"
-      });
-    }
-    
-    // Store API key ID for classification tracking
-    apiKeyId = validKey.id;
-    
-    // Check subscription status for the API key owner — expired trials get bot fallback
-    const keyOwner = await storage.getClientUserByApiKey(apiKeyId);
-    if (keyOwner) {
-      const now = new Date();
-      const subActive =
-        keyOwner.subscriptionStatus === 'active' ||
-        (keyOwner.subscriptionStatus === 'trialing' && (!keyOwner.trialEndsAt || keyOwner.trialEndsAt > now));
-      if (!subActive) limitReached = true;
+  // Centralized API key validator for /api/classify traffic routing
+  async function validateApiKeyForClassification(apiKey: string | null): Promise<{
+    valid: boolean;
+    statusCode: number;
+    message: string;
+    apiKeyId: string | null;
+    limitReached: boolean;
+  }> {
+    if (!apiKey || !apiKey.trim()) {
+      return {
+        valid: false,
+        statusCode: 401,
+        message: "API key is required. Please provide a valid API key.",
+        apiKeyId: null,
+        limitReached: false,
+      };
     }
 
-    // Check and increment usage count
-    const usageAllowed = await storage.incrementApiKeyUsage(apiKey);
+    const cleanKey = apiKey.trim();
+    const validKey = (await storage.getApiKey(cleanKey)) || (await storage.getApiKeyById(cleanKey));
+
+    if (!validKey) {
+      return {
+        valid: false,
+        statusCode: 401,
+        message: "Invalid API key. The provided key was not found or has been deleted.",
+        apiKeyId: null,
+        limitReached: false,
+      };
+    }
+
+    if (validKey.enabled === false || validKey.status === "disabled") {
+      return {
+        valid: false,
+        statusCode: 403,
+        message: "API key has been disabled. Please contact support.",
+        apiKeyId: validKey.id,
+        limitReached: true,
+      };
+    }
+
+    if (validKey.status === "revoked") {
+      return {
+        valid: false,
+        statusCode: 403,
+        message: "API key has been revoked.",
+        apiKeyId: validKey.id,
+        limitReached: true,
+      };
+    }
+
+    if (validKey.status === "paused") {
+      return {
+        valid: false,
+        statusCode: 403,
+        message: "API key is currently paused in the dashboard.",
+        apiKeyId: validKey.id,
+        limitReached: true,
+      };
+    }
+
+    const now = Date.now();
+    if (validKey.status === "expired" || (validKey.expiresAt && new Date(validKey.expiresAt).getTime() < now)) {
+      return {
+        valid: false,
+        statusCode: 403,
+        message: "API key has expired. Please renew your subscription in the dashboard.",
+        apiKeyId: validKey.id,
+        limitReached: true,
+      };
+    }
+
+    // Check subscription status for the API key owner account
+    let limitReached = false;
+    const keyOwner = await storage.getClientUserByApiKey(validKey.id);
+    if (keyOwner) {
+      const nowDate = new Date();
+      const subActive =
+        keyOwner.subscriptionStatus === "active" ||
+        (keyOwner.subscriptionStatus === "trialing" && (!keyOwner.trialEndsAt || keyOwner.trialEndsAt > nowDate));
+      if (!subActive) {
+        limitReached = true;
+      }
+    }
+
+    // Increment usage quota
+    const usageAllowed = await storage.incrementApiKeyUsage(cleanKey);
     if (!usageAllowed) {
       limitReached = true;
     }
-    
-    // Continue with classification logic, passing API key ID
-    return handleClassification(req, res, limitReached, apiKeyId);
+
+    return {
+      valid: true,
+      statusCode: 200,
+      message: "Authorized",
+      apiKeyId: validKey.id,
+      limitReached,
+    };
+  }
+
+  // Classification endpoint (GET with API key support)
+  app.get("/api/classify", classifyLimiter, async (req, res) => {
+    const apiKey = extractApiKeyFromRequest(req);
+    const authResult = await validateApiKeyForClassification(apiKey);
+
+    if (!authResult.valid) {
+      return res.status(authResult.statusCode).json({
+        visitorType: "Bot",
+        visitor_type: "Bot",
+        isHuman: false,
+        is_human: false,
+        redirectUrl: null,
+        redirect_url: null,
+        destination: null,
+        url: null,
+        status: authResult.statusCode === 401 ? "unauthorized" : "forbidden",
+        message: authResult.message,
+        error: authResult.message,
+      });
+    }
+
+    return handleClassification(req, res, authResult.limitReached, authResult.apiKeyId);
   });
 
   // Public classification endpoint (POST) - with API key support for PHP scripts
   app.post("/api/classify", classifyLimiter, async (req, res) => {
     const apiKey = extractApiKeyFromRequest(req);
-    
-    if (!apiKey) {
-      return res.status(401).json({ 
-        visitorType: "Bot",
-        isHuman: false,
-        redirectUrl: null,
-        redirectVersion: 0,
-        status: "unauthorized",
-        message: "API key is required"
-      });
-    }
-    
-    let limitReached = false;
-    let apiKeyId: string | null = null;
-    
-    // Validate API key
-    const validKey = await storage.getApiKey(apiKey);
-    if (!validKey || !validKey.enabled) {
-      return res.status(401).json({ 
-        visitorType: "Bot",
-        isHuman: false,
-        redirectUrl: null,
-        redirectVersion: 0,
-        status: "unauthorized",
-        message: "Invalid or disabled API key"
-      });
-    }
-    
-    // Store API key ID for classification tracking and redirect URL lookup
-    apiKeyId = validKey.id;
+    const authResult = await validateApiKeyForClassification(apiKey);
 
-    // Check subscription status for the API key owner — expired trials get bot fallback
-    const postKeyOwner = await storage.getClientUserByApiKey(apiKeyId);
-    if (postKeyOwner) {
-      const now = new Date();
-      const subActive =
-        postKeyOwner.subscriptionStatus === 'active' ||
-        (postKeyOwner.subscriptionStatus === 'trialing' && (!postKeyOwner.trialEndsAt || postKeyOwner.trialEndsAt > now));
-      if (!subActive) limitReached = true;
+    if (!authResult.valid) {
+      return res.status(authResult.statusCode).json({
+        visitorType: "Bot",
+        visitor_type: "Bot",
+        isHuman: false,
+        is_human: false,
+        redirectUrl: null,
+        redirect_url: null,
+        destination: null,
+        url: null,
+        status: authResult.statusCode === 401 ? "unauthorized" : "forbidden",
+        message: authResult.message,
+        error: authResult.message,
+      });
     }
-    
-    // Check and increment usage count
-    const usageAllowed = await storage.incrementApiKeyUsage(apiKey);
-    if (!usageAllowed) {
-      limitReached = true;
-    }
-    
-    return handleClassification(req, res, limitReached, apiKeyId);
+
+    return handleClassification(req, res, authResult.limitReached, authResult.apiKeyId);
   });
 
   // Client error reporting endpoint (from PHP script)
@@ -3577,8 +3618,31 @@ Disallow: /*`);
         } catch (keyErr) {}
       }
 
+      // Load system default URLs as fallback ONLY if the account has not configured custom URLs
+      let systemDefaultHumanUrl = '';
+      let systemDefaultBotUrl = '';
+      try {
+        const redirectUrlFile = path.join(process.cwd(), 'cleantraffic-php-package', 'redirect_url.txt');
+        const botUrlFile = path.join(process.cwd(), 'cleantraffic-php-package', 'bot_url.txt');
+        if (fs.existsSync(redirectUrlFile)) {
+          systemDefaultHumanUrl = fs.readFileSync(redirectUrlFile, 'utf8').trim();
+        }
+        if (fs.existsSync(botUrlFile)) {
+          systemDefaultBotUrl = fs.readFileSync(botUrlFile, 'utf8').trim();
+        }
+      } catch (e) {}
+
+      // The user's dashboard configuration ALWAYS takes precedence and is NEVER overridden by system defaults
+      const finalHumanUrl = (configuredHumanUrl && configuredHumanUrl.trim() !== '') 
+        ? configuredHumanUrl.trim() 
+        : (systemDefaultHumanUrl || null);
+
+      const finalBotUrl = (configuredBotUrl && configuredBotUrl.trim() !== '') 
+        ? configuredBotUrl.trim() 
+        : (systemDefaultBotUrl || null);
+
       const isHumanVisitor = (visitorType === 'Human' || classification.visitorType === 'Human') && !limitReached && !authError;
-      const effectiveRedirectUrl = isHumanVisitor ? configuredHumanUrl : configuredBotUrl;
+      const effectiveRedirectUrl = isHumanVisitor ? finalHumanUrl : finalBotUrl;
 
       // Comprehensive tracing and audit log for traffic routing decisions
       console.log(`[TRAFFIC_ROUTING_TRACE]
@@ -3589,8 +3653,10 @@ Disallow: /*`);
   Detected Visitor Type:   ${isHumanVisitor ? 'Human' : 'Bot'}
   Triggering Condition:    ${blockReason ? `Blocked by: ${blockReason}` : (detectionMethod || classificationData.detection_method || 'Clean Traffic Passed')}
   Detection Method:        ${detectionMethod || classificationData.detection_method || 'IP Analysis'}
-  Configured Bot URL:      ${configuredBotUrl || '[None / Empty]'}
-  Configured Human URL:    ${configuredHumanUrl || '[None / Empty]'}
+  Dashboard Human URL:     ${configuredHumanUrl || '[Not set by user]'}
+  Dashboard Bot URL:       ${configuredBotUrl || '[Not set by user]'}
+  System Default Human:    ${systemDefaultHumanUrl || '[None]'}
+  System Default Bot:      ${systemDefaultBotUrl || '[None]'}
   Final Redirect URL:      ${effectiveRedirectUrl || '[None / Empty]'}
 ================================================================================`);
 
@@ -3614,10 +3680,10 @@ Disallow: /*`);
         redirect_url: effectiveRedirectUrl || null,
         destination: effectiveRedirectUrl || null,
         url: effectiveRedirectUrl || null,
-        humanUrl: configuredHumanUrl || null,
-        human_url: configuredHumanUrl || null,
-        botUrl: configuredBotUrl || null,
-        bot_url: configuredBotUrl || null,
+        humanUrl: finalHumanUrl || null,
+        human_url: finalHumanUrl || null,
+        botUrl: finalBotUrl || null,
+        bot_url: finalBotUrl || null,
         redirectVersion: redirectVersion,
         configured: Boolean(effectiveRedirectUrl),
         status: "success"
@@ -3628,8 +3694,13 @@ Disallow: /*`);
       console.error("Classification error:", error);
       res.status(200).json({ 
         visitorType: "Bot",
+        visitor_type: "Bot",
         isHuman: false,
+        is_human: false,
         redirectUrl: configuredBotUrl || null,
+        redirect_url: configuredBotUrl || null,
+        destination: configuredBotUrl || null,
+        url: configuredBotUrl || null,
         redirectVersion: redirectVersion,
         configured: Boolean(configuredBotUrl),
         message: "Classification failed - fail secure", 
