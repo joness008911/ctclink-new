@@ -82,7 +82,24 @@ if (!empty($_SERVER['QUERY_STRING'])) {
 $cacheKey = 'ctc_decision_' . md5($visitorIp . '_' . $apiKey);
 $bypassCache = isset($_GET['nocache']) || isset($_GET['preview_test']);
 if (!$bypassCache && isset($_SESSION[$cacheKey]) && (time() - $_SESSION[$cacheKey]['time']) < 60) {
-    $destination = $_SESSION[$cacheKey]['target'];
+    $cached = $_SESSION[$cacheKey];
+    $destination = $cached['target'];
+    $cachedAction = $cached['action'] ?? 'redirect';
+    
+    if ($destination === '404' || $destination === '403' || $cachedAction === '404' || $cachedAction === '403') {
+        $code = ($destination === '403' || $cachedAction === '403') ? 403 : 404;
+        http_response_code($code);
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        header('Content-Type: text/html; charset=utf-8');
+        if ($code === 403) {
+            echo "<!DOCTYPE html><html><head><title>403 Forbidden</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;}</style></head><body><h1>403 Forbidden</h1><p>Access to this resource on the server is denied.</p></body></html>";
+        } else {
+            echo "<!DOCTYPE html><html><head><title>404 Not Found</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;}</style></head><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>";
+        }
+        exit;
+    }
+
     if (!empty($_SERVER['QUERY_STRING'])) {
         $sep = (strpos($destination, '?') !== false) ? '&' : '?';
         $destination .= $sep . $_SERVER['QUERY_STRING'];
@@ -114,15 +131,13 @@ $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
 $destination = null;
+$statusAction = 'redirect';
 
 if ($httpCode === 200 && $response) {
     $data = json_decode($response, true);
     if (is_array($data)) {
-        if (!empty($data['redirectUrl'])) {
-            $destination = $data['redirectUrl'];
-        } elseif (!empty($data['redirect_url'])) {
-            $destination = $data['redirect_url'];
-        }
+        $destination = $data['redirectUrl'] ?? $data['redirect_url'] ?? null;
+        $statusAction = $data['statusAction'] ?? ($data['status_action'] ?? 'redirect');
     }
 } elseif ($httpCode === 401 || $httpCode === 403) {
     // API key is invalid, revoked, expired, or disabled
@@ -131,6 +146,22 @@ if ($httpCode === 200 && $response) {
     http_response_code($httpCode);
     header('Content-Type: text/html; charset=utf-8');
     echo "<!DOCTYPE html><html><head><title>Access Denied</title><style>body{font-family:sans-serif;padding:40px;background:#0f172a;color:#f8fafc;}h2{color:#ef4444;}p{color:#94a3b8;}</style></head><body><h2>Security Cloak Error</h2><p>" . htmlspecialchars($errorMsg) . "</p></body></html>";
+    exit;
+}
+
+// Check if destination is configured as an HTTP status error (404 or 403)
+if ($destination === '404' || $destination === '403' || $statusAction === '404' || $statusAction === '403') {
+    $_SESSION[$cacheKey] = ['target' => $destination, 'action' => $destination, 'time' => time()];
+    $code = ($destination === '403' || $statusAction === '403') ? 403 : 404;
+    http_response_code($code);
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Content-Type: text/html; charset=utf-8');
+    if ($code === 403) {
+        echo "<!DOCTYPE html><html><head><title>403 Forbidden</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;}</style></head><body><h1>403 Forbidden</h1><p>Access to this resource on the server is denied.</p></body></html>";
+    } else {
+        echo "<!DOCTYPE html><html><head><title>404 Not Found</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;}</style></head><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>";
+    }
     exit;
 }
 
@@ -143,7 +174,7 @@ if (empty($destination)) {
 }
 
 // Store decision in session cache
-$_SESSION[$cacheKey] = ['target' => $destination, 'time' => time()];
+$_SESSION[$cacheKey] = ['target' => $destination, 'action' => 'redirect', 'time' => time()];
 
 // Append query string parameters seamlessly
 if (!empty($_SERVER['QUERY_STRING'])) {

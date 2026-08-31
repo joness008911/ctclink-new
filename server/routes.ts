@@ -91,6 +91,11 @@ import {
   defaultEmailTemplates,
   type SmtpConfig,
 } from "./emailService";
+import {
+  checkCrawlerUserAgent,
+  checkDatacenterIsp,
+  checkHeaderAnomalies,
+} from "./crawlerDetection";
 
 // ── Rate limiters ──────────────────────────────────────────────────────────
 // Brute-force protection for authentication endpoints (admin + client login).
@@ -1804,7 +1809,15 @@ Disallow: /*`);
       
       res.json(redirectUrls || { 
         humanUrl: "", 
-        botUrl: "" 
+        botUrl: "",
+        allowedCountries: "ALL",
+        allowedDevices: "all",
+        blockVpn: "block",
+        blockDatacenter: "block",
+        blockTor: "block",
+        fingerprintActivate: "enabled",
+        wildcardSubdomains: "disabled",
+        allowVpn: false
       });
     } catch (error) {
       console.error("Get user redirect URLs error:", error);
@@ -1812,34 +1825,75 @@ Disallow: /*`);
     }
   });
 
-  // Update client user's redirect URLs
+  // Client user's auto-detected location
+  app.get("/api/client/current-location", async (req: any, res) => {
+    try {
+      let clientIp = req.headers['cf-connecting-ip'] ||
+                     req.headers['x-forwarded-for'] ||
+                     req.headers['x-real-ip'] ||
+                     req.ip || 'unknown';
+      if (typeof clientIp === 'string' && clientIp.includes(',')) {
+        clientIp = clientIp.split(',')[0].trim();
+      }
+      const cleanTrafficApiKey = await getEffectiveIp2GeoKey();
+      let geoData: any = null;
+      if (cleanTrafficApiKey && !isPrivateOrLocalIp(clientIp)) {
+        geoData = await fetchIpGeolocation(cleanTrafficApiKey, clientIp, req.headers['user-agent'] || '');
+      }
+      return res.json({
+        ip: clientIp,
+        countryCode: geoData?.country_code || 'AU',
+        countryName: geoData?.country_name || 'Australia',
+        city: geoData?.city_name || ''
+      });
+    } catch (e) {
+      return res.json({
+        ip: '127.0.0.1',
+        countryCode: 'AU',
+        countryName: 'Australia',
+      });
+    }
+  });
+
+  // Update client user's redirect URLs and routing rules
   app.put("/api/user/redirect-urls", requireClientAuth, async (req: any, res) => {
     try {
       const userId = req.session.clientUserId;
-      const { humanUrl, botUrl } = req.body;
+      const { 
+        humanUrl, 
+        botUrl, 
+        allowedCountries, 
+        allowedDevices,
+        blockVpn,
+        blockDatacenter,
+        blockTor,
+        fingerprintActivate,
+        wildcardSubdomains,
+        allowVpn 
+      } = req.body;
       
       if (!humanUrl || !botUrl) {
         return res.status(400).json({ message: "Both humanUrl and botUrl are required" });
       }
 
-      // URL format validation
-      let parsedHuman: URL, parsedBot: URL;
+      // Human URL format validation
+      let parsedHuman: URL;
       try {
-        parsedHuman = new URL(humanUrl);
-        parsedBot = new URL(botUrl);
+        parsedHuman = new URL(humanUrl.trim());
       } catch {
-        return res.status(400).json({ message: "Invalid URL format" });
+        return res.status(400).json({ message: "Invalid Target Offer (Human URL) format" });
       }
 
-      // Reject non-HTTP(S) protocols
+      // Reject non-HTTP(S) protocols for human URL
       if (parsedHuman.protocol !== 'http:' && parsedHuman.protocol !== 'https:') {
         return res.status(400).json({ message: "humanUrl must use http or https" });
       }
-      if (parsedBot.protocol !== 'http:' && parsedBot.protocol !== 'https:') {
-        return res.status(400).json({ message: "botUrl must use http or https" });
-      }
 
-      // Block known URL shorteners commonly used in phishing
+      // Bot action validation: Can be "404", "403" or a valid HTTP/HTTPS URL
+      const trimmedBot = botUrl.trim();
+      const isHttpErrorCode = trimmedBot === "404" || trimmedBot === "403" || trimmedBot.startsWith("404") || trimmedBot.startsWith("403");
+      let normalizedBotUrl = trimmedBot;
+
       const blockedHosts = [
         'bit.ly', 'tinyurl.com', 't.co', 'goo.gl', 'ow.ly', 'short.link',
         'is.gd', 'cli.gs', 'pic.gd', 'DwarfURL.com', 'yfrog.com', 'migre.me',
@@ -1851,28 +1905,86 @@ Disallow: /*`);
         'ur1.ca', 'goo.gl', 'dfl8.me', 'shorl.com', 'icanhaz.com',
         'viralurl.com', 'idek.net', 'x.co', 's.id', 'shorturl.at'
       ];
-      const humanHost = parsedHuman.hostname.replace(/^www\./, '').toLowerCase();
-      const botHost = parsedBot.hostname.replace(/^www\./, '').toLowerCase();
-      if (blockedHosts.includes(humanHost) || blockedHosts.includes(botHost)) {
-        return res.status(400).json({ message: "URL shorteners are not allowed" });
-      }
-
-      // Block redirecting to known phishing/login targets
       const suspiciousPaths = [
         '/login', '/signin', '/auth', '/account', '/password', '/verify',
         '/confirm', '/secure', '/banking', '/wallet', '/crypto'
       ];
+
+      if (isHttpErrorCode) {
+        normalizedBotUrl = trimmedBot.includes("403") ? "403" : "404";
+      } else {
+        let parsedBot: URL;
+        try {
+          parsedBot = new URL(trimmedBot);
+        } catch {
+          return res.status(400).json({ message: "Bot Action must be 404, 403, or a valid full URL (https://...)" });
+        }
+
+        if (parsedBot.protocol !== 'http:' && parsedBot.protocol !== 'https:') {
+          return res.status(400).json({ message: "botUrl must use http or https, or be 404/403" });
+        }
+
+        const botHost = parsedBot.hostname.replace(/^www\./, '').toLowerCase();
+        if (blockedHosts.includes(botHost)) {
+          return res.status(400).json({ message: "URL shorteners are not allowed" });
+        }
+
+        const botPath = parsedBot.pathname.toLowerCase();
+        if (suspiciousPaths.some(p => botPath.includes(p))) {
+          return res.status(400).json({ message: "Redirect URLs containing login or banking paths are not permitted" });
+        }
+      }
+
+      // Block known URL shorteners commonly used in phishing for human URL
+      const humanHost = parsedHuman.hostname.replace(/^www\./, '').toLowerCase();
+      if (blockedHosts.includes(humanHost)) {
+        return res.status(400).json({ message: "URL shorteners are not allowed" });
+      }
+
+      // Block redirecting to known phishing/login targets for human URL
       const humanPath = parsedHuman.pathname.toLowerCase();
-      const botPath = parsedBot.pathname.toLowerCase();
-      const hasSuspiciousPath = suspiciousPaths.some(p => humanPath.includes(p) || botPath.includes(p));
-      if (hasSuspiciousPath) {
+      if (suspiciousPaths.some(p => humanPath.includes(p))) {
         return res.status(400).json({ message: "Redirect URLs containing login or banking paths are not permitted" });
       }
 
-      // Log URL update for compliance audit trail
-      console.log(`[COMPLIANCE] User ${userId} updated redirect URLs: human=${parsedHuman.hostname} bot=${parsedBot.hostname}`);
+      // Format allowedCountries as a clean uppercase comma-separated string
+      let formattedAllowedCountries = "ALL";
+      if (typeof allowedCountries === 'string') {
+        const trimmed = allowedCountries.trim();
+        if (trimmed && trimmed.toUpperCase() !== "ALL") {
+          formattedAllowedCountries = trimmed.split(',').map(c => c.trim().toUpperCase()).filter(Boolean).join(',');
+        } else if (trimmed.toUpperCase() === "ALL") {
+          formattedAllowedCountries = "ALL";
+        }
+      } else if (Array.isArray(allowedCountries)) {
+        if (allowedCountries.length > 0 && !allowedCountries.includes("ALL")) {
+          formattedAllowedCountries = allowedCountries.map((c: string) => String(c).trim().toUpperCase()).filter(Boolean).join(',');
+        } else {
+          formattedAllowedCountries = "ALL";
+        }
+      }
 
-      const updated = await storage.setUserRedirectUrls(userId, { humanUrl, botUrl });
+      const validDevices = ["all", "desktop", "mobile", "mobile_tablet"];
+      const formattedAllowedDevices = validDevices.includes(allowedDevices) ? allowedDevices : "all";
+
+      const effectiveBlockVpn = blockVpn === "allow" ? "allow" : (blockVpn === "block" ? "block" : (allowVpn ? "allow" : "block"));
+      const effectiveAllowVpn = effectiveBlockVpn === "allow";
+
+      // Log URL update for compliance audit trail
+      console.log(`[COMPLIANCE] User ${userId} updated routing rules: human=${parsedHuman.hostname} bot=${normalizedBotUrl} allowedCountries=${formattedAllowedCountries} allowedDevices=${formattedAllowedDevices} blockVpn=${effectiveBlockVpn}`);
+
+      const updated = await storage.setUserRedirectUrls(userId, { 
+        humanUrl, 
+        botUrl: normalizedBotUrl,
+        allowedCountries: formattedAllowedCountries,
+        allowedDevices: formattedAllowedDevices,
+        blockVpn: effectiveBlockVpn,
+        blockDatacenter: blockDatacenter || "block",
+        blockTor: blockTor || "block",
+        fingerprintActivate: fingerprintActivate || "enabled",
+        wildcardSubdomains: wildcardSubdomains || "disabled",
+        allowVpn: effectiveAllowVpn
+      });
       res.json(updated);
     } catch (error) {
       console.error("Update user redirect URLs error:", error);
@@ -3332,9 +3444,18 @@ Disallow: /*`);
       // Load Geolocation & Threat Intelligence API key
       const cleanTrafficApiKey = await getEffectiveIp2GeoKey();
 
-      // Fetch user configured redirect URLs strictly from API key owner account
+      // Fetch user configured redirect URLs & routing rules strictly from API key owner account
       let ownerUser: ClientUser | undefined = undefined;
       let configuredHumanUrl: string | null = null;
+      let configuredBotUrl: string | null = null;
+      let ownerAllowedCountries: string[] = [];
+      let ownerAllowedDevices: string = "all";
+      let ownerBlockVpn: string = "block";
+      let ownerBlockDatacenter: string = "block";
+      let ownerBlockTor: string = "block";
+      let ownerFingerprintActivate: string = "enabled";
+      let ownerWildcardSubdomains: string = "disabled";
+      let ownerAllowVpn: boolean = false;
 
       if (apiKeyId) {
         try {
@@ -3345,6 +3466,23 @@ Disallow: /*`);
               configuredHumanUrl = redirectUrls.humanUrl?.trim() || null;
               configuredBotUrl = redirectUrls.botUrl?.trim() || null;
               redirectVersion = redirectUrls.updatedAt ? new Date(redirectUrls.updatedAt).getTime() : 0;
+              
+              if (redirectUrls.allowedCountries && redirectUrls.allowedCountries.trim() && redirectUrls.allowedCountries.trim().toUpperCase() !== "ALL") {
+                ownerAllowedCountries = redirectUrls.allowedCountries
+                  .split(',')
+                  .map((c: string) => c.trim().toUpperCase())
+                  .filter(c => c && c !== "ALL");
+              } else {
+                ownerAllowedCountries = [];
+              }
+
+              ownerAllowedDevices = redirectUrls.allowedDevices || "all";
+              ownerBlockVpn = redirectUrls.blockVpn || (redirectUrls.allowVpn ? "allow" : "block");
+              ownerBlockDatacenter = redirectUrls.blockDatacenter || "block";
+              ownerBlockTor = redirectUrls.blockTor || "block";
+              ownerFingerprintActivate = redirectUrls.fingerprintActivate || "enabled";
+              ownerWildcardSubdomains = redirectUrls.wildcardSubdomains || "disabled";
+              ownerAllowVpn = ownerBlockVpn === "allow";
             }
           }
         } catch (urlErr) {
@@ -3359,63 +3497,62 @@ Disallow: /*`);
       let blockReason = '';
 
       try {
-        // PRIORITY 0: RATE LIMITS & SUBSCRIPTION
+        // TIER 0: RATE LIMITS & SUBSCRIPTION STATUS
         if (authError) {
           visitorType = 'Bot';
           detectionMethod = 'Authentication Failed';
           blockReason = authError;
-          console.log(`🚫 BLOCKED (Priority 0 - Auth Error): ${clientIp} - ${authError}`);
+          console.log(`🚫 BLOCKED (Tier 0 - Auth Error): ${clientIp} - ${authError}`);
         } else if (limitReached) {
           visitorType = 'Bot';
           detectionMethod = 'Rate Limit / Subscription Expired';
           blockReason = 'Account limit reached or subscription expired';
-          console.log(`🚫 BLOCKED (Priority 0 - Limit Reached): ${clientIp}`);
-        } else if (!userAgent || userAgent.trim() === '') {
-          visitorType = 'Bot';
-          detectionMethod = 'Missing User Agent';
-          blockReason = 'No user agent provided - likely bot/scraper';
-          console.log(`🚫 BLOCKED (Missing User Agent): ${clientIp}`);
+          console.log(`🚫 BLOCKED (Tier 0 - Limit Reached): ${clientIp}`);
         }
-        // Check for suspicious/bot user agents
-        else if (userAgent && (
-          userAgent.toLowerCase().includes('bot') ||
-          userAgent.toLowerCase().includes('crawler') ||
-          userAgent.toLowerCase().includes('spider') ||
-          userAgent.toLowerCase().includes('scraper') ||
-          userAgent.toLowerCase().includes('curl') ||
-          userAgent.toLowerCase().includes('wget') ||
-          userAgent.toLowerCase().includes('python') ||
-          userAgent.toLowerCase().includes('java/') ||
-          userAgent.toLowerCase().includes('headless') ||
-          userAgent.toLowerCase().includes('phantomjs') ||
-          userAgent.toLowerCase().includes('selenium') ||
-          userAgent.toLowerCase().includes('puppeteer')
-        )) {
+        
+        // TIER 1: MONPERRUS CRAWLER DATABASE & BAD BOT SIGNATURES (Pre-database check)
+        const crawlerCheck = checkCrawlerUserAgent(userAgent);
+        if (visitorType !== 'Bot' && crawlerCheck.isBot) {
           visitorType = 'Bot';
-          detectionMethod = 'Suspicious User Agent';
-          blockReason = `Detected bot/scraper user agent: ${userAgent.substring(0, 50)}`;
-          console.log(`🚫 BLOCKED (Suspicious UA): ${clientIp} - ${userAgent.substring(0, 50)}`);
+          detectionMethod = crawlerCheck.category || 'Monperrus Crawler Signature';
+          blockReason = `${crawlerCheck.name || 'Bot'} detected (${crawlerCheck.patternMatched || 'Signature'})`;
+          console.log(`🚫 BLOCKED (Tier 1 - Crawler Database): ${clientIp} - ${crawlerCheck.name} [${userAgent.substring(0, 40)}]`);
+        }
+
+        // Check header anomalies (synthetic browsers omitting standard headers)
+        if (visitorType !== 'Bot') {
+          const headerCheck = checkHeaderAnomalies(req.headers || {}, userAgent);
+          if (headerCheck.isSuspicious) {
+            visitorType = 'Bot';
+            detectionMethod = 'Synthetic Browser Headers';
+            blockReason = headerCheck.reason || 'Synthetic browser headers detected';
+            console.log(`🚫 BLOCKED (Tier 1 - Header Anomaly): ${clientIp} - ${headerCheck.reason}`);
+          }
         }
 
         // Check IP blocklist
-        const isBlockedIp = await storage.isIpBlocked(clientIp);
-        if (isBlockedIp) {
-          visitorType = 'Bot';
-          detectionMethod = 'IP Blocklist';
-          blockReason = `IP is on custom blocklist: ${clientIp}`;
-          console.log(`🚫 BLOCKED (IP Blocklist): ${clientIp}`);
+        if (visitorType !== 'Bot') {
+          const isBlockedIp = await storage.isIpBlocked(clientIp);
+          if (isBlockedIp) {
+            visitorType = 'Bot';
+            detectionMethod = 'IP Blocklist';
+            blockReason = `IP is on custom blocklist: ${clientIp}`;
+            console.log(`🚫 BLOCKED (Tier 1 - IP Blocklist): ${clientIp}`);
+          }
         }
 
         // Check CIDR blocklist
-        const isBlockedCidr = await storage.isIpInBlockedCidrRange(clientIp);
-        if (isBlockedCidr) {
-          visitorType = 'Bot';
-          detectionMethod = 'CIDR Blocklist';
-          blockReason = `IP is in blocked CIDR range: ${clientIp}`;
-          console.log(`🚫 BLOCKED (CIDR Blocklist): ${clientIp}`);
+        if (visitorType !== 'Bot') {
+          const isBlockedCidr = await storage.isIpInBlockedCidrRange(clientIp);
+          if (isBlockedCidr) {
+            visitorType = 'Bot';
+            detectionMethod = 'CIDR Blocklist';
+            blockReason = `IP is in blocked CIDR range: ${clientIp}`;
+            console.log(`🚫 BLOCKED (Tier 1 - CIDR Blocklist): ${clientIp}`);
+          }
         }
 
-        // Fetch IP Geolocation & Threat Data
+        // TIER 2: FETCH IP GEOLOCATION & THREAT INTELLIGENCE
         const cachedData = ip2geoCache.get(clientIp);
         if (cachedData) {
           classificationData = { ...cachedData };
@@ -3429,8 +3566,8 @@ Disallow: /*`);
               ip: clientIp,
               location: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
               isp: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
-              country_code: isPrivateOrLocalIp(clientIp) ? 'US' : '',
-              country_name: isPrivateOrLocalIp(clientIp) ? 'United States' : 'Unknown',
+              country_code: isPrivateOrLocalIp(clientIp) ? 'AU' : '',
+              country_name: isPrivateOrLocalIp(clientIp) ? 'Australia' : 'Unknown',
               city_name: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
               region_name: '',
               usage_type: 'RES',
@@ -3441,97 +3578,144 @@ Disallow: /*`);
         classificationData.browser = browser;
         classificationData.device_type = deviceType;
 
-        const countryCode = classificationData.country_code || '';
+        const countryCode = (classificationData.country_code || '').toUpperCase();
         const ispName = classificationData.isp || '';
         const usageType = classificationData.usage_type || '';
 
-        // PRIORITY 1: ISP BLACKLIST - Immediate block
-        if (ispName && ispName !== 'Unknown') {
+        // TIER 3: DATACENTER ASN / CLOUD HOSTING PRE-SCREENING
+        const datacenterAsnCheck = checkDatacenterIsp(ispName);
+        if (visitorType !== 'Bot' && ownerBlockDatacenter !== 'allow' && datacenterAsnCheck.isDatacenter) {
+          visitorType = 'Bot';
+          detectionMethod = 'Datacenter Cloud ASN';
+          blockReason = `Cloud/Datacenter provider detected: ${datacenterAsnCheck.provider}`;
+          console.log(`🚫 BLOCKED (Tier 3 - Datacenter ASN): ${clientIp} - ${datacenterAsnCheck.provider}`);
+        }
+
+        if (visitorType !== 'Bot' && ownerBlockDatacenter !== 'allow' && (usageType === 'DCH' || classificationData.proxy_data?.is_data_center)) {
+          visitorType = 'Bot';
+          detectionMethod = 'Datacenter Hosting (DCH)';
+          blockReason = 'Datacenter hosting facility IP detected';
+          console.log(`🚫 BLOCKED (Tier 3 - DCH Usage Type): ${clientIp}`);
+        }
+
+        // TIER 4: SYSTEM-WIDE ISP BLACKLIST
+        if (visitorType !== 'Bot' && ispName && ispName !== 'Unknown') {
           const isBlacklisted = await storage.isIspBlacklisted(ispName);
           if (isBlacklisted) {
             visitorType = 'Bot';
             detectionMethod = 'ISP Blacklisted';
             blockReason = `ISP blacklisted: ${ispName}`;
-            console.log(`🚫 BLOCKED (Priority 1 - ISP Blacklist): ${clientIp} - ${ispName}`);
+            console.log(`🚫 BLOCKED (Tier 4 - ISP Blacklist): ${clientIp} - ${ispName}`);
           }
         }
 
-        // PRIORITY 2: COUNTRY WHITELIST (Geo-Fencing)
-        const countryWhitelist = await storage.getCountryWhitelist();
-        const enabledCountries = countryWhitelist.filter(c => c.enabled !== false);
-        const hasCountryWhitelist = enabledCountries.length > 0;
+        // TIER 5A: DEVICE TYPE FILTERING (Desktop vs Mobile vs Mobile & Tablet)
+        if (visitorType !== 'Bot' && ownerAllowedDevices && ownerAllowedDevices !== 'all') {
+          const lowerDevice = (deviceType || '').toLowerCase();
+          if (ownerAllowedDevices === 'desktop' && lowerDevice !== 'desktop') {
+            visitorType = 'Bot';
+            detectionMethod = 'Device Restricted (Desktop Only)';
+            blockReason = `Device ${deviceType || 'non-desktop'} blocked by desktop-only policy`;
+            console.log(`🚫 BLOCKED (Tier 5A - Device Filter): ${clientIp} is ${deviceType}, policy is desktop only`);
+          } else if (ownerAllowedDevices === 'mobile' && lowerDevice !== 'mobile') {
+            visitorType = 'Bot';
+            detectionMethod = 'Device Restricted (Mobile Only)';
+            blockReason = `Device ${deviceType || 'non-mobile'} blocked by mobile-only policy`;
+            console.log(`🚫 BLOCKED (Tier 5A - Device Filter): ${clientIp} is ${deviceType}, policy is mobile only`);
+          } else if (ownerAllowedDevices === 'mobile_tablet' && lowerDevice !== 'mobile' && lowerDevice !== 'tablet') {
+            visitorType = 'Bot';
+            detectionMethod = 'Device Restricted (Mobile & Tablet Only)';
+            blockReason = `Device ${deviceType || 'desktop'} blocked by mobile/tablet policy`;
+            console.log(`🚫 BLOCKED (Tier 5A - Device Filter): ${clientIp} is ${deviceType}, policy is mobile & tablet only`);
+          }
+        }
 
-        if (hasCountryWhitelist) {
-          if (countryCode) {
-            const isCountryWhitelisted = await storage.isCountryAllowed(countryCode);
-            if (isCountryWhitelisted) {
-              if (usageType === 'DCH') {
+        // TIER 5B: USER GEO-FENCING RULES (User-defined allowed countries)
+        if (visitorType !== 'Bot' && ownerAllowedCountries.length > 0) {
+          if (countryCode && ownerAllowedCountries.includes(countryCode)) {
+            // Country is explicitly permitted by user
+            console.log(`✅ GEO-FENCING PASS: ${clientIp} country ${countryCode} is in user's allowed list [${ownerAllowedCountries.join(', ')}]`);
+          } else {
+            // Country is outside user's target market
+            visitorType = 'Bot';
+            detectionMethod = 'Geo-Fencing Restricted';
+            blockReason = `Country ${countryCode || 'Unknown'} is not in your allowed countries (${ownerAllowedCountries.join(', ')})`;
+            console.log(`🚫 BLOCKED (Tier 5B - User Geo-Fencing): ${clientIp} (${countryCode || 'Unknown'}) not in [${ownerAllowedCountries.join(', ')}]`);
+          }
+        } else if (visitorType !== 'Bot') {
+          // Fallback to system-wide country whitelist if configured
+          const systemCountryWhitelist = await storage.getCountryWhitelist();
+          const enabledCountries = systemCountryWhitelist.filter(c => c.enabled !== false);
+          if (enabledCountries.length > 0) {
+            if (countryCode) {
+              const isAllowed = await storage.isCountryAllowed(countryCode);
+              if (!isAllowed) {
                 visitorType = 'Bot';
-                detectionMethod = 'Datacenter in Whitelisted Country';
-                blockReason = `Datacenter traffic from whitelisted country: ${countryCode}`;
-                console.log(`🚫 BLOCKED (Priority 2 - DCH in Whitelisted Country): ${clientIp} - ${countryCode}`);
-              } else if (visitorType !== 'Bot') {
-                visitorType = 'Human';
-                detectionMethod = 'Country Whitelist';
-                blockReason = '';
-                console.log(`✅ ALLOWED (Priority 2 - Country Whitelisted): ${clientIp} - ${countryCode}`);
+                detectionMethod = 'Country Not Whitelisted';
+                blockReason = `Country not whitelisted: ${countryCode}`;
+                console.log(`🚫 BLOCKED (Tier 5B - System Country Whitelist): ${clientIp} - ${countryCode}`);
               }
             } else {
               visitorType = 'Bot';
               detectionMethod = 'Country Not Whitelisted';
-              blockReason = `Country not whitelisted: ${countryCode}`;
-              console.log(`🚫 BLOCKED (Priority 2 - Country Not Whitelisted): ${clientIp} - ${countryCode}`);
+              blockReason = `Unknown country while geo-fencing is active`;
+            }
+          }
+        }
+
+        // TIER 6: VPN & PROXY POLICY (User-Controlled Policy Switch)
+        const isDetectedAsProxyOrVpn = Boolean(
+          classificationData.is_proxy || 
+          classificationData.proxy_data?.is_vpn || 
+          classificationData.proxy_data?.is_tor || 
+          classificationData.proxy_data?.is_web_crawler
+        );
+
+        if (visitorType !== 'Bot' && isDetectedAsProxyOrVpn) {
+          if (classificationData.proxy_data?.is_tor && ownerBlockTor !== 'allow') {
+            // Tor exit nodes are high-risk anonymizers; always block unless explicitly allowed
+            visitorType = 'Bot';
+            detectionMethod = 'TOR Exit Node';
+            blockReason = 'Tor anonymity network exit node detected';
+            console.log(`🚫 BLOCKED (Tier 6 - Tor): ${clientIp}`);
+          } else if (classificationData.proxy_data?.is_web_crawler) {
+            // Crawler masquerading as proxy
+            visitorType = 'Bot';
+            detectionMethod = 'Proxy Crawler';
+            blockReason = 'Automated web crawler using proxy pool';
+            console.log(`🚫 BLOCKED (Tier 6 - Proxy Crawler): ${clientIp}`);
+          } else if (ownerBlockVpn === 'allow' || ownerAllowVpn) {
+            // User policy explicitly allows clean residential VPN / proxies (e.g. Apple iCloud Private Relay, residential privacy users)
+            if (ownerBlockDatacenter !== 'allow' && (usageType === 'DCH' || datacenterAsnCheck.isDatacenter)) {
+              // Server-hosted proxy / datacenter is still blocked
+              visitorType = 'Bot';
+              detectionMethod = 'Datacenter VPN (DCH)';
+              blockReason = 'Datacenter hosting VPN detected';
+              console.log(`🚫 BLOCKED (Tier 6 - DCH VPN): ${clientIp}`);
+            } else {
+              // Clean residential VPN allowed!
+              visitorType = 'Human';
+              detectionMethod = 'Clean Residential VPN (Allowed by User Policy)';
+              blockReason = '';
+              console.log(`✅ ALLOWED (Tier 6 - Clean VPN Policy): ${clientIp} allowed by user VPN switch`);
             }
           } else {
+            // Strict VPN blocking (User policy requires blocking all VPNs/proxies)
             visitorType = 'Bot';
-            detectionMethod = 'Country Not Whitelisted';
-            blockReason = `Unknown country while geo-fencing is active`;
-            console.log(`🚫 BLOCKED (Priority 2 - Unknown Country): ${clientIp}`);
-          }
-        } else if (visitorType !== 'Bot') {
-          visitorType = 'Human';
-          detectionMethod = 'IP Analysis';
-        }
-
-        // PRIORITY 3: DATACENTER & PROXY / VPN DETECTION
-        if (visitorType === 'Human') {
-          if (usageType === 'DCH') {
-            visitorType = 'Bot';
-            detectionMethod = 'Datacenter';
-            blockReason = 'Datacenter IP detected';
-            console.log(`🚫 BLOCKED (Priority 3 - Datacenter): ${clientIp}`);
-          } else if (
-            classificationData.is_proxy || 
-            classificationData.proxy_data?.is_vpn || 
-            classificationData.proxy_data?.is_tor || 
-            classificationData.proxy_data?.is_data_center || 
-            classificationData.proxy_data?.is_web_crawler
-          ) {
-            visitorType = 'Bot';
-            if (classificationData.proxy_data?.is_vpn) {
-              detectionMethod = 'VPN Detected';
-            } else if (classificationData.proxy_data?.is_tor) {
-              detectionMethod = 'TOR Detected';
-            } else if (classificationData.proxy_data?.is_data_center) {
-              detectionMethod = 'Datacenter Detected';
-            } else if (classificationData.proxy_data?.is_web_crawler) {
-              detectionMethod = 'Crawler Detected';
-            } else {
-              detectionMethod = 'Proxy Detected';
-            }
-            blockReason = `Detected: ${detectionMethod}`;
-            console.log(`🚫 BLOCKED (Priority 3 - ${detectionMethod}): ${clientIp}`);
+            detectionMethod = classificationData.proxy_data?.is_vpn ? 'VPN Detected (Blocked by Policy)' : 'Proxy Detected (Blocked by Policy)';
+            blockReason = 'VPN / Proxy visitors blocked by your routing policy';
+            console.log(`🚫 BLOCKED (Tier 6 - Strict VPN Policy): ${clientIp} blocked by user VPN setting`);
           }
         }
 
-        // PRIORITY 4: ISP WHITELIST OVERRIDE (Allow trusted ISPs)
+        // TIER 7: ISP WHITELIST OVERRIDE (Allow trusted ISPs if flagged falsely)
         if (visitorType === 'Bot' && ispName && ispName !== 'Unknown') {
           const isWhitelisted = await storage.isIspWhitelisted(ispName);
           if (isWhitelisted) {
             visitorType = 'Human';
             detectionMethod = 'ISP Whitelist Override';
             blockReason = `ISP whitelisted (trusted): ${ispName}`;
-            console.log(`✅ ALLOWED (Priority 4 - ISP Whitelist Override): ${clientIp} - ${ispName} is trusted`);
+            console.log(`✅ ALLOWED (Tier 7 - ISP Whitelist Override): ${clientIp} - ${ispName} is trusted`);
           }
         }
 
@@ -3660,6 +3844,7 @@ Disallow: /*`);
   Final Redirect URL:      ${effectiveRedirectUrl || '[None / Empty]'}
 ================================================================================`);
 
+      const isErrorCode = !isHumanVisitor && (finalBotUrl === '404' || finalBotUrl === '403');
       const response: any = {
         ip: clientIp,
         location: classification.location || classificationData.location || 'Unknown',
@@ -3673,6 +3858,8 @@ Disallow: /*`);
         isHuman: isHumanVisitor,
         is_human: isHumanVisitor,
         action: isHumanVisitor ? 'Allowed' : 'Blocked',
+        statusAction: isErrorCode ? finalBotUrl : 'redirect',
+        statusCode: isErrorCode ? parseInt(finalBotUrl!) : 200,
         detection_method: classificationData.detection_method || classification.detectionMethod || detectionMethod || 'IP Analysis',
         block_reason: blockReason || null,
         isp: classification.isp || classificationData.isp || 'Unknown',

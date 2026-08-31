@@ -1139,13 +1139,33 @@ export class FirestoreStorage implements IStorage {
     }
   }
 
-  async setUserRedirectUrls(userId: string, urls: { humanUrl: string; botUrl: string }): Promise<UserRedirectUrls> {
+  async setUserRedirectUrls(userId: string, urls: { 
+    humanUrl: string; 
+    botUrl: string; 
+    allowedCountries?: string; 
+    allowedDevices?: string;
+    blockVpn?: string;
+    blockDatacenter?: string;
+    blockTor?: string;
+    fingerprintActivate?: string;
+    wildcardSubdomains?: string;
+    allowVpn?: boolean;
+  }): Promise<UserRedirectUrls> {
+    const existing = await this.getUserRedirectUrls(userId);
     const now = new Date();
     const record: UserRedirectUrls = {
       id: userId,
       userId,
       humanUrl: urls.humanUrl,
       botUrl: urls.botUrl,
+      allowedCountries: urls.allowedCountries !== undefined ? urls.allowedCountries : (existing?.allowedCountries || "ALL"),
+      allowedDevices: urls.allowedDevices !== undefined ? urls.allowedDevices : (existing?.allowedDevices || "all"),
+      blockVpn: urls.blockVpn !== undefined ? urls.blockVpn : (existing?.blockVpn || "block"),
+      blockDatacenter: urls.blockDatacenter !== undefined ? urls.blockDatacenter : (existing?.blockDatacenter || "block"),
+      blockTor: urls.blockTor !== undefined ? urls.blockTor : (existing?.blockTor || "block"),
+      fingerprintActivate: urls.fingerprintActivate !== undefined ? urls.fingerprintActivate : (existing?.fingerprintActivate || "enabled"),
+      wildcardSubdomains: urls.wildcardSubdomains !== undefined ? urls.wildcardSubdomains : (existing?.wildcardSubdomains || "disabled"),
+      allowVpn: urls.allowVpn !== undefined ? urls.allowVpn : (urls.blockVpn === "allow" ? true : (existing?.allowVpn ?? false)),
       updatedAt: now,
     };
     await setDoc(doc(this.db, "user_redirect_urls", userId), {

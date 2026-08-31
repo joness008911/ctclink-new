@@ -131,12 +131,20 @@ export const clientUsers = pgTable("client_users", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-// User Redirect URLs (Custom redirect URLs per user)
+// User Redirect URLs (Custom redirect URLs & traffic rules per user)
 export const userRedirectUrls = pgTable("user_redirect_urls", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => clientUsers.id, { onDelete: 'cascade' }),
   humanUrl: text("human_url").notNull().default(""),
   botUrl: text("bot_url").notNull().default(""),
+  allowedCountries: text("allowed_countries").default("ALL"), // "ALL" or comma-separated ISO codes e.g. "AU,US,GB"
+  allowedDevices: text("allowed_devices").default("all"), // "all" | "desktop" | "mobile" | "mobile_tablet"
+  blockVpn: text("block_vpn").default("block"), // "block" | "allow"
+  blockDatacenter: text("block_datacenter").default("block"), // "block" | "allow"
+  blockTor: text("block_tor").default("block"), // "block" | "allow"
+  fingerprintActivate: text("fingerprint_activate").default("enabled"), // "enabled" | "disabled"
+  wildcardSubdomains: text("wildcard_subdomains").default("disabled"), // "disabled" | "enabled"
+  allowVpn: boolean("allow_vpn").default(false).notNull(), // backwards-compatibility boolean
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

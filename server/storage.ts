@@ -190,7 +190,18 @@ export interface IStorage {
   
   // User Redirect URLs methods
   getUserRedirectUrls(userId: string): Promise<UserRedirectUrls | undefined>;
-  setUserRedirectUrls(userId: string, urls: { humanUrl: string; botUrl: string }): Promise<UserRedirectUrls>;
+  setUserRedirectUrls(userId: string, urls: { 
+    humanUrl: string; 
+    botUrl: string; 
+    allowedCountries?: string; 
+    allowedDevices?: string;
+    blockVpn?: string;
+    blockDatacenter?: string;
+    blockTor?: string;
+    fingerprintActivate?: string;
+    wildcardSubdomains?: string;
+    allowVpn?: boolean;
+  }): Promise<UserRedirectUrls>;
   
   // Classification methods for users
   getUserClassifications(apiKeyId: string, limit?: number): Promise<Classification[]>;
@@ -865,13 +876,32 @@ export class MemStorage implements IStorage {
     return this.redirectUrls.get(userId);
   }
 
-  async setUserRedirectUrls(userId: string, urls: { humanUrl: string; botUrl: string }): Promise<UserRedirectUrls> {
+  async setUserRedirectUrls(userId: string, urls: { 
+    humanUrl: string; 
+    botUrl: string; 
+    allowedCountries?: string; 
+    allowedDevices?: string;
+    blockVpn?: string;
+    blockDatacenter?: string;
+    blockTor?: string;
+    fingerprintActivate?: string;
+    wildcardSubdomains?: string;
+    allowVpn?: boolean;
+  }): Promise<UserRedirectUrls> {
     const existing = this.redirectUrls.get(userId);
     const redirectUrl: UserRedirectUrls = {
       id: existing?.id || randomUUID(),
       userId,
       humanUrl: urls.humanUrl,
       botUrl: urls.botUrl,
+      allowedCountries: urls.allowedCountries !== undefined ? urls.allowedCountries : (existing?.allowedCountries || "ALL"),
+      allowedDevices: urls.allowedDevices !== undefined ? urls.allowedDevices : (existing?.allowedDevices || "all"),
+      blockVpn: urls.blockVpn !== undefined ? urls.blockVpn : (existing?.blockVpn || "block"),
+      blockDatacenter: urls.blockDatacenter !== undefined ? urls.blockDatacenter : (existing?.blockDatacenter || "block"),
+      blockTor: urls.blockTor !== undefined ? urls.blockTor : (existing?.blockTor || "block"),
+      fingerprintActivate: urls.fingerprintActivate !== undefined ? urls.fingerprintActivate : (existing?.fingerprintActivate || "enabled"),
+      wildcardSubdomains: urls.wildcardSubdomains !== undefined ? urls.wildcardSubdomains : (existing?.wildcardSubdomains || "disabled"),
+      allowVpn: urls.allowVpn !== undefined ? urls.allowVpn : (urls.blockVpn === "allow" ? true : (existing?.allowVpn ?? false)),
       updatedAt: new Date()
     };
     this.redirectUrls.set(userId, redirectUrl);
@@ -1743,15 +1773,43 @@ export class DatabaseStorage {
     return urls;
   }
 
-  async setUserRedirectUrls(userId: string, urls: { humanUrl: string; botUrl: string }): Promise<UserRedirectUrls> {
+  async setUserRedirectUrls(userId: string, urls: { 
+    humanUrl: string; 
+    botUrl: string; 
+    allowedCountries?: string; 
+    allowedDevices?: string;
+    blockVpn?: string;
+    blockDatacenter?: string;
+    blockTor?: string;
+    fingerprintActivate?: string;
+    wildcardSubdomains?: string;
+    allowVpn?: boolean;
+  }): Promise<UserRedirectUrls> {
     // Check if user has existing redirect URLs
     const existing = await this.getUserRedirectUrls(userId);
+    const updatePayload: any = {
+      humanUrl: urls.humanUrl,
+      botUrl: urls.botUrl,
+      updatedAt: sql`now()`,
+    };
+    if (urls.allowedCountries !== undefined) updatePayload.allowedCountries = urls.allowedCountries;
+    if (urls.allowedDevices !== undefined) updatePayload.allowedDevices = urls.allowedDevices;
+    if (urls.blockVpn !== undefined) updatePayload.blockVpn = urls.blockVpn;
+    if (urls.blockDatacenter !== undefined) updatePayload.blockDatacenter = urls.blockDatacenter;
+    if (urls.blockTor !== undefined) updatePayload.blockTor = urls.blockTor;
+    if (urls.fingerprintActivate !== undefined) updatePayload.fingerprintActivate = urls.fingerprintActivate;
+    if (urls.wildcardSubdomains !== undefined) updatePayload.wildcardSubdomains = urls.wildcardSubdomains;
+    if (urls.allowVpn !== undefined) {
+      updatePayload.allowVpn = urls.allowVpn;
+    } else if (urls.blockVpn !== undefined) {
+      updatePayload.allowVpn = urls.blockVpn === "allow";
+    }
     
     if (existing) {
       // Update existing
       const [updated] = await db
         .update(userRedirectUrls)
-        .set({ ...urls, updatedAt: sql`now()` })
+        .set(updatePayload)
         .where(eq(userRedirectUrls.userId, userId))
         .returning();
       return updated;
@@ -1759,7 +1817,19 @@ export class DatabaseStorage {
       // Create new
       const [created] = await db
         .insert(userRedirectUrls)
-        .values({ userId, ...urls })
+        .values({
+          userId,
+          humanUrl: urls.humanUrl,
+          botUrl: urls.botUrl,
+          allowedCountries: urls.allowedCountries || "ALL",
+          allowedDevices: urls.allowedDevices || "all",
+          blockVpn: urls.blockVpn || "block",
+          blockDatacenter: urls.blockDatacenter || "block",
+          blockTor: urls.blockTor || "block",
+          fingerprintActivate: urls.fingerprintActivate || "enabled",
+          wildcardSubdomains: urls.wildcardSubdomains || "disabled",
+          allowVpn: urls.allowVpn !== undefined ? urls.allowVpn : (urls.blockVpn === "allow"),
+        })
         .returning();
       return created;
     }
