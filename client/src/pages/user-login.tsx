@@ -2,19 +2,12 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { userAuthApi } from "@/lib/user-auth";
-import { loginWithGooglePopup } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { PasswordStrengthIndicator, evaluatePassword } from "@/components/password-strength";
 import {
   ShieldCheck,
   Zap,
@@ -24,10 +17,14 @@ import {
   Eye,
   EyeOff,
   Globe,
-  Copy,
-  Check,
-  AlertTriangle,
-  ExternalLink,
+  UserPlus,
+  LogIn,
+  Loader2,
+  AlertCircle,
+  KeyRound,
+  Mail,
+  ArrowLeft,
+  RefreshCw,
   Sparkles,
 } from "lucide-react";
 
@@ -36,8 +33,8 @@ export default function UserLogin() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Mode: "signup" (default for new trial) or "signin"
-  const [authMode, setAuthMode] = useState<"signup" | "signin">("signup");
+  // Mode: "signup" (default for new trial), "signin", or "forgot"
+  const [authMode, setAuthMode] = useState<"signup" | "signin" | "forgot">("signup");
 
   // Form states
   const [fullName, setFullName] = useState("");
@@ -45,21 +42,31 @@ export default function UserLogin() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [newsletter, setNewsletter] = useState(true);
-  const [tosAccepted, setTosAccepted] = useState(true);
-  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const [tosAccepted, setTosAccepted] = useState(false);
+  const [formSubmittedAttempt, setFormSubmittedAttempt] = useState(false);
 
-  // Domain Help Dialog for Railway / Custom deployments
-  const [domainHelpOpen, setDomainHelpOpen] = useState(false);
-  const [domainHelpHost, setDomainHelpHost] = useState("");
-  const [copiedHost, setCopiedHost] = useState(false);
+  // Forgot password recovery states
+  const [recoveryStep, setRecoveryStep] = useState<1 | 2>(1);
+  const [recoveryEmail, setRecoveryEmail] = useState("");
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [simulatedDevCode, setSimulatedDevCode] = useState<string | null>(null);
 
-  // Load saved credentials for remember me
+  // Load saved credentials
   useEffect(() => {
     const saved = localStorage.getItem("app_user_saved_email");
     if (saved) {
       setEmail(saved);
+      setRecoveryEmail(saved);
     }
   }, []);
+
+  // Password evaluation for signup
+  const passwordEvaluation = evaluatePassword(password);
+  // Password evaluation for recovery
+  const newPasswordEvaluation = evaluatePassword(newPassword);
 
   // Registration mutation
   const registerMutation = useMutation({
@@ -67,10 +74,18 @@ export default function UserLogin() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/user/me"] });
       toast({
-        title: "Trial Activated!",
-        description: data.message || "Your 7-day free trial has been created.",
+        title: "Account Created! Verification Required",
+        description: data.message || "Please check your inbox to verify your email and activate your account.",
       });
-      window.location.href = "/user";
+      const regEmail = data.email || email;
+      const devCode = data.devVerificationCode || "";
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("pending_verification_email", regEmail);
+        if (devCode) localStorage.setItem("pending_verification_dev_code", devCode);
+      }
+      setTimeout(() => {
+        navigate(`/verification-required?email=${encodeURIComponent(regEmail)}${devCode ? `&devCode=${encodeURIComponent(devCode)}` : ""}`);
+      }, 400);
     },
     onError: (error: any) => {
       let msg = "Failed to create account. Please check your details.";
@@ -97,8 +112,8 @@ export default function UserLogin() {
       localStorage.setItem("app_user_saved_email", email);
       queryClient.invalidateQueries({ queryKey: ["/api/user/me"] });
       toast({
-        title: "Welcome back!",
-        description: data.message || "Logged in successfully.",
+        title: "Welcome Back!",
+        description: data.message || "Signed in successfully.",
       });
       if (data.requiresTos) {
         navigate("/api-verify");
@@ -124,75 +139,81 @@ export default function UserLogin() {
     },
   });
 
-  // Google Auth mutation
-  const googleAuthMutation = useMutation({
-    mutationFn: userAuthApi.googleAuth,
+  // Forgot password request mutation (Step 1)
+  const forgotPasswordMutation = useMutation({
+    mutationFn: userAuthApi.forgotPassword,
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/user/me"] });
       toast({
-        title: "Google Authentication Successful",
-        description: data.message || "Welcome to CleanTraffic!",
+        title: "Recovery Email Dispatched",
+        description: data.message || "A 6-digit verification code has been sent to your email.",
       });
-      window.location.href = "/user";
+      if (data.devCode) {
+        setSimulatedDevCode(data.devCode);
+        setRecoveryCode(data.devCode);
+      }
+      setRecoveryStep(2);
     },
     onError: (error: any) => {
+      let msg = "Failed to send password recovery email. Please try again.";
+      try {
+        if (error.message) {
+          const parsed = JSON.parse(error.message.replace(/^\d+:\s*/, ""));
+          msg = parsed.message || msg;
+        }
+      } catch {
+        msg = error.message || msg;
+      }
       toast({
-        title: "Google Sign-In Failed",
-        description: error.message || "Could not complete Google sign-in.",
+        title: "Recovery Request Failed",
+        description: msg,
         variant: "destructive",
       });
     },
   });
 
-  const handleGoogleSignIn = async () => {
-    try {
-      setIsGoogleLoading(true);
-      const googleUser = await loginWithGooglePopup();
-      await googleAuthMutation.mutateAsync({
-        email: googleUser.email,
-        name: googleUser.name,
-        googleId: googleUser.googleId,
-        idToken: googleUser.idToken,
+  // Complete password reset mutation (Step 2)
+  const resetPasswordMutation = useMutation({
+    mutationFn: userAuthApi.resetPassword,
+    onSuccess: (data) => {
+      toast({
+        title: "Password Reset Successful!",
+        description: data.message || "Your password has been updated. You can now sign in.",
       });
-    } catch (err: any) {
-      if (err.isDomainError || err.code === "auth/unauthorized-domain" || err.code === "origin_mismatch" || err.code === "auth/internal-error") {
-        setDomainHelpHost(err.host || window.location.host);
-        setDomainHelpOpen(true);
-      } else if (err.code !== "auth/popup-closed-by-user" && err.code !== "popup_closed" && err.code !== "cancelled") {
-        toast({
-          title: "Google Auth Notice",
-          description: err.message || "Could not complete Google sign-in. Use email & password below.",
-          variant: "destructive",
-        });
+      // Switch back to sign in mode with email pre-filled
+      setEmail(recoveryEmail);
+      setPassword("");
+      setAuthMode("signin");
+      setRecoveryStep(1);
+      setRecoveryCode("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setSimulatedDevCode(null);
+    },
+    onError: (error: any) => {
+      let msg = "Failed to reset password. Please check your verification code.";
+      try {
+        if (error.message) {
+          const parsed = JSON.parse(error.message.replace(/^\d+:\s*/, ""));
+          msg = parsed.message || msg;
+        }
+      } catch {
+        msg = error.message || msg;
       }
-    } finally {
-      setIsGoogleLoading(false);
-    }
-  };
-
-  const handle1ClickDemo = () => {
-    setEmail("demo@cleantraffic.io");
-    setPassword("demo123");
-    setAuthMode("signin");
-    loginMutation.mutate({
-      username: "demo",
-      password: "demo123",
-    });
-  };
-
-  const copyHostToClipboard = () => {
-    const hostToCopy = domainHelpHost || window.location.host;
-    navigator.clipboard.writeText(hostToCopy);
-    setCopiedHost(true);
-    setTimeout(() => setCopiedHost(false), 2000);
-    toast({
-      title: "Copied to Clipboard",
-      description: `Domain "${hostToCopy}" copied.`,
-    });
-  };
+      toast({
+        title: "Password Reset Failed",
+        description: msg,
+        variant: "destructive",
+      });
+    },
+  });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setFormSubmittedAttempt(true);
+
+    if (registerMutation.isPending || loginMutation.isPending) {
+      return;
+    }
 
     if (!email.trim() || !password) {
       toast({
@@ -204,7 +225,8 @@ export default function UserLogin() {
     }
 
     if (authMode === "signup") {
-      if (password.length < 8) {
+      // Validate password strength requirements
+      if (!passwordEvaluation.lengthValid) {
         toast({
           title: "Password Too Short",
           description: "Password must be at least 8 characters long.",
@@ -212,10 +234,21 @@ export default function UserLogin() {
         });
         return;
       }
+
+      if (!passwordEvaluation.hasLower || !passwordEvaluation.hasUpper || (!passwordEvaluation.hasNumber && !passwordEvaluation.hasSpecial)) {
+        toast({
+          title: "Password Requirements Not Met",
+          description: "Please include mixed character types: uppercase, lowercase, and numbers or symbols.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Check Terms of Service and Privacy Policy validation
       if (!tosAccepted) {
         toast({
-          title: "Terms of Service Required",
-          description: "You must accept the terms of service to start your trial.",
+          title: "Terms & Privacy Policy Required",
+          description: "You must agree to the Terms of Service and Privacy Policy before creating your account.",
           variant: "destructive",
         });
         return;
@@ -228,7 +261,7 @@ export default function UserLogin() {
         newsletter,
         tosAccepted: true,
       });
-    } else {
+    } else if (authMode === "signin") {
       loginMutation.mutate({
         username: email.trim(),
         password,
@@ -236,8 +269,60 @@ export default function UserLogin() {
     }
   };
 
-  const isPending =
-    registerMutation.isPending || loginMutation.isPending || googleAuthMutation.isPending || isGoogleLoading;
+  const handleForgotPasswordSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!recoveryEmail.trim()) {
+      toast({
+        title: "Email Required",
+        description: "Please enter your registered email address.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    forgotPasswordMutation.mutate({
+      email: recoveryEmail.trim().toLowerCase(),
+    });
+  };
+
+  const handleResetPasswordSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!recoveryCode.trim()) {
+      toast({
+        title: "Verification Code Required",
+        description: "Please enter the 6-digit recovery code sent to your email.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!newPasswordEvaluation.lengthValid || !newPasswordEvaluation.hasLower || !newPasswordEvaluation.hasUpper || (!newPasswordEvaluation.hasNumber && !newPasswordEvaluation.hasSpecial)) {
+      toast({
+        title: "Weak Password",
+        description: "New password must be at least 8 characters and include uppercase, lowercase, and numbers or symbols.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      toast({
+        title: "Passwords Do Not Match",
+        description: "Please make sure your new password and confirmation match.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    resetPasswordMutation.mutate({
+      email: recoveryEmail.trim().toLowerCase(),
+      code: recoveryCode.trim(),
+      newPassword,
+    });
+  };
+
+  const isPending = registerMutation.isPending || loginMutation.isPending;
 
   return (
     <div className="min-h-screen bg-[#111111] text-white flex flex-col font-sans selection:bg-emerald-500 selection:text-black">
@@ -268,24 +353,32 @@ export default function UserLogin() {
             <div className="flex items-center bg-black/40 p-1 rounded-lg border border-white/10">
               <button
                 type="button"
-                onClick={() => setAuthMode("signup")}
-                className={`text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-md transition-all ${
+                onClick={() => {
+                  setAuthMode("signup");
+                  setFormSubmittedAttempt(false);
+                }}
+                className={`text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-md transition-all flex items-center gap-1.5 ${
                   authMode === "signup"
                     ? "bg-white text-black shadow-sm"
                     : "text-neutral-400 hover:text-white"
                 }`}
               >
+                <UserPlus className="w-3.5 h-3.5" />
                 Sign Up Trial
               </button>
               <button
                 type="button"
-                onClick={() => setAuthMode("signin")}
-                className={`text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-md transition-all ${
+                onClick={() => {
+                  setAuthMode("signin");
+                  setFormSubmittedAttempt(false);
+                }}
+                className={`text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-md transition-all flex items-center gap-1.5 ${
                   authMode === "signin"
                     ? "bg-white text-black shadow-sm"
                     : "text-neutral-400 hover:text-white"
                 }`}
               >
+                <LogIn className="w-3.5 h-3.5" />
                 Sign In
               </button>
             </div>
@@ -297,371 +390,596 @@ export default function UserLogin() {
       <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12 md:py-16">
         <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
           
-          {/* Left Column: Product Value & Free Trial Benefits */}
+          {/* Left Column: Product Value & Platform Highlights */}
           <div className="lg:col-span-5 bg-gradient-to-br from-[#1a1a1a] via-[#161616] to-[#121212] border border-white/10 rounded-2xl p-6 sm:p-8 flex flex-col justify-between relative overflow-hidden shadow-2xl">
             <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
 
             <div>
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-6">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                7-Day Free Trial
-              </div>
+              {authMode === "forgot" ? (
+                <>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold uppercase tracking-wider mb-6">
+                    <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                    Account Security
+                  </div>
 
-              <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-4 leading-snug">
-                Stop click fraud & malicious bots in real-time.
-              </h2>
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-4 leading-snug">
+                    Secure Password Recovery Flow
+                  </h2>
 
-              <p className="text-neutral-400 text-sm sm:text-[15px] leading-relaxed mb-8">
-                Join performance marketers and webmasters protecting ad budgets and infrastructure with CleanTraffic's 4-layer inspection engine.
-              </p>
+                  <p className="text-neutral-400 text-sm sm:text-[15px] leading-relaxed mb-8">
+                    Reset your credentials safely using our cryptographic one-time verification mechanism.
+                  </p>
 
-              <div className="space-y-4">
-                <div className="flex items-start gap-3">
-                  <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-semibold text-white">5,000 Free Inspection Quota</h4>
-                    <p className="text-xs text-neutral-400 mt-0.5">Full access to live bot heuristics and IP datacenter feeds.</p>
-                  </div>
-                </div>
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">Encrypted Verification Code</h4>
+                        <p className="text-xs text-neutral-400 mt-0.5">A secure 6-digit recovery code is delivered to your registered email.</p>
+                      </div>
+                    </div>
 
-                <div className="flex items-start gap-3">
-                  <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                    <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-semibold text-white">Instant API Key Provisioning</h4>
-                    <p className="text-xs text-neutral-400 mt-0.5">Ready-to-use PHP snippet and REST API endpoint upon signup.</p>
-                  </div>
-                </div>
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                        <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">15-Minute Expiry Safety</h4>
+                        <p className="text-xs text-neutral-400 mt-0.5">Recovery sessions expire automatically to protect your account against hijacking.</p>
+                      </div>
+                    </div>
 
-                <div className="flex items-start gap-3">
-                  <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                    <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                        <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">Instant API Key Preservation</h4>
+                        <p className="text-xs text-neutral-400 mt-0.5">All active API keys and traffic whitelist rules remain fully preserved.</p>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="text-sm font-semibold text-white">Geofencing & ISP Controls</h4>
-                    <p className="text-xs text-neutral-400 mt-0.5">Custom whitelist/blacklist rules for countries, ASN, and cloud hosts.</p>
+                </>
+              ) : (
+                <>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-6">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    7-Day Free Trial
                   </div>
-                </div>
 
-                <div className="flex items-start gap-3">
-                  <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                    <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-4 leading-snug">
+                    Stop click fraud & malicious bots in real-time.
+                  </h2>
+
+                  <p className="text-neutral-400 text-sm sm:text-[15px] leading-relaxed mb-8">
+                    Join performance marketers and webmasters protecting ad budgets and infrastructure with CleanTraffic's 4-layer inspection engine.
+                  </p>
+
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">5,000 Free Inspection Quota</h4>
+                        <p className="text-xs text-neutral-400 mt-0.5">Full access to live bot heuristics and IP datacenter feeds.</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                        <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">Instant API Key Provisioning</h4>
+                        <p className="text-xs text-neutral-400 mt-0.5">Ready-to-use PHP snippet and REST API endpoint upon signup.</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                        <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">Geofencing & ISP Controls</h4>
+                        <p className="text-xs text-neutral-400 mt-0.5">Custom whitelist/blacklist rules for countries, ASN, and cloud hosts.</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                        <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">No Credit Card Required</h4>
+                        <p className="text-xs text-neutral-400 mt-0.5">Start testing immediately. Upgrade or cancel whenever you choose.</p>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="text-sm font-semibold text-white">No Credit Card Required</h4>
-                    <p className="text-xs text-neutral-400 mt-0.5">Start testing immediately. Upgrade or cancel whenever you choose.</p>
-                  </div>
-                </div>
-              </div>
+                </>
+              )}
             </div>
 
-            {/* Quick Demo Access banner on left column */}
-            <div className="pt-6 mt-6 border-t border-white/10">
-              <div className="bg-[#202020] border border-white/10 rounded-xl p-3.5 flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold text-white flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Quick Sandbox Access
-                  </p>
-                  <p className="text-[11px] text-neutral-400 mt-0.5">Test dashboard in 1 click (no setup)</p>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={handle1ClickDemo}
-                  disabled={isPending}
-                  className="h-8 text-xs border-emerald-500/40 text-emerald-400 hover:bg-emerald-500 hover:text-black transition-all"
-                >
-                  1-Click Demo
-                </Button>
-              </div>
+            <div className="pt-6 border-t border-white/10 text-xs text-neutral-500">
+              Active protection across Google Ads, Meta, TikTok, and direct affiliate networks.
             </div>
           </div>
 
-          {/* Right Column: Interactive Form */}
+          {/* Right Column: Interactive Forms (Sign Up / Sign In / Forgot Password) */}
           <div className="lg:col-span-7 bg-[#181818] border border-white/10 rounded-2xl p-6 sm:p-8 lg:p-10 shadow-2xl flex flex-col justify-center">
             
-            {/* Header */}
-            <div className="mb-6">
-              <h3 className="text-2xl font-bold tracking-tight text-white">
-                {authMode === "signup" ? "Start Your 7-Day Free Trial" : "Sign In to CleanTraffic"}
-              </h3>
-              <p className="text-sm text-neutral-400 mt-1">
-                {authMode === "signup"
-                  ? "Create your self-serve client account in seconds."
-                  : "Enter your registered email or username to access your dashboard."}
-              </p>
-            </div>
-
-            {/* Google One-Click Button */}
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              disabled={isPending}
-              className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-[#242424] hover:bg-[#2e2e2e] active:bg-[#1f1f1f] text-white border border-white/10 rounded-xl font-medium text-sm transition-all duration-200 shadow-sm disabled:opacity-50"
-            >
-              <svg className="w-5 h-5" viewBox="0 0 24 24">
-                <path
-                  fill="#4285F4"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                />
-              </svg>
-              <span>{isGoogleLoading ? "Connecting Google..." : authMode === "signup" ? "Sign up with Google" : "Sign in with Google"}</span>
-            </button>
-
-            {/* Divider */}
-            <div className="relative my-6 flex items-center justify-center">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-white/10" />
-              </div>
-              <span className="relative bg-[#181818] px-3 text-xs uppercase tracking-wider text-neutral-500 font-medium">
-                Or with work email
-              </span>
-            </div>
-
-            {/* Form */}
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {authMode === "signup" && (
-                <div className="space-y-1.5">
-                  <Label htmlFor="fullName" className="text-xs font-semibold text-neutral-300">
-                    Full Name <span className="text-neutral-500">(Optional)</span>
-                  </Label>
-                  <Input
-                    id="fullName"
-                    type="text"
-                    placeholder="e.g. Alex Morgan"
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    disabled={isPending}
-                    className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm"
-                  />
-                </div>
-              )}
-
-              <div className="space-y-1.5">
-                <Label htmlFor="email" className="text-xs font-semibold text-neutral-300">
-                  {authMode === "signup" ? "Work Email Address" : "Email or Username"}
-                </Label>
-                <Input
-                  id="email"
-                  type={authMode === "signup" ? "email" : "text"}
-                  placeholder={authMode === "signup" ? "you@company.com" : "you@company.com or username"}
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  disabled={isPending}
-                  required
-                  autoComplete="email"
-                  className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="password" className="text-xs font-semibold text-neutral-300">
-                    Password
-                  </Label>
-                  {authMode === "signin" && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEmail("demo@cleantraffic.io");
-                        setPassword("demo123");
-                      }}
-                      className="text-xs text-emerald-400 hover:text-emerald-300 underline"
-                    >
-                      Fill Demo Credentials
-                    </button>
-                  )}
-                </div>
-                <div className="relative">
-                  <Input
-                    id="password"
-                    type={showPassword ? "text" : "password"}
-                    placeholder={authMode === "signup" ? "Minimum 8 characters" : "Enter password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    disabled={isPending}
-                    required
-                    autoComplete={authMode === "signup" ? "new-password" : "current-password"}
-                    className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm pr-10"
-                  />
+            {/* ── FORGOT PASSWORD RECOVERY VIEW ────────────────────────────── */}
+            {authMode === "forgot" ? (
+              <div className="space-y-6">
+                <div>
                   <button
                     type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white"
+                    onClick={() => {
+                      setAuthMode("signin");
+                      setRecoveryStep(1);
+                      setSimulatedDevCode(null);
+                    }}
+                    className="inline-flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 font-medium mb-3 transition-colors"
                   >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    Back to Sign In
                   </button>
+                  <h3 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                    <KeyRound className="w-6 h-6 text-emerald-400" />
+                    Reset Your Password
+                  </h3>
+                  <p className="text-sm text-neutral-400 mt-1">
+                    {recoveryStep === 1
+                      ? "Enter your registered email address to receive a secure 6-digit recovery code."
+                      : `Enter the 6-digit recovery code sent to ${recoveryEmail} and choose a new password.`}
+                  </p>
                 </div>
-              </div>
 
-              {authMode === "signup" && (
-                <div className="pt-2 space-y-3">
-                  <div className="flex items-start gap-2.5">
-                    <Checkbox
-                      id="newsletter"
-                      checked={newsletter}
-                      onCheckedChange={(checked) => setNewsletter(!!checked)}
-                      className="mt-0.5 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500 border-white/20"
-                    />
-                    <Label htmlFor="newsletter" className="text-xs text-neutral-400 font-normal leading-relaxed cursor-pointer">
-                      Send me email updates on newly detected bot ranges, traffic anomalies, and feature releases.
-                    </Label>
-                  </div>
-
-                  <div className="flex items-start gap-2.5">
-                    <Checkbox
-                      id="tos"
-                      checked={tosAccepted}
-                      onCheckedChange={(checked) => setTosAccepted(!!checked)}
-                      className="mt-0.5 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500 border-white/20"
-                    />
-                    <Label htmlFor="tos" className="text-xs text-neutral-400 font-normal leading-relaxed cursor-pointer">
-                      I agree to the{" "}
-                      <span className="text-white underline underline-offset-2">Terms of Service</span> and{" "}
-                      <span className="text-white underline underline-offset-2">Acceptable Use Policy</span>.
-                    </Label>
-                  </div>
+                {/* Step Indicator */}
+                <div className="flex items-center gap-2 py-1">
+                  <div
+                    className={`flex-1 h-1.5 rounded-full transition-colors ${
+                      recoveryStep >= 1 ? "bg-emerald-500" : "bg-white/10"
+                    }`}
+                  />
+                  <div
+                    className={`flex-1 h-1.5 rounded-full transition-colors ${
+                      recoveryStep >= 2 ? "bg-emerald-500" : "bg-white/10"
+                    }`}
+                  />
                 </div>
-              )}
 
-              {/* Submit Button */}
-              <Button
-                type="submit"
-                disabled={isPending}
-                className="w-full h-12 mt-2 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-black font-semibold rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50"
-              >
-                {isPending ? (
-                  <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                    <span>{authMode === "signup" ? "Creating Your Trial..." : "Signing In..."}</span>
-                  </div>
-                ) : (
-                  <>
-                    <span>{authMode === "signup" ? "Start 7-Day Free Trial" : "Sign In to Dashboard"}</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </>
+                {/* Step 1: Request Reset Code */}
+                {recoveryStep === 1 && (
+                  <form onSubmit={handleForgotPasswordSubmit} className="space-y-4">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="recoveryEmail" className="text-xs font-semibold text-neutral-300">
+                        Registered Email Address
+                      </Label>
+                      <div className="relative">
+                        <Input
+                          id="recoveryEmail"
+                          type="email"
+                          placeholder="you@domain.com"
+                          value={recoveryEmail}
+                          onChange={(e) => setRecoveryEmail(e.target.value)}
+                          disabled={forgotPasswordMutation.isPending}
+                          required
+                          autoComplete="email"
+                          className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm pl-10"
+                        />
+                        <Mail className="w-4 h-4 text-neutral-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      </div>
+                    </div>
+
+                    <Button
+                      type="submit"
+                      disabled={forgotPasswordMutation.isPending || !recoveryEmail.trim()}
+                      className="w-full h-12 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50"
+                    >
+                      {forgotPasswordMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          <span>Sending Recovery Code...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Send Recovery Code</span>
+                          <ArrowRight className="w-4 h-4" />
+                        </>
+                      )}
+                    </Button>
+                  </form>
                 )}
-              </Button>
-            </form>
 
-            {/* Bottom Mode Switcher */}
-            <div className="mt-6 text-center text-xs text-neutral-400">
-              {authMode === "signup" ? (
-                <p>
-                  Already have an account?{" "}
+                {/* Step 2: Enter Code and New Strong Password */}
+                {recoveryStep === 2 && (
+                  <form onSubmit={handleResetPasswordSubmit} className="space-y-4">
+                    {/* Simulated code banner for instant preview usability */}
+                    {simulatedDevCode && (
+                      <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex items-center justify-between text-xs text-emerald-400">
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="w-4 h-4 shrink-0" />
+                          <span>Simulated Email Code: <strong>{simulatedDevCode}</strong></span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setRecoveryCode(simulatedDevCode)}
+                          className="text-[11px] underline underline-offset-2 hover:text-white"
+                        >
+                          Auto-fill
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="recoveryCode" className="text-xs font-semibold text-neutral-300">
+                          6-Digit Recovery Code
+                        </Label>
+                        <button
+                          type="button"
+                          onClick={() => setRecoveryStep(1)}
+                          className="text-[11px] text-neutral-400 hover:text-white underline"
+                        >
+                          Resend Code
+                        </button>
+                      </div>
+                      <Input
+                        id="recoveryCode"
+                        type="text"
+                        maxLength={6}
+                        placeholder="e.g. 492815"
+                        value={recoveryCode}
+                        onChange={(e) => setRecoveryCode(e.target.value.replace(/\D/g, ""))}
+                        disabled={resetPasswordMutation.isPending}
+                        required
+                        className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm font-mono tracking-widest text-center"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="newPassword" className="text-xs font-semibold text-neutral-300">
+                          New Password
+                        </Label>
+                        <span className="text-[11px] text-neutral-400">
+                          Min 8 chars, mixed types
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <Input
+                          id="newPassword"
+                          type={showNewPassword ? "text" : "password"}
+                          placeholder="Enter your new password"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          disabled={resetPasswordMutation.isPending}
+                          required
+                          autoComplete="new-password"
+                          className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm pr-10"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowNewPassword(!showNewPassword)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white"
+                        >
+                          {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+
+                      {/* Password Strength Indicator */}
+                      <PasswordStrengthIndicator password={newPassword} showRequirements={true} />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label htmlFor="confirmPassword" className="text-xs font-semibold text-neutral-300">
+                        Confirm New Password
+                      </Label>
+                      <Input
+                        id="confirmPassword"
+                        type={showNewPassword ? "text" : "password"}
+                        placeholder="Re-enter your new password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        disabled={resetPasswordMutation.isPending}
+                        required
+                        autoComplete="new-password"
+                        className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm"
+                      />
+                      {confirmPassword && newPassword !== confirmPassword && (
+                        <p className="text-[11px] text-rose-400 flex items-center gap-1 mt-1">
+                          <AlertCircle className="w-3 h-3" />
+                          Passwords do not match
+                        </p>
+                      )}
+                    </div>
+
+                    <Button
+                      type="submit"
+                      disabled={
+                        resetPasswordMutation.isPending ||
+                        !recoveryCode ||
+                        !newPasswordEvaluation.isSatisfied ||
+                        newPassword !== confirmPassword
+                      }
+                      className="w-full h-12 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50"
+                    >
+                      {resetPasswordMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          <span>Updating Password...</span>
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-4 h-4" />
+                          <span>Reset Password & Sign In</span>
+                        </>
+                      )}
+                    </Button>
+                  </form>
+                )}
+
+                <div className="pt-2 text-center text-xs text-neutral-400">
+                  Remember your password?{" "}
                   <button
                     type="button"
-                    onClick={() => setAuthMode("signin")}
+                    onClick={() => {
+                      setAuthMode("signin");
+                      setRecoveryStep(1);
+                    }}
                     className="text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 ml-1"
                   >
                     Sign In
                   </button>
-                </p>
-              ) : (
-                <p>
-                  Don't have an account yet?{" "}
-                  <button
-                    type="button"
-                    onClick={() => setAuthMode("signup")}
-                    className="text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 ml-1"
+                </div>
+              </div>
+            ) : (
+              /* ── SIGN UP & SIGN IN FORMS ──────────────────────────────────── */
+              <>
+                {/* Header */}
+                <div className="mb-6">
+                  <h3 className="text-2xl font-bold tracking-tight text-white">
+                    {authMode === "signup" ? "Create Your Trial Account" : "Sign In to CleanTraffic"}
+                  </h3>
+                  <p className="text-sm text-neutral-400 mt-1">
+                    {authMode === "signup"
+                      ? "Enter your details to activate your 7-day free trial and API key."
+                      : "Enter your registered email and password to access your dashboard."}
+                  </p>
+                </div>
+
+                {/* Form */}
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  {authMode === "signup" && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fullName" className="text-xs font-semibold text-neutral-300">
+                        Full Name <span className="text-neutral-500">(Optional)</span>
+                      </Label>
+                      <Input
+                        id="fullName"
+                        type="text"
+                        placeholder="e.g. Alex Morgan"
+                        value={fullName}
+                        onChange={(e) => setFullName(e.target.value)}
+                        disabled={isPending}
+                        className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm"
+                      />
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="email" className="text-xs font-semibold text-neutral-300">
+                      {authMode === "signup" ? "Email Address" : "Email or Username"}
+                    </Label>
+                    <Input
+                      id="email"
+                      type={authMode === "signup" ? "email" : "text"}
+                      placeholder="you@domain.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      disabled={isPending}
+                      required
+                      autoComplete="email"
+                      className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="password" className="text-xs font-semibold text-neutral-300">
+                        Password
+                      </Label>
+                      {authMode === "signup" ? (
+                        <span className="text-[11px] text-neutral-400">
+                          Min 8 chars, mixed letters & numbers/symbols
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRecoveryEmail(email);
+                            setAuthMode("forgot");
+                            setRecoveryStep(1);
+                          }}
+                          className="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 transition-colors"
+                        >
+                          Forgot Password?
+                        </button>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <Input
+                        id="password"
+                        type={showPassword ? "text" : "password"}
+                        placeholder={authMode === "signup" ? "Enter a strong password" : "Enter your password"}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        disabled={isPending}
+                        required
+                        autoComplete={authMode === "signup" ? "new-password" : "current-password"}
+                        className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+
+                    {/* Password Strength Indicator (Sign-Up mode only) */}
+                    {authMode === "signup" && (
+                      <PasswordStrengthIndicator password={password} showRequirements={true} />
+                    )}
+                  </div>
+
+                  {authMode === "signup" && (
+                    <div className="pt-2 space-y-3">
+                      {/* Newsletter opt-in */}
+                      <div className="flex items-start gap-2.5">
+                        <Checkbox
+                          id="newsletter"
+                          checked={newsletter}
+                          onCheckedChange={(checked) => setNewsletter(!!checked)}
+                          disabled={isPending}
+                          className="mt-0.5 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500 border-white/20"
+                        />
+                        <Label htmlFor="newsletter" className="text-xs text-neutral-400 font-normal leading-relaxed cursor-pointer">
+                          Send me email updates on newly detected bot ranges, traffic anomalies, and feature releases.
+                        </Label>
+                      </div>
+
+                      {/* Required Terms of Service and Privacy Policy Checkbox */}
+                      <div
+                        className={`flex items-start gap-2.5 p-2 rounded-lg transition-colors ${
+                          formSubmittedAttempt && !tosAccepted
+                            ? "bg-rose-500/10 border border-rose-500/30"
+                            : "border border-transparent"
+                        }`}
+                      >
+                        <Checkbox
+                          id="tos"
+                          checked={tosAccepted}
+                          onCheckedChange={(checked) => setTosAccepted(!!checked)}
+                          disabled={isPending}
+                          className={`mt-0.5 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500 ${
+                            formSubmittedAttempt && !tosAccepted
+                              ? "border-rose-400 ring-1 ring-rose-400"
+                              : "border-white/30"
+                          }`}
+                        />
+                        <div className="space-y-1">
+                          <Label htmlFor="tos" className="text-xs text-neutral-300 font-normal leading-relaxed cursor-pointer block">
+                            I agree to the{" "}
+                            <span className="text-emerald-400 underline underline-offset-2 font-medium">Terms of Service</span>{" "}
+                            and{" "}
+                            <span className="text-emerald-400 underline underline-offset-2 font-medium">Privacy Policy</span>.
+                            <span className="text-rose-400 ml-1 font-semibold">*</span>
+                          </Label>
+                          {formSubmittedAttempt && !tosAccepted && (
+                            <p className="text-[11px] text-rose-400 flex items-center gap-1 font-medium">
+                              <AlertCircle className="w-3 h-3" />
+                              You must accept the Terms of Service & Privacy Policy to sign up.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Submit Button with Loading Spinner to prevent multiple submissions */}
+                  <Button
+                    type="submit"
+                    disabled={
+                      isPending ||
+                      (authMode === "signup" &&
+                        (!passwordEvaluation.isSatisfied || !email.trim() || !tosAccepted))
+                    }
+                    className="w-full h-12 mt-2 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-black font-semibold rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Start 7-Day Free Trial
-                  </button>
-                </p>
-              )}
-            </div>
+                    {isPending ? (
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin text-black" />
+                        <span>{authMode === "signup" ? "Creating Your Account..." : "Signing In..."}</span>
+                      </div>
+                    ) : (
+                      <>
+                        <span>{authMode === "signup" ? "Sign Up & Start Trial" : "Sign In to Dashboard"}</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </>
+                    )}
+                  </Button>
+                </form>
+
+                {/* Bottom Mode Switcher & Forgot Password link */}
+                <div className="mt-6 text-center text-xs text-neutral-400 space-y-2">
+                  {authMode === "signup" ? (
+                    <p>
+                      Already have an account?{" "}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthMode("signin");
+                          setFormSubmittedAttempt(false);
+                        }}
+                        className="text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 ml-1"
+                      >
+                        Sign In
+                      </button>
+                      {" · "}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRecoveryEmail(email);
+                          setAuthMode("forgot");
+                          setRecoveryStep(1);
+                        }}
+                        className="text-neutral-400 hover:text-emerald-400 font-medium transition-colors"
+                      >
+                        Forgot Password?
+                      </button>
+                    </p>
+                  ) : (
+                    <>
+                      <p>
+                        Don't have an account yet?{" "}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAuthMode("signup");
+                            setFormSubmittedAttempt(false);
+                          }}
+                          className="text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 ml-1"
+                        >
+                          Start 7-Day Free Trial
+                        </button>
+                      </p>
+                      <p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRecoveryEmail(email);
+                            setAuthMode("forgot");
+                            setRecoveryStep(1);
+                          }}
+                          className="text-xs text-neutral-400 hover:text-emerald-400 transition-colors underline underline-offset-2"
+                        >
+                          Forgot your password? Reset it here
+                        </button>
+                      </p>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
 
           </div>
         </div>
       </main>
-
-      {/* ── Dialog: Railway / Custom Domain OAuth Setup Helper ─────────────── */}
-      <Dialog open={domainHelpOpen} onOpenChange={setDomainHelpOpen}>
-        <DialogContent className="bg-[#1a1a1a] border border-white/10 text-white max-w-lg">
-          <DialogHeader>
-            <div className="w-10 h-10 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-2">
-              <AlertTriangle className="w-5 h-5" />
-            </div>
-            <DialogTitle className="text-xl font-bold text-white">
-              Domain Whitelist Notice (Railway / Custom Hosting)
-            </DialogTitle>
-            <DialogDescription className="text-neutral-300 text-sm mt-1">
-              Google OAuth security requires new deployment domains to be added to Authorized Domains in Firebase & Google Cloud.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            <div>
-              <p className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-1.5">
-                Your Deployment Domain
-              </p>
-              <div className="flex items-center gap-2 bg-[#121212] border border-white/10 rounded-lg p-2.5">
-                <code className="text-sm text-emerald-400 font-mono flex-1 select-all break-all">
-                  {domainHelpHost || window.location.host}
-                </code>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={copyHostToClipboard}
-                  className="h-8 border-white/10 text-xs gap-1.5"
-                >
-                  {copiedHost ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copiedHost ? "Copied" : "Copy"}
-                </Button>
-              </div>
-            </div>
-
-            <div className="space-y-2 text-xs text-neutral-300 bg-[#222222] p-3.5 rounded-xl border border-white/5">
-              <p className="font-semibold text-white">How to enable Google Sign-In for Railway:</p>
-              <ol className="list-decimal list-inside space-y-1 text-neutral-400 leading-relaxed">
-                <li>Open <strong>Firebase Console &gt; Authentication &gt; Settings &gt; Authorized domains</strong>.</li>
-                <li>Add <strong className="text-white">{domainHelpHost || window.location.host}</strong> to the list.</li>
-                <li>Under <strong>Sign-in method</strong>, ensure <strong>Google</strong> is enabled.</li>
-              </ol>
-            </div>
-
-            <div className="pt-2 flex flex-col sm:flex-row gap-2">
-              <Button
-                type="button"
-                onClick={() => {
-                  setDomainHelpOpen(false);
-                  setAuthMode("signup");
-                }}
-                className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold h-10 text-xs"
-              >
-                Sign Up with Work Email (Instant)
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setDomainHelpOpen(false);
-                  handle1ClickDemo();
-                }}
-                className="flex-1 border-white/10 text-white hover:bg-white/5 h-10 text-xs"
-              >
-                1-Click Demo Sandbox
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* ── Footer ──────────────────────────────────────────────────────── */}
       <footer className="border-t border-white/5 py-6 px-4 text-center text-xs text-neutral-500">

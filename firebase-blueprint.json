@@ -20,6 +20,7 @@
         "id": { "type": "string" },
         "username": { "type": "string" },
         "email": { "type": "string", "format": "email" },
+        "emailVerified": { "type": "boolean" },
         "plan": { "type": "string" },
         "status": { "type": "string" }
       },

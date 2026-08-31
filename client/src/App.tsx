@@ -10,6 +10,7 @@ import UserLogin from "@/pages/user-login";
 import ApiVerify from "@/pages/api-verify";
 import UserDashboard from "@/pages/user-dashboard";
 import Landing from "@/pages/landing";
+import VerificationRequired from "@/pages/verification-required";
 import { userAuthApi } from "@/lib/user-auth";
 import { authApi } from "@/lib/auth";
 
@@ -68,6 +69,10 @@ function MainRouter() {
       <Route path="/" component={Landing} />
 
       {/* Client User Portal Endpoints */}
+      <Route path="/verification-required" component={VerificationRequired} />
+      <Route path="/verify-email" component={VerificationRequired} />
+      <Route path="/verify" component={VerificationRequired} />
+      <Route path="/email-verification" component={VerificationRequired} />
       <Route path="/signup" component={UserPortal} />
       <Route path="/signin" component={UserPortal} />
       <Route path="/api-verify" component={ApiVerify} />

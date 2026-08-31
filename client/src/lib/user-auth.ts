@@ -5,6 +5,8 @@ export interface ClientUser {
   username: string;
   fullName?: string | null;
   email: string | null;
+  emailVerified?: boolean;
+  emailVerifiedAt?: string | Date | null;
   status: string;
   subscriptionStatus?: string;
   trialEndsAt?: string | Date | null;
@@ -43,7 +45,68 @@ export interface VerifyApiKeyPayload {
   apiKey: string;
 }
 
+export interface ForgotPasswordPayload {
+  email: string;
+}
+
+export interface VerifyResetCodePayload {
+  email: string;
+  code: string;
+}
+
+export interface ResetPasswordPayload {
+  email: string;
+  code?: string;
+  token?: string;
+  newPassword: string;
+}
+
+export interface VerifyEmailPayload {
+  email?: string;
+  code?: string;
+  token?: string;
+}
+
+export interface ResendVerificationPayload {
+  email: string;
+}
+
 export const userAuthApi = {
+  forgotPassword: async (payload: ForgotPasswordPayload): Promise<{ success: boolean; message: string; devCode?: string; email?: string }> => {
+    const response = await apiRequest("POST", "/api/user/forgot-password", payload);
+    return await response.json();
+  },
+
+  verifyResetCode: async (payload: VerifyResetCodePayload): Promise<{ valid: boolean; token?: string; message?: string }> => {
+    const response = await apiRequest("POST", "/api/user/verify-reset-code", payload);
+    return await response.json();
+  },
+
+  resetPassword: async (payload: ResetPasswordPayload): Promise<{ success: boolean; message: string }> => {
+    const response = await apiRequest("POST", "/api/user/reset-password", payload);
+    return await response.json();
+  },
+
+  verifyEmail: async (payload: VerifyEmailPayload): Promise<{ success: boolean; message: string; token?: string; user?: any; alreadyVerified?: boolean }> => {
+    const response = await apiRequest("POST", "/api/user/verify-email", payload);
+    const data = await response.json();
+    if (data.token) {
+      localStorage.setItem('client_auth_token', data.token);
+    }
+    return data;
+  },
+
+  resendVerification: async (payload: ResendVerificationPayload): Promise<{ success: boolean; message: string; devCode?: string; devLink?: string; expiresAt?: number; alreadyVerified?: boolean; retryAfter?: number }> => {
+    const response = await apiRequest("POST", "/api/user/resend-verification", payload);
+    return await response.json();
+  },
+
+  getVerificationStatus: async (email?: string): Promise<{ email: string; emailVerified: boolean; emailVerifiedAt?: string | null; subscriptionStatus?: string }> => {
+    const url = email ? `/api/user/verification-status?email=${encodeURIComponent(email)}` : "/api/user/verification-status";
+    const response = await fetch(url, { credentials: "include" });
+    return await response.json();
+  },
+
   register: async (payload: UserRegisterPayload): Promise<any> => {
     const response = await apiRequest("POST", "/api/user/register", payload);
     const data = await response.json();

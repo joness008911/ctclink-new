@@ -91,14 +91,14 @@ export class FirestoreStorage implements IStorage {
       }
 
       // Ensure demo API key exists
-      const keyQ = query(collection(this.db, "api_keys"), where("keyValue", "==", "ct_live_demo_key_2026"), limit(1));
+      const keyQ = query(collection(this.db, "api_keys"), where("keyValue", "==", "ctc_demo_key_2026"), limit(1));
       const keySnap = await getDocs(keyQ);
       let demoKeyId = "demo-api-key-id";
       if (keySnap.empty) {
         await setDoc(doc(this.db, "api_keys", demoKeyId), {
           id: demoKeyId,
           keyName: "Demo API Key",
-          keyValue: "ct_live_demo_key_2026",
+          keyValue: "ctc_demo_key_2026",
           callLimit: 100000,
           callCount: 142,
           status: "active",
@@ -900,6 +900,8 @@ export class FirestoreStorage implements IStorage {
       password: user.password,
       fullName: user.fullName || null,
       email: user.email || null,
+      emailVerified: user.emailVerified ?? false,
+      emailVerifiedAt: user.emailVerifiedAt ? new Date(user.emailVerifiedAt) : null,
       apiKeyId: user.apiKeyId || null,
       status: user.status || "active",
       tosAccepted: user.tosAccepted ? new Date(user.tosAccepted) : null,
@@ -916,6 +918,7 @@ export class FirestoreStorage implements IStorage {
       ...record,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
+      emailVerifiedAt: record.emailVerifiedAt ? record.emailVerifiedAt.toISOString() : null,
       trialEndsAt: record.trialEndsAt ? record.trialEndsAt.toISOString() : null,
       tosAccepted: record.tosAccepted ? record.tosAccepted.toISOString() : null,
     });
@@ -929,6 +932,8 @@ export class FirestoreStorage implements IStorage {
       const data = snap.data();
       return {
         ...data,
+        emailVerified: data.emailVerified ?? false,
+        emailVerifiedAt: data.emailVerifiedAt ? new Date(data.emailVerifiedAt) : null,
         createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
         updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
         trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
@@ -947,6 +952,8 @@ export class FirestoreStorage implements IStorage {
       const data = snaps.docs[0].data();
       return {
         ...data,
+        emailVerified: data.emailVerified ?? false,
+        emailVerifiedAt: data.emailVerifiedAt ? new Date(data.emailVerifiedAt) : null,
         createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
         updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
         trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
@@ -965,6 +972,8 @@ export class FirestoreStorage implements IStorage {
       const data = snaps.docs[0].data();
       return {
         ...data,
+        emailVerified: data.emailVerified ?? false,
+        emailVerifiedAt: data.emailVerifiedAt ? new Date(data.emailVerifiedAt) : null,
         createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
         updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
         trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
@@ -991,6 +1000,7 @@ export class FirestoreStorage implements IStorage {
       const updateData: any = { ...updates, updatedAt: new Date().toISOString() };
       if (updates.trialEndsAt instanceof Date) updateData.trialEndsAt = updates.trialEndsAt.toISOString();
       if (updates.tosAccepted instanceof Date) updateData.tosAccepted = updates.tosAccepted.toISOString();
+      if (updates.emailVerifiedAt instanceof Date) updateData.emailVerifiedAt = updates.emailVerifiedAt.toISOString();
       await updateDoc(doc(this.db, "client_users", id), updateData);
       return this.getClientUser(id);
     } catch (e) {
@@ -1006,6 +1016,8 @@ export class FirestoreStorage implements IStorage {
       const data = snaps.docs[0].data();
       return {
         ...data,
+        emailVerified: data.emailVerified ?? false,
+        emailVerifiedAt: data.emailVerifiedAt ? new Date(data.emailVerifiedAt) : null,
         createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
         updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
         trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
@@ -1023,6 +1035,8 @@ export class FirestoreStorage implements IStorage {
         const data = d.data();
         return {
           ...data,
+          emailVerified: data.emailVerified ?? false,
+          emailVerifiedAt: data.emailVerifiedAt ? new Date(data.emailVerifiedAt) : null,
           createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
           updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
           trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
@@ -1046,6 +1060,8 @@ export class FirestoreStorage implements IStorage {
       const data = snaps.docs[0].data();
       return {
         ...data,
+        emailVerified: data.emailVerified ?? false,
+        emailVerifiedAt: data.emailVerifiedAt ? new Date(data.emailVerifiedAt) : null,
         createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
         updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
         trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,

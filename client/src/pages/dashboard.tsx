@@ -4,7 +4,34 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CheckCircle, Code, Copy, LogOut, Server, Shield, User, ShieldCheck, Trash2, AlertCircle, Info, ScrollText } from "lucide-react";
+import { 
+  CheckCircle, 
+  Code, 
+  Copy, 
+  LogOut, 
+  Server, 
+  Shield, 
+  User, 
+  ShieldCheck, 
+  Trash2, 
+  AlertCircle, 
+  Info, 
+  ScrollText,
+  LayoutDashboard,
+  BarChart3,
+  Globe,
+  ShieldAlert,
+  Lock,
+  Users,
+  Network,
+  Mail,
+  Settings,
+  Menu,
+  X,
+  ChevronRight,
+  Sparkles,
+  Activity
+} from "lucide-react";
 import ClassificationTable from "@/components/classification-table";
 import DetectionRules from "@/components/detection-rules";
 import ApiKeyManagement from "@/components/api-key-management";
@@ -16,7 +43,7 @@ import IspWhitelist from "@/components/isp-whitelist";
 import IspBlacklist from "@/components/isp-blacklist";
 import ClientUserManagement from "@/components/client-user-management";
 import WhitelabelDomainSettings from "@/components/whitelabel-domain-settings";
-import DomainPoolManagement from "@/components/domain-pool-management";
+import EmailManagement from "@/components/email-management";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -51,6 +78,8 @@ export default function Dashboard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   
+  const [activeTab, setActiveTab] = useState("overview");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [ipLabel, setIpLabel] = useState("");
   const [ipCidr, setIpCidr] = useState("");
   
@@ -194,82 +223,275 @@ export default function Dashboard() {
     addIpWhitelistMutation.mutate({ label: ipLabel, cidr: ipCidr });
   };
 
+  const navigationGroups = [
+    {
+      group: "Traffic & Analytics",
+      items: [
+        { id: "overview", label: "Live Dashboard", icon: LayoutDashboard, testId: "tab-overview", badge: "Live" },
+        { id: "analytics", label: "Traffic Analytics", icon: BarChart3, testId: "tab-analytics" },
+      ],
+    },
+    {
+      group: "Security & Filtering",
+      items: [
+        { id: "countries", label: "Country Whitelist", icon: Globe, testId: "tab-countries" },
+        { id: "isp-whitelist", label: "ISP Whitelist", icon: ShieldCheck, testId: "tab-isp-whitelist" },
+        { id: "isp-blacklist", label: "ISP Blacklist", icon: ShieldAlert, testId: "tab-isp-blacklist" },
+        { id: "ip-whitelist", label: "Client IP Whitelist", icon: Lock, testId: "tab-ip-whitelist" },
+      ],
+    },
+    {
+      group: "Client & Services",
+      items: [
+        { id: "client-users", label: "Client Users", icon: Users, testId: "tab-client-users" },
+        { id: "email", label: "Email & SMTP", icon: Mail, testId: "tab-email" },
+      ],
+    },
+    {
+      group: "System & Compliance",
+      items: [
+        { id: "settings", label: "System Settings", icon: Settings, testId: "tab-settings" },
+        { id: "audit-log", label: "Audit Log", icon: ScrollText, testId: "tab-audit-log" },
+      ],
+    },
+  ];
+
+  // Lookup current tab label
+  const currentNav = navigationGroups
+    .flatMap((g) => g.items)
+    .find((item) => item.id === activeTab);
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
-      {/* Header */}
-      <header className="bg-card/50 backdrop-blur-sm shadow-sm border-b border-border sticky top-0 z-10">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <Shield className="h-8 w-8 text-primary" />
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20 flex flex-col lg:flex-row">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full flex flex-col lg:flex-row min-h-screen">
+        {/* Mobile Header */}
+        <div className="lg:hidden bg-card/90 backdrop-blur-md border-b border-border sticky top-0 z-30 px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="h-9 w-9"
+              aria-label="Toggle menu"
+            >
+              {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            </Button>
+            <div className="flex items-center gap-2">
+              <Shield className="h-6 w-6 text-primary" />
+              <span className="font-bold text-sm tracking-tight">CleanTraffic Cloak</span>
             </div>
-            <div className="flex items-center space-x-4">
-              <div className="bg-green-600 text-white px-3 py-1.5 rounded-full text-sm font-medium">
-                <div className="w-2 h-2 bg-white rounded-full inline-block mr-2 animate-pulse"></div>
-                Live
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              Live
+            </span>
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={() => logoutMutation.mutate()}
+              disabled={logoutMutation.isPending}
+              className="h-8 text-xs gap-1.5"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Backdrop for Mobile Sidebar */}
+        {mobileMenuOpen && (
+          <div 
+            className="fixed inset-0 bg-background/80 backdrop-blur-sm z-40 lg:hidden"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+        )}
+
+        {/* Left-Hand Vertical Sidebar */}
+        <aside
+          className={`fixed inset-y-0 left-0 z-50 w-72 bg-card border-r border-border flex flex-col transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${
+            mobileMenuOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full"
+          }`}
+        >
+          {/* Sidebar Header / Brand */}
+          <div className="p-5 border-b border-border flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shadow-sm">
+                <Shield className="h-5 w-5 text-primary" />
               </div>
-              <div className="hidden md:flex items-center space-x-2 bg-muted/50 rounded-lg px-3 py-2">
-                <User className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">{user?.username || 'Admin'}</span>
+              <div>
+                <div className="font-bold text-sm leading-tight text-foreground flex items-center gap-1.5">
+                  CleanTraffic
+                  <span className="text-[10px] bg-primary text-primary-foreground font-semibold px-1.5 py-0.2 rounded">
+                    ADMIN
+                  </span>
+                </div>
+                <div className="text-[11px] text-muted-foreground">Cloak Control Engine</div>
               </div>
-              <Button 
-                variant="outline" 
+            </div>
+            {/* Close button on mobile */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 lg:hidden"
+              onClick={() => setMobileMenuOpen(false)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* System Live Status Pill */}
+          <div className="px-4 pt-4 pb-2">
+            <div className="bg-muted/50 border border-border/80 rounded-lg p-2.5 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                </span>
+                <span className="font-medium text-foreground">Traffic Defense Engine</span>
+              </div>
+              <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">
+                Online
+              </span>
+            </div>
+          </div>
+
+          {/* Navigation Links Grouped Vertically */}
+          <div className="flex-1 overflow-y-auto px-3 py-3 space-y-5">
+            <TabsList className="flex flex-col h-auto w-full bg-transparent p-0 space-y-5">
+              {navigationGroups.map((group) => (
+                <div key={group.group} className="space-y-1 w-full">
+                  <div className="px-3 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">
+                    {group.group}
+                  </div>
+                  <div className="space-y-0.5">
+                    {group.items.map((item) => {
+                      const Icon = item.icon;
+                      const isSelected = activeTab === item.id;
+                      return (
+                        <TabsTrigger
+                          key={item.id}
+                          value={item.id}
+                          data-testid={item.testId}
+                          onClick={() => setMobileMenuOpen(false)}
+                          className={`w-full justify-start text-xs font-medium px-3 py-2.5 rounded-lg transition-all flex items-center gap-2.5 text-left border ${
+                            isSelected
+                              ? "bg-primary text-primary-foreground border-primary shadow-sm font-semibold"
+                              : "bg-transparent text-muted-foreground hover:text-foreground hover:bg-muted/60 border-transparent"
+                          }`}
+                        >
+                          <Icon className={`h-4 w-4 shrink-0 ${isSelected ? "text-primary-foreground" : "text-muted-foreground"}`} />
+                          <span className="flex-1 truncate">{item.label}</span>
+                          {item.badge && (
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                                isSelected
+                                  ? "bg-primary-foreground/20 text-primary-foreground"
+                                  : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                              }`}
+                            >
+                              {item.badge}
+                            </span>
+                          )}
+                        </TabsTrigger>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </TabsList>
+          </div>
+
+          {/* Sidebar Footer: Admin Profile & Logout */}
+          <div className="p-3 border-t border-border bg-card/80 space-y-2">
+            <div className="flex items-center justify-between p-2 rounded-lg bg-muted/40 border border-border/60">
+              <div className="flex items-center gap-2.5 overflow-hidden">
+                <div className="w-8 h-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                  <User className="h-4 w-4 text-primary" />
+                </div>
+                <div className="overflow-hidden">
+                  <div className="text-xs font-semibold truncate text-foreground">
+                    {user?.username || "Admin"}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground capitalize">
+                    Administrator
+                  </div>
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
                 onClick={() => logoutMutation.mutate()}
                 disabled={logoutMutation.isPending}
                 data-testid="button-logout"
-                className="gap-2"
+                title="Logout from Admin Panel"
+                className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 shrink-0"
               >
                 <LogOut className="h-4 w-4" />
-                Logout
               </Button>
             </div>
           </div>
-        </div>
-      </header>
+        </aside>
 
-      {/* Dashboard Content */}
-      <main className="container mx-auto p-6">
-          <Tabs defaultValue="overview" className="w-full">
-            <TabsList className="mb-6">
-              <TabsTrigger value="overview" data-testid="tab-overview">📊 Dashboard</TabsTrigger>
-              <TabsTrigger value="client-users" data-testid="tab-client-users">👥 Client Users</TabsTrigger>
-              <TabsTrigger value="countries" data-testid="tab-countries">🌍 Countries</TabsTrigger>
-              <TabsTrigger value="isp-whitelist" data-testid="tab-isp-whitelist">✅ ISP Whitelist</TabsTrigger>
-              <TabsTrigger value="isp-blacklist" data-testid="tab-isp-blacklist">❌ ISP Blacklist</TabsTrigger>
-              <TabsTrigger value="ip-whitelist" data-testid="tab-ip-whitelist">🔒 IP Whitelist</TabsTrigger>
-              <TabsTrigger value="domain-pool" data-testid="tab-domain-pool">🌐 Domain Pool</TabsTrigger>
-              <TabsTrigger value="analytics" data-testid="tab-analytics">📈 Analytics</TabsTrigger>
-              <TabsTrigger value="settings" data-testid="tab-settings">⚙️ Settings</TabsTrigger>
-              <TabsTrigger value="audit-log" data-testid="tab-audit-log">📋 Audit Log</TabsTrigger>
-            </TabsList>
-            
-            <TabsContent value="overview">
+        {/* Main Content Area on the Right */}
+        <main className="flex-1 flex flex-col min-w-0 overflow-x-hidden">
+          {/* Top Content Bar */}
+          <header className="hidden lg:flex bg-card/50 backdrop-blur-sm border-b border-border px-8 py-3.5 items-center justify-between sticky top-0 z-20">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground font-normal">Admin Panel</span>
+              <ChevronRight className="h-4 w-4 text-muted-foreground/60" />
+              <span className="font-semibold text-foreground flex items-center gap-1.5">
+                {currentNav?.icon && <currentNav.icon className="h-4 w-4 text-primary" />}
+                {currentNav?.label || "Dashboard"}
+              </span>
+            </div>
+
+            <div className="flex items-center space-x-3">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>Active Protection</span>
+              </div>
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => logoutMutation.mutate()}
+                disabled={logoutMutation.isPending}
+                className="gap-1.5 h-8 text-xs"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                Logout
+              </Button>
+            </div>
+          </header>
+
+          {/* Tab Views Content */}
+          <div className="p-4 sm:p-6 lg:p-8 flex-1">
+            <TabsContent value="overview" className="mt-0 space-y-6">
               <ClassificationTable />
             </TabsContent>
 
-            <TabsContent value="client-users">
+            <TabsContent value="client-users" className="mt-0 space-y-6">
               <ClientUserManagement />
             </TabsContent>
 
-            <TabsContent value="countries">
+            <TabsContent value="countries" className="mt-0 space-y-6">
               <CountryWhitelist />
             </TabsContent>
 
-            <TabsContent value="isp-whitelist">
+            <TabsContent value="isp-whitelist" className="mt-0 space-y-6">
               <IspWhitelist />
             </TabsContent>
 
-            <TabsContent value="isp-blacklist">
+            <TabsContent value="isp-blacklist" className="mt-0 space-y-6">
               <IspBlacklist />
             </TabsContent>
 
-            <TabsContent value="ip-whitelist">
+            <TabsContent value="ip-whitelist" className="mt-0 space-y-6">
               <div className="space-y-6">
                 {/* Header Card with Enable/Disable Toggle */}
                 <Card className="shadow border border-border">
                   <CardHeader>
-                    <CardTitle className="text-lg font-semibold text-foreground">
-                      <ShieldCheck className="text-primary mr-2 inline h-5 w-5" />
+                    <CardTitle className="text-lg font-semibold text-foreground flex items-center gap-2">
+                      <ShieldCheck className="text-primary h-5 w-5" />
                       Client IP Whitelist
                     </CardTitle>
                   </CardHeader>
@@ -424,23 +646,23 @@ export default function Dashboard() {
               </div>
             </TabsContent>
 
-            <TabsContent value="domain-pool">
-              <DomainPoolManagement />
+            <TabsContent value="email" className="mt-0 space-y-6">
+              <EmailManagement />
             </TabsContent>
 
-            <TabsContent value="analytics">
+            <TabsContent value="analytics" className="mt-0 space-y-6">
               <AnalyticsDashboard />
             </TabsContent>
 
-            <TabsContent value="settings">
+            <TabsContent value="settings" className="mt-0 space-y-6">
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                 {/* Left Column */}
                 <div className="space-y-6">
                   {/* API Endpoint Info */}
                   <Card className="shadow border border-border">
                     <CardHeader>
-                      <CardTitle className="text-lg font-semibold text-foreground">
-                        <Code className="text-primary mr-2 inline h-5 w-5" />
+                      <CardTitle className="text-lg font-semibold text-foreground flex items-center gap-2">
+                        <Code className="text-primary h-5 w-5" />
                         API Endpoint
                       </CardTitle>
                     </CardHeader>
@@ -478,8 +700,8 @@ export default function Dashboard() {
                   {/* System Status */}
                   <Card className="shadow border border-border">
                     <CardHeader>
-                      <CardTitle className="text-lg font-semibold text-foreground">
-                        <Server className="text-primary mr-2 inline h-5 w-5" />
+                      <CardTitle className="text-lg font-semibold text-foreground flex items-center gap-2">
+                        <Server className="text-primary h-5 w-5" />
                         System Status
                       </CardTitle>
                     </CardHeader>
@@ -519,7 +741,8 @@ export default function Dashboard() {
                 </div>
               </div>
             </TabsContent>
-            <TabsContent value="audit-log">
+
+            <TabsContent value="audit-log" className="mt-0 space-y-6">
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
                   <ScrollText className="h-5 w-5 text-primary" />
@@ -532,7 +755,7 @@ export default function Dashboard() {
                     <p>No audit log entries yet.</p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto rounded-lg border">
+                  <div className="overflow-x-auto rounded-lg border border-border">
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -591,8 +814,10 @@ export default function Dashboard() {
                 )}
               </div>
             </TabsContent>
-          </Tabs>
-      </main>
+          </div>
+        </main>
+      </Tabs>
     </div>
   );
 }
+

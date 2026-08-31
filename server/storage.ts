@@ -284,18 +284,34 @@ export class MemStorage implements IStorage {
     const demoApiKey: ApiKey = {
       id: demoApiKeyId,
       keyName: "Demo API Key",
-      keyValue: "ct_live_demo_key_2026",
+      keyValue: "ctc_demo_key_2026",
       callLimit: 100000,
-      callCount: 142,
+      callCount: 0,
       status: "active",
       enabled: true,
       expirationPeriod: "unlimited",
       expiresAt: null,
-      lastUsed: new Date(),
+      lastUsed: null,
       createdAt: new Date(),
       updatedAt: new Date()
     };
     this.apiKeys.set(demoApiKeyId, demoApiKey);
+
+    // Also seed legacy ak_ and ct_live_ keys for backward compatibility
+    const legacyApiKeyId1 = randomUUID();
+    this.apiKeys.set(legacyApiKeyId1, {
+      ...demoApiKey,
+      id: legacyApiKeyId1,
+      keyName: "Legacy ct_live API Key",
+      keyValue: "ct_live_demo_key_2026",
+    });
+    const legacyApiKeyId2 = randomUUID();
+    this.apiKeys.set(legacyApiKeyId2, {
+      ...demoApiKey,
+      id: legacyApiKeyId2,
+      keyName: "Legacy ak_ API Key",
+      keyValue: "ak_demo_key_2026",
+    });
 
     // Seed default client user (demo / demo123)
     const clientUserId = randomUUID();
@@ -305,6 +321,8 @@ export class MemStorage implements IStorage {
       password: bcrypt.hashSync("demo123", 10),
       fullName: "Demo User",
       email: "demo@cleantraffic.io",
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
       status: "active",
       apiKeyId: demoApiKeyId,
       tosAccepted: new Date(),
@@ -316,37 +334,6 @@ export class MemStorage implements IStorage {
       stripeSubscriptionId: null,
       createdAt: new Date(),
       updatedAt: new Date()
-    });
-
-    // Seed sample classifications for initial analytics dashboard
-    const sampleCountries = [
-      { country: "United States", code: "US", city: "Ashburn", isp: "Amazon.com, Inc.", type: "Bot" as const, action: "Blocked" as const, method: "Datacenter ASN" },
-      { country: "United States", code: "US", city: "Los Angeles", isp: "Comcast Cable", type: "Human" as const, action: "Allowed" as const, method: "Residential ISP" },
-      { country: "Germany", code: "DE", city: "Frankfurt", isp: "Hetzner Online GmbH", type: "Bot" as const, action: "Blocked" as const, method: "Hosting Provider" },
-      { country: "United Kingdom", code: "GB", city: "London", isp: "Virgin Media", type: "Human" as const, action: "Allowed" as const, method: "Residential ISP" },
-      { country: "France", code: "FR", city: "Paris", isp: "OVH SAS", type: "Bot" as const, action: "Blocked" as const, method: "Known Scraper" },
-      { country: "Japan", code: "JP", city: "Tokyo", isp: "NTT Communications", type: "Human" as const, action: "Allowed" as const, method: "Mobile Carrier" },
-    ];
-    sampleCountries.forEach((sample, idx) => {
-      const classId = randomUUID();
-      const timestamp = new Date(Date.now() - idx * 300000);
-      this.classifications.set(classId, {
-        id: classId,
-        ipAddress: `198.51.100.${idx + 10}`,
-        visitorType: sample.type,
-        detectionMethod: sample.method,
-        location: `${sample.city}, ${sample.country}`,
-        country: sample.country,
-        city: sample.city,
-        countryCode: sample.code,
-        region: sample.city,
-        connectionType: sample.type === "Bot" ? "Data Center" : "Broadband",
-        isp: sample.isp,
-        browser: sample.type === "Bot" ? "Headless Chrome 120" : "Chrome 122.0.0",
-        deviceType: sample.type === "Bot" ? "Server" : "Desktop",
-        timestamp,
-        apiKeyId: demoApiKeyId
-      });
     });
   }
 
@@ -767,6 +754,8 @@ export class MemStorage implements IStorage {
       newsletter: user.newsletter ?? false,
       status: user.status ?? "active",
       email: user.email ?? null,
+      emailVerified: user.emailVerified ?? false,
+      emailVerifiedAt: user.emailVerifiedAt ?? null,
       apiKeyId: user.apiKeyId ?? null,
       tosAccepted: user.tosAccepted ?? null,
       complianceStatus: user.complianceStatus ?? "pending",

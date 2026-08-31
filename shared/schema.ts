@@ -115,6 +115,8 @@ export const clientUsers = pgTable("client_users", {
   password: text("password").notNull(),
   fullName: text("full_name"),
   email: text("email"),
+  emailVerified: boolean("email_verified").default(false).notNull(),
+  emailVerifiedAt: timestamp("email_verified_at"),
   apiKeyId: varchar("api_key_id").references(() => apiKeys.id, { onDelete: 'set null' }),
   status: text("status").default("active").notNull(), // active, suspended, expired
   tosAccepted: timestamp("tos_accepted"), // Terms of service acceptance timestamp

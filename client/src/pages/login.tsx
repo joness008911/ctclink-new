@@ -120,9 +120,15 @@ export default function Login() {
             </Button>
           </form>
 
-          <div className="mt-6 pt-4 border-t text-center">
+          <div className="mt-6 pt-4 border-t text-center space-y-2">
             <p className="text-xs text-muted-foreground">
               Protected Administrative Interface
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Client user?{" "}
+              <a href="/signin" className="text-primary hover:underline font-medium">
+                Client Sign In & Password Recovery
+              </a>
             </p>
           </div>
           

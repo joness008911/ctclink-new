@@ -76,6 +76,21 @@ import fs from "fs";
 import bcrypt from "bcrypt";
 import ipaddr from "ipaddr.js";
 import { broadcastClassification, setupWebSocketServer } from "./ws";
+import {
+  getSmtpConfig,
+  saveSmtpConfig,
+  verifySmtpConnection,
+  sendEmail,
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+  sendWelcomeEmail,
+  getEmailTemplate,
+  saveEmailTemplate,
+  getEmailLogs,
+  renderTemplate,
+  defaultEmailTemplates,
+  type SmtpConfig,
+} from "./emailService";
 
 // ── Rate limiters ──────────────────────────────────────────────────────────
 // Brute-force protection for authentication endpoints (admin + client login).
@@ -87,6 +102,39 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: "Too many login attempts. Please try again later." },
 });
+
+// Dedicated registration rate limiter: Prevents automated bot account creation and registration abuse.
+// 5 registration attempts per IP per 15 minutes.
+const registerLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many registration attempts from this IP address. Please wait 15 minutes before trying again." },
+});
+
+// Rate limiter for verification email dispatch (e.g. forgot-password/verification codes)
+// 5 email dispatch requests per IP per 15 minutes to prevent email spamming and quota exhaustion.
+const emailVerificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many verification email requests. Please wait a few minutes before requesting another code." },
+});
+
+// Verification PIN code brute-force protection: 10 verification checks per IP per 15 minutes.
+const verifyCodeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many verification code attempts. Please wait 15 minutes before trying again." },
+});
+
+// Per-email dispatch cooldown tracker (prevents rapid-fire email bombing to the same address)
+const emailDispatchCooldowns = new Map<string, number>();
+const EMAIL_COOLDOWN_MS = 60 * 1000; // 60 seconds cooldown between verification emails for the same address
 
 // Per-API-key rate limit for the classification endpoint (GET + POST).
 // Key extraction mirrors every path the two handlers accept:
@@ -588,7 +636,19 @@ Disallow: /*`);
     fullName: z.string().max(100).optional(),
     username: z.string().min(3).max(50).trim().optional(),
     email: z.string().email("Please enter a valid email address").max(100).trim(),
-    password: z.string().min(8, "Password must be at least 8 characters").max(256),
+    password: z
+      .string()
+      .min(8, "Password must be at least 8 characters long")
+      .max(256)
+      .refine((val) => /[a-z]/.test(val), {
+        message: "Password must contain at least one lowercase letter (a-z)",
+      })
+      .refine((val) => /[A-Z]/.test(val), {
+        message: "Password must contain at least one uppercase letter (A-Z)",
+      })
+      .refine((val) => /[0-9]/.test(val) || /[^A-Za-z0-9]/.test(val), {
+        message: "Password must contain at least one number (0-9) or special symbol",
+      }),
     newsletter: z.boolean().optional(),
     tosAccepted: z.boolean().refine((v) => v === true, {
       message: "You must accept the terms of use and privacy policy.",
@@ -602,9 +662,80 @@ Disallow: /*`);
     idToken: z.string().optional(),
   });
 
+  // Password recovery store & schemas
+  interface PasswordResetData {
+    userId: string;
+    email: string;
+    code: string;
+    token: string;
+    expiresAt: number;
+    failedAttempts: number;
+  }
+  const passwordResetStore = new Map<string, PasswordResetData>();
+
+  // Email verification store & session tracking
+  interface EmailVerificationData {
+    userId: string;
+    email: string;
+    code: string;
+    token: string;
+    expiresAt: number;
+    createdAt: number;
+    failedAttempts: number;
+  }
+  const emailVerificationStore = new Map<string, EmailVerificationData>();
+
+  function createEmailVerificationSession(userId: string, email: string) {
+    const cleanEmail = email.toLowerCase().trim();
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const token = "ct_ev_" + randomBytes(24).toString("hex");
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+    const sessionData: EmailVerificationData = {
+      userId,
+      email: cleanEmail,
+      code,
+      token,
+      expiresAt,
+      createdAt: Date.now(),
+      failedAttempts: 0,
+    };
+    emailVerificationStore.set(cleanEmail, sessionData);
+    emailVerificationStore.set(token, sessionData);
+    console.log(`[Email Verification] Verification created for ${cleanEmail} -> PIN: ${code}, Link: /verify-email?token=${token}`);
+    return sessionData;
+  }
+
+  const forgotPasswordSchema = z.object({
+    email: z.string().email("Please enter a valid email address").max(100).trim(),
+  });
+
+  const verifyResetCodeSchema = z.object({
+    email: z.string().email().trim(),
+    code: z.string().trim().min(6).max(6),
+  });
+
+  const resetPasswordSchema = z.object({
+    email: z.string().email().trim(),
+    code: z.string().trim().min(6).max(6).optional(),
+    token: z.string().optional(),
+    newPassword: z
+      .string()
+      .min(8, "Password must be at least 8 characters long")
+      .max(256)
+      .refine((val) => /[a-z]/.test(val), {
+        message: "Password must contain at least one lowercase letter (a-z)",
+      })
+      .refine((val) => /[A-Z]/.test(val), {
+        message: "Password must contain at least one uppercase letter (A-Z)",
+      })
+      .refine((val) => /[0-9]/.test(val) || /[^A-Za-z0-9]/.test(val), {
+        message: "Password must contain at least one number (0-9) or special symbol",
+      }),
+  });
+
   // Helper to provision trial resources (API key, default redirect URLs) for a client user
   async function provisionTrialForClientUser(userId: string, usernameOrEmail: string) {
-    const keyVal = "ct_live_" + randomBytes(16).toString("hex");
+    const keyVal = "ctc_" + randomBytes(16).toString("hex");
     const trialDays = 7;
     const expiresAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
 
@@ -633,12 +764,17 @@ Disallow: /*`);
     return apiKey;
   }
 
-  // Self-serve registration endpoint
-  app.post("/api/user/register", authLimiter, async (req, res) => {
+  // Self-serve registration endpoint with dedicated rate limiting
+  app.post("/api/user/register", registerLimiter, async (req, res) => {
     try {
       const parse = clientRegisterSchema.safeParse(req.body);
       if (!parse.success) {
-        return res.status(400).json({ message: "Invalid registration data", errors: parse.error.flatten().fieldErrors });
+        const fieldErrors = parse.error.flatten().fieldErrors as Record<string, string[] | undefined>;
+        const firstErrorKey = Object.keys(fieldErrors)[0];
+        const firstErrorMsg = firstErrorKey && fieldErrors[firstErrorKey]?.[0]
+          ? fieldErrors[firstErrorKey]![0]
+          : "Invalid registration data";
+        return res.status(400).json({ message: firstErrorMsg, errors: fieldErrors });
       }
       const { fullName, email, password, newsletter, tosAccepted } = parse.data;
       const cleanEmail = email.toLowerCase().trim();
@@ -667,12 +803,14 @@ Disallow: /*`);
       const trialDays = 7;
       const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
 
-      // Create client user record
+      // Create client user record with emailVerified: false
       const newUser = await storage.createClientUser({
         username,
         password: hashedPassword,
         fullName: fullName || null,
         email: cleanEmail,
+        emailVerified: false,
+        emailVerifiedAt: null,
         status: "active",
         subscriptionStatus: "trialing",
         trialEndsAt,
@@ -684,7 +822,23 @@ Disallow: /*`);
       // Provision trial API key & redirect URLs
       const apiKey = await provisionTrialForClientUser(newUser.id, username);
 
-      // Generate authenticated client token
+      // Generate verification session
+      const verification = createEmailVerificationSession(newUser.id, cleanEmail);
+
+      // Send real transactional verification email via configured SMTP / Provider
+      const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+      const host = req.get('host') || 'localhost:3000';
+      const baseUrl = `${protocol}://${host}`;
+
+      sendVerificationEmail({
+        to: cleanEmail,
+        name: newUser.fullName || newUser.username,
+        code: verification.code,
+        token: verification.token,
+        baseUrl,
+      }).catch((err) => console.error("[Registration Email Dispatch Error]:", err));
+
+      // Generate client token
       const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
       authTokens.set(clientToken, {
         type: "client",
@@ -701,12 +855,16 @@ Disallow: /*`);
       req.session.save((err) => {
         if (err) console.error("Registration session save error:", err);
         res.status(201).json({
-          message: "Registration successful! Your 7-day free trial has been activated.",
+          message: "Registration successful! A verification email with your 6-digit confirmation code and activation link has been dispatched to your inbox.",
+          requiresVerification: true,
+          email: cleanEmail,
           token: clientToken,
+          verificationToken: verification.token,
           user: {
             id: newUser.id,
             username: newUser.username,
             email: newUser.email,
+            emailVerified: false,
             fullName: newUser.fullName,
             status: "active",
             subscriptionStatus: "trialing",
@@ -972,6 +1130,458 @@ Disallow: /*`);
     }
   });
 
+  // Password Recovery - Step 1: Request Password Reset Link & Verification Code
+  app.post("/api/user/forgot-password", emailVerificationLimiter, async (req, res) => {
+    try {
+      const parse = forgotPasswordSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Please provide a valid email address." });
+      }
+      const cleanEmail = parse.data.email.toLowerCase().trim();
+
+      // Per-target email cooldown check to prevent inbox flooding / email abuse
+      const lastSent = emailDispatchCooldowns.get(cleanEmail);
+      if (lastSent && Date.now() - lastSent < EMAIL_COOLDOWN_MS) {
+        const remainingSec = Math.ceil((EMAIL_COOLDOWN_MS - (Date.now() - lastSent)) / 1000);
+        return res.status(429).json({
+          message: `A verification code was recently requested for this email. Please wait ${remainingSec} seconds before requesting a new one.`,
+          retryAfter: remainingSec,
+        });
+      }
+      emailDispatchCooldowns.set(cleanEmail, Date.now());
+
+      // Look up user by email or username/email
+      const user = await storage.getClientUserByEmail(cleanEmail) || await storage.getClientUserByUsernameOrEmail(cleanEmail);
+      if (!user) {
+        // Safe uniform response to protect account privacy
+        return res.json({
+          success: true,
+          message: "If an account is associated with this email address, a password reset verification code has been generated.",
+          email: cleanEmail,
+        });
+      }
+
+      // Generate 6-digit verification code and reset token
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const token = "pw_rst_" + randomBytes(24).toString("hex");
+      const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutes expiration
+
+      const resetData: PasswordResetData = {
+        userId: user.id,
+        email: cleanEmail,
+        code,
+        token,
+        expiresAt,
+        failedAttempts: 0,
+      };
+
+      passwordResetStore.set(cleanEmail, resetData);
+      passwordResetStore.set(token, resetData);
+
+      // Send real password recovery email via SMTP
+      sendPasswordResetEmail({
+        to: cleanEmail,
+        name: user.fullName || user.username,
+        code,
+        token,
+      }).catch((err) => console.error("[Password Recovery Email Dispatch Error]:", err));
+
+      console.log(`[Password Recovery] Generated reset code ${code} for ${cleanEmail} (userId: ${user.id}, expires: 15m)`);
+
+      return res.json({
+        success: true,
+        message: "If an account is associated with this email address, a password reset verification code has been dispatched to your email inbox.",
+        email: cleanEmail,
+      });
+    } catch (error) {
+      console.error("Forgot password error:", error);
+      res.status(500).json({ message: "Failed to initiate password recovery. Please try again." });
+    }
+  });
+
+  // Password Recovery - Step 2: Verify 6-digit Recovery Code with Brute-Force Lockout
+  app.post("/api/user/verify-reset-code", verifyCodeLimiter, async (req, res) => {
+    try {
+      const parse = verifyResetCodeSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ valid: false, message: "Invalid email or 6-digit verification code format." });
+      }
+      const { email, code } = parse.data;
+      const cleanEmail = email.toLowerCase().trim();
+
+      const entry = passwordResetStore.get(cleanEmail);
+      if (!entry) {
+        return res.status(400).json({ valid: false, message: "No active recovery code found for this email. Please request a new code." });
+      }
+
+      if (Date.now() > entry.expiresAt) {
+        passwordResetStore.delete(cleanEmail);
+        if (entry.token) passwordResetStore.delete(entry.token);
+        return res.status(400).json({ valid: false, message: "Verification code has expired. Please request a new one." });
+      }
+
+      // Check max failed verification attempts to prevent 6-digit PIN brute forcing
+      if (entry.failedAttempts >= 5) {
+        passwordResetStore.delete(cleanEmail);
+        if (entry.token) passwordResetStore.delete(entry.token);
+        return res.status(429).json({
+          valid: false,
+          message: "Too many incorrect verification attempts. For your security, this code has been invalidated. Please request a new code.",
+        });
+      }
+
+      if (entry.code !== code.trim()) {
+        entry.failedAttempts = (entry.failedAttempts || 0) + 1;
+        const attemptsLeft = Math.max(0, 5 - entry.failedAttempts);
+        return res.status(400).json({
+          valid: false,
+          message: attemptsLeft > 0
+            ? `Invalid verification code. ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining.`
+            : "Invalid verification code. Maximum attempts reached.",
+        });
+      }
+
+      return res.json({ valid: true, token: entry.token });
+    } catch (error) {
+      console.error("Verify reset code error:", error);
+      res.status(500).json({ valid: false, message: "Error verifying recovery code." });
+    }
+  });
+
+  // Password Recovery - Step 3: Complete Password Reset with New Strong Password
+  app.post("/api/user/reset-password", verifyCodeLimiter, async (req, res) => {
+    try {
+      const parse = resetPasswordSchema.safeParse(req.body);
+      if (!parse.success) {
+        const fieldErrors = parse.error.flatten().fieldErrors as Record<string, string[] | undefined>;
+        const firstErrorKey = Object.keys(fieldErrors)[0];
+        const firstErrorMsg = firstErrorKey && fieldErrors[firstErrorKey]?.[0]
+          ? fieldErrors[firstErrorKey]![0]
+          : "Invalid password reset data";
+        return res.status(400).json({ message: firstErrorMsg, errors: fieldErrors });
+      }
+
+      const { email, code, token, newPassword } = parse.data;
+      const cleanEmail = email.toLowerCase().trim();
+
+      let entry = passwordResetStore.get(cleanEmail);
+      if (!entry && token) {
+        entry = passwordResetStore.get(token);
+      }
+
+      if (!entry) {
+        return res.status(400).json({ message: "No active password recovery session found. Please request a new recovery code." });
+      }
+
+      if (Date.now() > entry.expiresAt) {
+        passwordResetStore.delete(cleanEmail);
+        if (entry.token) passwordResetStore.delete(entry.token);
+        return res.status(400).json({ message: "Recovery session has expired. Please request a new recovery code." });
+      }
+
+      if (entry.failedAttempts >= 5) {
+        passwordResetStore.delete(cleanEmail);
+        if (entry.token) passwordResetStore.delete(entry.token);
+        return res.status(429).json({ message: "Too many incorrect verification attempts. Please request a new recovery code." });
+      }
+
+      if (code && entry.code !== code.trim() && (!token || entry.token !== token)) {
+        entry.failedAttempts = (entry.failedAttempts || 0) + 1;
+        return res.status(400).json({ message: "Invalid verification code." });
+      }
+
+      // Hash and update the user's password securely
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      await storage.updateClientUser(entry.userId, {
+        password: hashedPassword,
+      });
+
+      // Clear the used reset token and cooldowns
+      passwordResetStore.delete(cleanEmail);
+      if (entry.token) passwordResetStore.delete(entry.token);
+      emailDispatchCooldowns.delete(cleanEmail);
+
+      console.log(`[Password Recovery] Successfully reset password for user ${entry.userId} (${cleanEmail})`);
+
+      return res.json({
+        success: true,
+        message: "Your password has been successfully updated! You can now sign in with your new credentials.",
+      });
+    } catch (error) {
+      console.error("Reset password error:", error);
+      res.status(500).json({ message: "Failed to reset password. Please try again." });
+    }
+  });
+
+  // ── Email Verification Endpoints ──────────────────────────────────────────
+
+  const verifyEmailSchema = z.object({
+    email: z.string().email().optional(),
+    code: z.string().min(4).max(10).optional(),
+    token: z.string().optional(),
+  });
+
+  // Verify email endpoint (handles both 6-digit code and token)
+  app.post("/api/user/verify-email", verifyCodeLimiter, async (req, res) => {
+    try {
+      const parse = verifyEmailSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Invalid verification payload", errors: parse.error.flatten().fieldErrors });
+      }
+      const { email, code, token } = parse.data;
+      let entry: EmailVerificationData | undefined;
+
+      if (token) {
+        entry = emailVerificationStore.get(token);
+      }
+      if (!entry && email) {
+        entry = emailVerificationStore.get(email.toLowerCase().trim());
+      }
+
+      if (!entry) {
+        // Check if user is already verified
+        if (email) {
+          const existing = await storage.getClientUserByEmail(email.toLowerCase().trim());
+          if (existing && existing.emailVerified) {
+            return res.json({
+              success: true,
+              alreadyVerified: true,
+              message: "Your email address is already verified. You can access all features.",
+              user: {
+                id: existing.id,
+                email: existing.email,
+                emailVerified: true,
+              },
+            });
+          }
+        }
+        return res.status(400).json({
+          message: "Invalid or expired verification session. Please request a new verification email.",
+        });
+      }
+
+      if (Date.now() > entry.expiresAt) {
+        emailVerificationStore.delete(entry.email);
+        emailVerificationStore.delete(entry.token);
+        return res.status(400).json({
+          message: "Verification link or code has expired. Please request a new verification email.",
+        });
+      }
+
+      if (entry.failedAttempts >= 5) {
+        emailVerificationStore.delete(entry.email);
+        emailVerificationStore.delete(entry.token);
+        return res.status(429).json({
+          message: "Too many failed attempts. Please request a new verification email.",
+        });
+      }
+
+      if (code && entry.code !== code.trim() && (!token || entry.token !== token)) {
+        entry.failedAttempts = (entry.failedAttempts || 0) + 1;
+        const attemptsLeft = Math.max(0, 5 - entry.failedAttempts);
+        return res.status(400).json({
+          message: attemptsLeft > 0
+            ? `Invalid verification code. ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining.`
+            : "Invalid verification code. Maximum attempts reached.",
+        });
+      }
+
+      // Mark user email verified in persistent storage
+      const user = (await storage.getClientUser(entry.userId)) || (await storage.getClientUserByEmail(entry.email));
+      if (!user) {
+        return res.status(404).json({ message: "User account not found." });
+      }
+
+      const updatedUser = await storage.updateClientUser(user.id, {
+        emailVerified: true,
+        emailVerifiedAt: new Date(),
+      });
+
+      // Clean up verification store
+      emailVerificationStore.delete(entry.email);
+      emailVerificationStore.delete(entry.token);
+      emailDispatchCooldowns.delete(entry.email);
+
+      // Create authenticated client token
+      const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+      authTokens.set(clientToken, {
+        type: "client",
+        userId: user.id,
+        authenticated: true,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+
+      delete (req.session as any).userId;
+      req.session.clientUserId = user.id;
+      req.session.clientUserAuthenticated = true;
+
+      console.log(`[Email Verification] Email confirmed for ${user.email} (${user.id})`);
+
+      req.session.save((err) => {
+        if (err) console.error("Verify email session save error:", err);
+        res.json({
+          success: true,
+          message: "Email verified successfully! Welcome to CleanTraffic.",
+          token: clientToken,
+          user: {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            emailVerified: true,
+            emailVerifiedAt: updatedUser?.emailVerifiedAt || new Date(),
+            status: user.status,
+            subscriptionStatus: user.subscriptionStatus,
+          },
+        });
+      });
+    } catch (error) {
+      console.error("Email verification error:", error);
+      res.status(500).json({ message: "Failed to verify email. Please try again." });
+    }
+  });
+
+  // GET link verification (for email click-throughs)
+  app.get("/api/user/verify-email", async (req, res) => {
+    try {
+      const token = req.query.token as string | undefined;
+      if (!token) {
+        return res.redirect("/verification-required?error=missing_token");
+      }
+      const entry = emailVerificationStore.get(token);
+      if (!entry) {
+        return res.redirect("/verification-required?error=invalid_or_expired");
+      }
+      if (Date.now() > entry.expiresAt) {
+        emailVerificationStore.delete(entry.email);
+        emailVerificationStore.delete(entry.token);
+        return res.redirect(`/verification-required?error=expired&email=${encodeURIComponent(entry.email)}`);
+      }
+
+      const user = (await storage.getClientUser(entry.userId)) || (await storage.getClientUserByEmail(entry.email));
+      if (user) {
+        await storage.updateClientUser(user.id, {
+          emailVerified: true,
+          emailVerifiedAt: new Date(),
+        });
+        emailVerificationStore.delete(entry.email);
+        emailVerificationStore.delete(entry.token);
+        emailDispatchCooldowns.delete(entry.email);
+
+        const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+        authTokens.set(clientToken, {
+          type: "client",
+          userId: user.id,
+          authenticated: true,
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        });
+        req.session.clientUserId = user.id;
+        req.session.clientUserAuthenticated = true;
+
+        return res.redirect(`/verification-required?status=success&email=${encodeURIComponent(user.email || "")}&token=${clientToken}`);
+      }
+      return res.redirect("/verification-required?error=user_not_found");
+    } catch (error) {
+      console.error("GET verify-email error:", error);
+      res.redirect("/verification-required?error=server_error");
+    }
+  });
+
+  // Resend verification email endpoint
+  const resendVerificationSchema = z.object({
+    email: z.string().email("Please provide a valid email address").max(100).trim(),
+  });
+
+  app.post("/api/user/resend-verification", emailVerificationLimiter, async (req, res) => {
+    try {
+      const parse = resendVerificationSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Invalid email address", errors: parse.error.flatten().fieldErrors });
+      }
+      const cleanEmail = parse.data.email.toLowerCase().trim();
+
+      // Per-email cooldown to protect mail delivery systems
+      const lastSent = emailDispatchCooldowns.get(cleanEmail);
+      if (lastSent && Date.now() - lastSent < EMAIL_COOLDOWN_MS) {
+        const remainingSec = Math.ceil((EMAIL_COOLDOWN_MS - (Date.now() - lastSent)) / 1000);
+        return res.status(429).json({
+          message: `Please wait ${remainingSec} seconds before requesting another verification email.`,
+          retryAfter: remainingSec,
+        });
+      }
+      emailDispatchCooldowns.set(cleanEmail, Date.now());
+
+      const user = (await storage.getClientUserByEmail(cleanEmail)) || (await storage.getClientUserByUsernameOrEmail(cleanEmail));
+      if (!user) {
+        // Return generic message to prevent email enumeration
+        return res.json({
+          success: true,
+          message: "If an account exists with this email, a fresh verification link and code have been sent.",
+        });
+      }
+
+      if (user.emailVerified) {
+        return res.json({
+          success: true,
+          alreadyVerified: true,
+          message: "Your email address is already verified. You can log in directly.",
+        });
+      }
+
+      const verification = createEmailVerificationSession(user.id, cleanEmail);
+
+      const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+      const host = req.get('host') || 'localhost:3000';
+      const baseUrl = `${protocol}://${host}`;
+
+      sendVerificationEmail({
+        to: cleanEmail,
+        name: user.fullName || user.username,
+        code: verification.code,
+        token: verification.token,
+        baseUrl,
+      }).catch((err) => console.error("[Resend Email Dispatch Error]:", err));
+
+      return res.json({
+        success: true,
+        message: `A new verification email with a fresh 6-digit confirmation code and activation link has been dispatched to ${cleanEmail}. Please check your inbox and spam folder.`,
+        expiresAt: verification.expiresAt,
+      });
+    } catch (error) {
+      console.error("Resend verification error:", error);
+      res.status(500).json({ message: "Failed to resend verification email. Please try again." });
+    }
+  });
+
+  // Check email verification status
+  app.get("/api/user/verification-status", async (req, res) => {
+    try {
+      const emailParam = (req.query.email as string | undefined)?.toLowerCase().trim();
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId;
+
+      let user: any = null;
+      if (userId) {
+        user = await storage.getClientUser(userId);
+      } else if (emailParam) {
+        user = await storage.getClientUserByEmail(emailParam);
+      }
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      return res.json({
+        email: user.email,
+        emailVerified: !!user.emailVerified,
+        emailVerifiedAt: user.emailVerifiedAt,
+        subscriptionStatus: user.subscriptionStatus,
+      });
+    } catch (error) {
+      console.error("Verification status check error:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   // Verify / Attach API key for client user (optional secondary step)
   app.post("/api/user/verify-api-key", async (req, res) => {
     try {
@@ -1152,6 +1762,8 @@ Disallow: /*`);
         id: user.id,
         username: user.username,
         email: user.email,
+        emailVerified: !!user.emailVerified,
+        emailVerifiedAt: user.emailVerifiedAt,
         status: user.status,
         createdAt: user.createdAt,
         // Billing fields
@@ -1637,6 +2249,378 @@ Disallow: /*`);
 
   // ========== END ADMIN CLIENT USER MANAGEMENT ROUTES ==========
 
+  // ========== EMAIL & SMTP MANAGEMENT ROUTES ==========
+
+  // 1. Get SMTP Configuration
+  app.get("/api/interface/email/settings", requireAuth, async (req, res) => {
+    try {
+      const config = await getSmtpConfig();
+      res.json({
+        host: config.host,
+        port: config.port,
+        secure: config.secure,
+        user: config.user,
+        passMasked: config.pass ? "••••••••" : "",
+        isConfigured: !!(config.host && config.user && config.pass),
+        from: config.from,
+        fromName: config.fromName,
+        providerPreset: config.providerPreset || "custom",
+      });
+    } catch (error: any) {
+      console.error("Get email settings error:", error);
+      res.status(500).json({ message: "Failed to retrieve email settings" });
+    }
+  });
+
+  // 2. Save SMTP Configuration
+  const saveSmtpSchema = z.object({
+    host: z.string().trim(),
+    port: z.coerce.number().int().min(1).max(65535),
+    secure: z.boolean().default(false),
+    user: z.string().trim(),
+    pass: z.string().optional(),
+    from: z.string().email("Invalid sender email address").trim(),
+    fromName: z.string().trim().default("CleanTraffic Cloak"),
+    providerPreset: z.string().default("custom"),
+  });
+
+  app.post("/api/interface/email/settings", requireAuth, async (req, res) => {
+    try {
+      const parse = saveSmtpSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Invalid SMTP settings", errors: parse.error.flatten().fieldErrors });
+      }
+
+      await saveSmtpConfig(parse.data);
+      const updated = await getSmtpConfig();
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: "email.update_smtp_settings",
+        metadata: { host: updated.host, port: updated.port, from: updated.from, preset: updated.providerPreset },
+      });
+
+      res.json({
+        message: "SMTP settings saved and updated successfully!",
+        isConfigured: !!(updated.host && updated.user && updated.pass),
+        settings: {
+          host: updated.host,
+          port: updated.port,
+          secure: updated.secure,
+          user: updated.user,
+          passMasked: updated.pass ? "••••••••" : "",
+          from: updated.from,
+          fromName: updated.fromName,
+          providerPreset: updated.providerPreset,
+        },
+      });
+    } catch (error: any) {
+      console.error("Save email settings error:", error);
+      res.status(500).json({ message: "Failed to save SMTP settings" });
+    }
+  });
+
+  // 3. Test SMTP Connection & Send Test Email
+  const testSmtpSchema = z.object({
+    host: z.string().optional(),
+    port: z.coerce.number().optional(),
+    secure: z.boolean().optional(),
+    user: z.string().optional(),
+    pass: z.string().optional(),
+    from: z.string().optional(),
+    fromName: z.string().optional(),
+    testRecipient: z.string().email().optional(),
+  });
+
+  app.post("/api/interface/email/test-connection", requireAuth, async (req, res) => {
+    try {
+      const parse = testSmtpSchema.safeParse(req.body);
+      const testData = parse.success ? parse.data : {};
+      
+      const configOverride: Partial<SmtpConfig> = {};
+      if (testData.host) configOverride.host = testData.host;
+      if (testData.port) configOverride.port = testData.port;
+      if (testData.secure !== undefined) configOverride.secure = testData.secure;
+      if (testData.user) configOverride.user = testData.user;
+      if (testData.pass && testData.pass !== "••••••••") configOverride.pass = testData.pass;
+      if (testData.from) configOverride.from = testData.from;
+      if (testData.fromName) configOverride.fromName = testData.fromName;
+
+      const result = await verifySmtpConnection(configOverride);
+
+      if (!result.success) {
+        return res.status(400).json(result);
+      }
+
+      // If test recipient provided, send an actual test email
+      if (testData.testRecipient) {
+        const sendResult = await sendEmail({
+          to: testData.testRecipient,
+          subject: "CleanTraffic Cloak - SMTP Connection Test",
+          html: `<div style="font-family:sans-serif; background:#0b0f19; color:#f8fafc; padding:32px; border-radius:12px;">
+            <h2 style="color:#38bdf8; margin-top:0;">✅ SMTP Integration Verified!</h2>
+            <p>Congratulations! Your SMTP settings on CleanTraffic Cloak are functioning properly.</p>
+            <p style="color:#94a3b8; font-size:13px;">Sent at: ${new Date().toUTCString()}</p>
+          </div>`,
+          templateType: "test_connection",
+        });
+
+        if (!sendResult.success) {
+          return res.status(400).json({
+            success: false,
+            message: `SMTP connected, but failed to deliver test email to ${testData.testRecipient}: ${sendResult.message}`,
+          });
+        }
+
+        return res.json({
+          success: true,
+          message: `Connection successful! Test email delivered to ${testData.testRecipient}.`,
+        });
+      }
+
+      res.json(result);
+    } catch (error: any) {
+      console.error("Test SMTP error:", error);
+      res.status(500).json({ success: false, message: error?.message || "Internal error testing SMTP" });
+    }
+  });
+
+  // 4. Get Email Templates
+  app.get("/api/interface/email/templates", requireAuth, async (req, res) => {
+    try {
+      const types: (keyof typeof defaultEmailTemplates)[] = ["verification", "reset", "welcome", "custom", "newsletter"];
+      const templates: Record<string, { subject: string; html: string; defaultSubject: string; defaultHtml: string }> = {};
+
+      for (const t of types) {
+        const stored = await getEmailTemplate(t);
+        const def = defaultEmailTemplates[t] || defaultEmailTemplates.custom;
+        templates[t] = {
+          subject: stored.subject,
+          html: stored.html,
+          defaultSubject: def.subject,
+          defaultHtml: def.html,
+        };
+      }
+
+      res.json({ templates });
+    } catch (error: any) {
+      console.error("Get templates error:", error);
+      res.status(500).json({ message: "Failed to load email templates" });
+    }
+  });
+
+  // 5. Save Email Template
+  const saveTemplateSchema = z.object({
+    type: z.enum(["verification", "reset", "welcome", "custom", "newsletter"]),
+    subject: z.string().min(1, "Subject is required"),
+    html: z.string().min(1, "HTML content is required"),
+  });
+
+  app.post("/api/interface/email/templates", requireAuth, async (req, res) => {
+    try {
+      const parse = saveTemplateSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Invalid template payload", errors: parse.error.flatten().fieldErrors });
+      }
+
+      const { type, subject, html } = parse.data;
+      await saveEmailTemplate(type, { subject, html });
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: `email.update_template_${type}`,
+        metadata: { subject },
+      });
+
+      res.json({ message: `Template '${type}' saved and activated successfully!` });
+    } catch (error: any) {
+      console.error("Save template error:", error);
+      res.status(500).json({ message: "Failed to save email template" });
+    }
+  });
+
+  // 6. Preview Template with Sample Variables
+  app.post("/api/interface/email/templates/preview", requireAuth, async (req, res) => {
+    try {
+      const { subject = "", html = "", sampleVars = {} } = req.body;
+      const sampleVariables = {
+        name: "Alex Mercer",
+        username: "alex_m",
+        email: "alex.mercer@enterprise.io",
+        code: "839201",
+        verification_link: "https://cleantraffic.io/verify-email?token=ct_demo_preview_token",
+        reset_link: "https://cleantraffic.io/signin",
+        app_name: "CleanTraffic Cloak",
+        support_email: "support@cleantraffic.io",
+        current_year: String(new Date().getFullYear()),
+        login_link: "https://cleantraffic.io/signin",
+        api_key: "ctc_9f83a210c44e9912",
+        custom_message: `<p>We are rolling out new residential bot cloaking algorithms. Your traffic filters have automatically been updated with zero downtime.</p>`,
+        ...sampleVars,
+      };
+
+      const renderedSubject = renderTemplate(subject, sampleVariables);
+      const renderedHtml = renderTemplate(html, sampleVariables);
+
+      res.json({ renderedSubject, renderedHtml });
+    } catch (error: any) {
+      console.error("Preview template error:", error);
+      res.status(500).json({ message: "Failed to render template preview" });
+    }
+  });
+
+  // 7. Send Direct Email to a Specific User
+  const sendToUserSchema = z.object({
+    userId: z.string().optional(),
+    email: z.string().email("Valid email required"),
+    subject: z.string().min(1, "Subject is required"),
+    message: z.string().min(1, "Message is required"),
+    name: z.string().optional(),
+    isHtml: z.boolean().default(true),
+  });
+
+  app.post("/api/interface/email/send-to-user", requireAuth, async (req, res) => {
+    try {
+      const parse = sendToUserSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Invalid email parameters", errors: parse.error.flatten().fieldErrors });
+      }
+
+      const { email, subject, message, name, isHtml } = parse.data;
+
+      // Wrap custom message in standard CleanTraffic branded container if it's plain text
+      let htmlContent = message;
+      if (!message.includes("<html") && !message.includes("<div")) {
+        const customTpl = await getEmailTemplate("custom");
+        htmlContent = renderTemplate(customTpl.html, {
+          subject,
+          custom_message: message.split("\n").map(p => `<p style="margin: 0 0 16px;">${p}</p>`).join(""),
+          name: name || email.split("@")[0],
+          email,
+        });
+      }
+
+      const result = await sendEmail({
+        to: email,
+        subject,
+        html: htmlContent,
+        templateType: "direct_admin_message",
+        variables: { name, email },
+      });
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: "email.send_direct",
+        metadata: { to: email, subject, status: result.success ? "success" : "failed" },
+      });
+
+      res.json(result);
+    } catch (error: any) {
+      console.error("Send email to user error:", error);
+      res.status(500).json({ success: false, message: error?.message || "Failed to send email" });
+    }
+  });
+
+  // 8. Send Newsletter / Broadcast Email
+  const broadcastSchema = z.object({
+    audience: z.enum(["all", "newsletter", "active_trial", "active_subscribers"]).default("all"),
+    subject: z.string().min(1, "Subject is required"),
+    message: z.string().min(1, "Message is required"),
+  });
+
+  app.post("/api/interface/email/broadcast", requireAuth, async (req, res) => {
+    try {
+      const parse = broadcastSchema.safeParse(req.body);
+      if (!parse.success) {
+        return res.status(400).json({ message: "Invalid broadcast parameters", errors: parse.error.flatten().fieldErrors });
+      }
+
+      const { audience, subject, message } = parse.data;
+      const allUsers = await storage.getAllClientUsers();
+
+      // Filter audience
+      let recipients = allUsers.filter(u => u.email && u.email.includes("@"));
+
+      if (audience === "newsletter") {
+        recipients = recipients.filter(u => u.newsletter === true);
+      } else if (audience === "active_trial") {
+        recipients = recipients.filter(u => u.subscriptionStatus === "trialing" && u.status === "active");
+      } else if (audience === "active_subscribers") {
+        recipients = recipients.filter(u => u.subscriptionStatus === "active");
+      }
+
+      if (recipients.length === 0) {
+        return res.json({
+          success: true,
+          sentCount: 0,
+          failedCount: 0,
+          message: "No users matched the selected audience criteria.",
+        });
+      }
+
+      const newsletterTpl = await getEmailTemplate("newsletter");
+      let successCount = 0;
+      let failCount = 0;
+
+      // Process delivery
+      for (const u of recipients) {
+        const userEmail = u.email!.trim();
+        const userName = u.fullName || u.username;
+        const html = renderTemplate(newsletterTpl.html, {
+          subject,
+          custom_message: message.split("\n").map(p => `<p style="margin: 0 0 16px;">${p}</p>`).join(""),
+          name: userName,
+          email: userEmail,
+        });
+
+        const res = await sendEmail({
+          to: userEmail,
+          subject,
+          html,
+          templateType: "broadcast_newsletter",
+          variables: { name: userName, email: userEmail },
+        });
+
+        if (res.success) successCount++;
+        else failCount++;
+      }
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: "email.broadcast",
+        metadata: { audience, subject, totalRecipients: recipients.length, successCount, failCount },
+      });
+
+      res.json({
+        success: true,
+        sentCount: successCount,
+        failedCount: failCount,
+        totalRecipients: recipients.length,
+        message: `Broadcast complete: ${successCount} emails delivered (${failCount} failed).`,
+      });
+    } catch (error: any) {
+      console.error("Broadcast email error:", error);
+      res.status(500).json({ success: false, message: error?.message || "Failed to process broadcast" });
+    }
+  });
+
+  // 9. Get Outbound Email Logs
+  app.get("/api/interface/email/logs", requireAuth, async (req, res) => {
+    try {
+      const logs = await getEmailLogs();
+      res.json({ logs });
+    } catch (error: any) {
+      console.error("Get email logs error:", error);
+      res.status(500).json({ message: "Failed to retrieve email logs" });
+    }
+  });
+
+  // ========== END EMAIL & SMTP MANAGEMENT ROUTES ==========
+
   // ========== WHITE-LABEL DOMAIN SETTINGS ==========
   
   // Get white-label domain setting
@@ -1766,10 +2750,24 @@ Disallow: /*`);
     }
   });
 
-  // Pause/Resume API key (protected)
-  app.post("/api/api-keys/:id/pause", requireAuth, async (req, res) => {
+  // Pause/Resume API key (Admin or Key Owner)
+  app.post("/api/api-keys/:id/pause", async (req: any, res) => {
     try {
+      const auth = getSessionOrToken(req);
+      if (!auth) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
       const { id } = req.params;
+
+      // If client user, strictly validate ownership of this API key
+      if (auth.type === 'client') {
+        const clientUser = await storage.getClientUser(auth.userId);
+        if (!clientUser || clientUser.apiKeyId !== id) {
+          return res.status(403).json({ message: "Forbidden. You can only manage your own API key." });
+        }
+      }
+
       const paused = await storage.pauseApiKey(id);
       
       if (!paused) {
@@ -1777,8 +2775,8 @@ Disallow: /*`);
       }
 
       void auditLog({
-        actorId: (req as any).session?.userId,
-        actorType: "admin",
+        actorId: auth.userId,
+        actorType: auth.type === "admin" ? "admin" : "system",
         action: "api_key.paused",
         targetId: id,
         targetType: "api_key",
@@ -1790,10 +2788,24 @@ Disallow: /*`);
     }
   });
 
-  // Resume API key (protected)
-  app.post("/api/api-keys/:id/resume", requireAuth, async (req, res) => {
+  // Resume API key (Admin or Key Owner)
+  app.post("/api/api-keys/:id/resume", async (req: any, res) => {
     try {
+      const auth = getSessionOrToken(req);
+      if (!auth) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
       const { id } = req.params;
+
+      // If client user, strictly validate ownership of this API key
+      if (auth.type === 'client') {
+        const clientUser = await storage.getClientUser(auth.userId);
+        if (!clientUser || clientUser.apiKeyId !== id) {
+          return res.status(403).json({ message: "Forbidden. You can only manage your own API key." });
+        }
+      }
+
       const resumed = await storage.pauseApiKey(id); // pauseApiKey toggles, so it resumes paused keys
       
       if (!resumed) {
@@ -1801,8 +2813,8 @@ Disallow: /*`);
       }
 
       void auditLog({
-        actorId: (req as any).session?.userId,
-        actorType: "admin",
+        actorId: auth.userId,
+        actorType: auth.type === "admin" ? "admin" : "system",
         action: "api_key.resumed",
         targetId: id,
         targetType: "api_key",
