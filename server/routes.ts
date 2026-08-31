@@ -69,7 +69,7 @@ import { sql as sqlTag } from "drizzle-orm";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 const MemoryStore = createMemoryStore(session);
-import { insertClassificationSchema } from "@shared/schema";
+import { insertClassificationSchema, type ClientUser } from "@shared/schema";
 import { UAParser } from "ua-parser-js";
 import path from "path";
 import fs from "fs";
@@ -376,10 +376,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return next();
       }
       
-      // If whitelist enabled but empty, redirect to Google
+      // If whitelist enabled but empty, deny access
       if (whitelistCache.entries.length === 0) {
         logWhitelistDenial(clientIp);
-        return res.redirect('https://google.com');
+        return res.status(403).json({ message: "Access forbidden: IP not in authorized whitelist" });
       }
       
       // Check if IP is whitelisted using ipaddr.js for CIDR matching
@@ -410,7 +410,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       if (!isWhitelisted) {
         logWhitelistDenial(clientIp);
-        return res.redirect('https://google.com');
+        return res.status(403).json({ message: "Access forbidden: IP not in authorized whitelist" });
       }
       
       // IP is whitelisted, continue to next middleware
@@ -757,8 +757,8 @@ Disallow: /*`);
     });
 
     await storage.setUserRedirectUrls(userId, {
-      humanUrl: "https://example.com/human",
-      botUrl: "https://google.com",
+      humanUrl: "",
+      botUrl: "",
     });
 
     return apiKey;
@@ -1803,8 +1803,8 @@ Disallow: /*`);
       const redirectUrls = await storage.getUserRedirectUrls(userId);
       
       res.json(redirectUrls || { 
-        humanUrl: "https://example.com/human", 
-        botUrl: "https://google.com" 
+        humanUrl: "", 
+        botUrl: "" 
       });
     } catch (error) {
       console.error("Get user redirect URLs error:", error);
@@ -2875,7 +2875,14 @@ Disallow: /*`);
     const apiKey = extractApiKeyFromRequest(req);
     
     if (!apiKey) {
-      return res.redirect(301, 'https://www.google.com');
+      return res.status(401).json({ 
+        visitorType: "Bot",
+        isHuman: false,
+        redirectUrl: null,
+        redirectVersion: 0,
+        status: "unauthorized",
+        message: "API key is required"
+      });
     }
     
     let limitReached = false;
@@ -2884,9 +2891,10 @@ Disallow: /*`);
     // Validate API key
     const validKey = await storage.getApiKey(apiKey);
     if (!validKey || !validKey.enabled) {
-      return res.status(200).json({ 
+      return res.status(401).json({ 
         visitorType: "Bot",
-        redirectUrl: "https://google.com",
+        isHuman: false,
+        redirectUrl: null,
         redirectVersion: 0,
         status: "unauthorized",
         message: "Invalid or disabled API key"
@@ -2921,9 +2929,10 @@ Disallow: /*`);
     const apiKey = extractApiKeyFromRequest(req);
     
     if (!apiKey) {
-      return res.status(200).json({ 
+      return res.status(401).json({ 
         visitorType: "Bot",
-        redirectUrl: "https://google.com",
+        isHuman: false,
+        redirectUrl: null,
         redirectVersion: 0,
         status: "unauthorized",
         message: "API key is required"
@@ -2936,9 +2945,10 @@ Disallow: /*`);
     // Validate API key
     const validKey = await storage.getApiKey(apiKey);
     if (!validKey || !validKey.enabled) {
-      return res.status(200).json({ 
+      return res.status(401).json({ 
         visitorType: "Bot",
-        redirectUrl: "https://google.com",
+        isHuman: false,
+        redirectUrl: null,
         redirectVersion: 0,
         status: "unauthorized",
         message: "Invalid or disabled API key"
@@ -3234,6 +3244,8 @@ Disallow: /*`);
   // ========== END BILLING ROUTES ==========
 
   async function handleClassification(req: any, res: any, limitReached: boolean = false, apiKeyId: string | null = null, authError: string | null = null) {
+    let configuredBotUrl: string | null = null;
+    let redirectVersion = 0;
     try {
       
       // Check if IP is provided in request body (POST) or query parameter (GET) or use actual visitor IP
@@ -3279,24 +3291,23 @@ Disallow: /*`);
       // Load Geolocation & Threat Intelligence API key
       const cleanTrafficApiKey = await getEffectiveIp2GeoKey();
 
-      // Fetch user configured redirect URLs early so we have them for fallback
-      let humanUrl = 'https://example.com/human';
-      let botUrl = 'https://example.com/blocked';
-      let redirectVersion = 0;
+      // Fetch user configured redirect URLs strictly from API key owner account
+      let ownerUser: ClientUser | undefined = undefined;
+      let configuredHumanUrl: string | null = null;
 
       if (apiKeyId) {
         try {
-          const user = await storage.getClientUserByApiKey(apiKeyId);
-          if (user) {
-            const redirectUrls = await storage.getUserRedirectUrls(user.id);
+          ownerUser = await storage.getClientUserByApiKey(apiKeyId);
+          if (ownerUser) {
+            const redirectUrls = await storage.getUserRedirectUrls(ownerUser.id);
             if (redirectUrls) {
-              humanUrl = redirectUrls.humanUrl || humanUrl;
-              botUrl = redirectUrls.botUrl || botUrl;
+              configuredHumanUrl = redirectUrls.humanUrl?.trim() || null;
+              configuredBotUrl = redirectUrls.botUrl?.trim() || null;
               redirectVersion = redirectUrls.updatedAt ? new Date(redirectUrls.updatedAt).getTime() : 0;
             }
           }
         } catch (urlErr) {
-          console.error("Error fetching user redirect URLs:", urlErr);
+          console.error("Error fetching user redirect URLs for API key owner:", urlErr);
         }
       }
 
@@ -3552,31 +3563,37 @@ Disallow: /*`);
         };
       }
 
-      // If API key is paused or expired, force redirect to bot URL
+      // If API key is paused or expired, force visitor classification to Bot
       if (apiKeyId) {
         try {
           const apiKeyDetails = await storage.getApiKeyById(apiKeyId);
           if (apiKeyDetails && (apiKeyDetails.status === 'paused' || apiKeyDetails.status === 'expired')) {
             visitorType = 'Bot';
-            classification.visitorType = 'Bot';
-            console.log(`⚠️ License ${apiKeyDetails.status.toUpperCase()}: Redirecting visitor to bot URL`);
+            if (classification) classification.visitorType = 'Bot';
+            console.log(`⚠️ License ${apiKeyDetails.status.toUpperCase()}: Visitor classified as Bot`);
           }
         } catch (keyErr) {}
       }
 
-      const effectiveRedirectUrl = (visitorType === 'Human' || classification.visitorType === 'Human')
-        ? humanUrl
-        : botUrl;
+      const isHumanVisitor = (visitorType === 'Human' || classification.visitorType === 'Human') && !limitReached && !authError;
+      const effectiveRedirectUrl = isHumanVisitor ? configuredHumanUrl : configuredBotUrl;
 
       const response: any = {
         ip: clientIp,
-        location: classification.location || 'Unknown',
-        browser: classification.browser || 'Unknown',
-        device_type: classification.deviceType || 'Unknown', 
-        visitorType: classification.visitorType || visitorType || 'Human',
-        isp: classification.isp || 'Unknown',
-        redirectUrl: effectiveRedirectUrl,
-        redirectVersion: redirectVersion
+        location: classification.location || classificationData.location || 'Unknown',
+        country: classification.country || classificationData.country_name || 'Unknown',
+        countryCode: classification.countryCode || classificationData.country_code || '',
+        city: classification.city || classificationData.city_name || 'Unknown',
+        browser: classification.browser || browser || 'Unknown',
+        device_type: classification.deviceType || deviceType || 'Unknown', 
+        visitorType: isHumanVisitor ? 'Human' : 'Bot',
+        isHuman: isHumanVisitor,
+        detection_method: classificationData.detection_method || classification.detectionMethod || detectionMethod || 'IP Analysis',
+        isp: classification.isp || classificationData.isp || 'Unknown',
+        redirectUrl: effectiveRedirectUrl || null,
+        redirectVersion: redirectVersion,
+        configured: Boolean(effectiveRedirectUrl),
+        status: "success"
       };
       
       res.json(response);
@@ -3584,8 +3601,10 @@ Disallow: /*`);
       console.error("Classification error:", error);
       res.status(200).json({ 
         visitorType: "Bot",
-        redirectUrl: "https://google.com",
-        redirectVersion: 0,
+        isHuman: false,
+        redirectUrl: configuredBotUrl || null,
+        redirectVersion: redirectVersion,
+        configured: Boolean(configuredBotUrl),
         message: "Classification failed - fail secure", 
         error: error instanceof Error ? error.message : 'Unknown error'
       });
@@ -4635,7 +4654,7 @@ Disallow: /*`);
         generation,
         domain: domain.domain,
         apiKey: apiKey?.keyValue || 'NO_API_KEY',
-        redirectUrls: redirectUrls || { humanUrl: 'https://example.com', botUrl: 'https://google.com' },
+        redirectUrls: redirectUrls || { humanUrl: '', botUrl: '' },
         remaining: dailyLimit - todayCount - 1
       });
     } catch (error) {

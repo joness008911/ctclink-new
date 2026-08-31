@@ -135,8 +135,8 @@ export const clientUsers = pgTable("client_users", {
 export const userRedirectUrls = pgTable("user_redirect_urls", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => clientUsers.id, { onDelete: 'cascade' }),
-  humanUrl: text("human_url").notNull().default("https://example.com/human"),
-  botUrl: text("bot_url").notNull().default("https://google.com"),
+  humanUrl: text("human_url").notNull().default(""),
+  botUrl: text("bot_url").notNull().default(""),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
