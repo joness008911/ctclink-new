@@ -195,6 +195,7 @@ export interface IStorage {
     botUrl: string; 
     allowedCountries?: string; 
     allowedDevices?: string;
+    desktopOsFilter?: string;
     blockVpn?: string;
     blockDatacenter?: string;
     blockTor?: string;
@@ -881,6 +882,7 @@ export class MemStorage implements IStorage {
     botUrl: string; 
     allowedCountries?: string; 
     allowedDevices?: string;
+    desktopOsFilter?: string;
     blockVpn?: string;
     blockDatacenter?: string;
     blockTor?: string;
@@ -896,6 +898,7 @@ export class MemStorage implements IStorage {
       botUrl: urls.botUrl,
       allowedCountries: urls.allowedCountries !== undefined ? urls.allowedCountries : (existing?.allowedCountries || "ALL"),
       allowedDevices: urls.allowedDevices !== undefined ? urls.allowedDevices : (existing?.allowedDevices || "all"),
+      desktopOsFilter: urls.desktopOsFilter !== undefined ? urls.desktopOsFilter : (existing?.desktopOsFilter || "both"),
       blockVpn: urls.blockVpn !== undefined ? urls.blockVpn : (existing?.blockVpn || "block"),
       blockDatacenter: urls.blockDatacenter !== undefined ? urls.blockDatacenter : (existing?.blockDatacenter || "block"),
       blockTor: urls.blockTor !== undefined ? urls.blockTor : (existing?.blockTor || "block"),
@@ -1778,6 +1781,7 @@ export class DatabaseStorage {
     botUrl: string; 
     allowedCountries?: string; 
     allowedDevices?: string;
+    desktopOsFilter?: string;
     blockVpn?: string;
     blockDatacenter?: string;
     blockTor?: string;
@@ -1794,6 +1798,7 @@ export class DatabaseStorage {
     };
     if (urls.allowedCountries !== undefined) updatePayload.allowedCountries = urls.allowedCountries;
     if (urls.allowedDevices !== undefined) updatePayload.allowedDevices = urls.allowedDevices;
+    if (urls.desktopOsFilter !== undefined) updatePayload.desktopOsFilter = urls.desktopOsFilter;
     if (urls.blockVpn !== undefined) updatePayload.blockVpn = urls.blockVpn;
     if (urls.blockDatacenter !== undefined) updatePayload.blockDatacenter = urls.blockDatacenter;
     if (urls.blockTor !== undefined) updatePayload.blockTor = urls.blockTor;
@@ -1823,6 +1828,7 @@ export class DatabaseStorage {
           botUrl: urls.botUrl,
           allowedCountries: urls.allowedCountries || "ALL",
           allowedDevices: urls.allowedDevices || "all",
+          desktopOsFilter: urls.desktopOsFilter || "both",
           blockVpn: urls.blockVpn || "block",
           blockDatacenter: urls.blockDatacenter || "block",
           blockTor: urls.blockTor || "block",

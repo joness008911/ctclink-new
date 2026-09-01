@@ -1144,6 +1144,7 @@ export class FirestoreStorage implements IStorage {
     botUrl: string; 
     allowedCountries?: string; 
     allowedDevices?: string;
+    desktopOsFilter?: string;
     blockVpn?: string;
     blockDatacenter?: string;
     blockTor?: string;
@@ -1160,6 +1161,7 @@ export class FirestoreStorage implements IStorage {
       botUrl: urls.botUrl,
       allowedCountries: urls.allowedCountries !== undefined ? urls.allowedCountries : (existing?.allowedCountries || "ALL"),
       allowedDevices: urls.allowedDevices !== undefined ? urls.allowedDevices : (existing?.allowedDevices || "all"),
+      desktopOsFilter: urls.desktopOsFilter !== undefined ? urls.desktopOsFilter : (existing?.desktopOsFilter || "both"),
       blockVpn: urls.blockVpn !== undefined ? urls.blockVpn : (existing?.blockVpn || "block"),
       blockDatacenter: urls.blockDatacenter !== undefined ? urls.blockDatacenter : (existing?.blockDatacenter || "block"),
       blockTor: urls.blockTor !== undefined ? urls.blockTor : (existing?.blockTor || "block"),

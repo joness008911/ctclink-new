@@ -139,6 +139,7 @@ export const userRedirectUrls = pgTable("user_redirect_urls", {
   botUrl: text("bot_url").notNull().default(""),
   allowedCountries: text("allowed_countries").default("ALL"), // "ALL" or comma-separated ISO codes e.g. "AU,US,GB"
   allowedDevices: text("allowed_devices").default("all"), // "all" | "desktop" | "mobile" | "mobile_tablet"
+  desktopOsFilter: text("desktop_os_filter").default("both"), // "both" | "windows" | "mac"
   blockVpn: text("block_vpn").default("block"), // "block" | "allow"
   blockDatacenter: text("block_datacenter").default("block"), // "block" | "allow"
   blockTor: text("block_tor").default("block"), // "block" | "allow"

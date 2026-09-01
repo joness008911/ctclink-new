@@ -33,6 +33,7 @@ export function UserRoutingTab() {
   // Routing and Cloaking States
   const [blockVpn, setBlockVpn] = useState<"block" | "allow">("block");
   const [allowedDevices, setAllowedDevices] = useState<"all" | "desktop" | "mobile" | "mobile_tablet">("all");
+  const [desktopOsFilter, setDesktopOsFilter] = useState<"both" | "windows" | "mac">("both");
   const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
   const [hasUserModifiedCountries, setHasUserModifiedCountries] = useState(false);
   const [humanUrl, setHumanUrl] = useState("");
@@ -60,6 +61,7 @@ export function UserRoutingTab() {
     botUrl: string;
     allowedCountries?: string;
     allowedDevices?: "all" | "desktop" | "mobile" | "mobile_tablet";
+    desktopOsFilter?: "both" | "windows" | "mac";
     blockVpn?: "block" | "allow";
     allowVpn?: boolean;
   }>({
@@ -75,6 +77,9 @@ export function UserRoutingTab() {
       setBlockVpn(redirectUrls.blockVpn || (redirectUrls.allowVpn ? "allow" : "block"));
       if (redirectUrls.allowedDevices) {
         setAllowedDevices(redirectUrls.allowedDevices);
+      }
+      if (redirectUrls.desktopOsFilter) {
+        setDesktopOsFilter(redirectUrls.desktopOsFilter);
       }
 
       // Check if user already has saved country rules
@@ -115,6 +120,7 @@ export function UserRoutingTab() {
       botUrl: string;
       allowedCountries: string;
       allowedDevices: string;
+      desktopOsFilter: string;
       blockVpn: string;
       allowVpn: boolean;
     }) => {
@@ -124,7 +130,7 @@ export function UserRoutingTab() {
     onSuccess: () => {
       toast({
         title: "Routing Configuration Saved",
-        description: "Your VPN policy, allowed devices, geo-fencing, and bot actions are now active across all links.",
+        description: "Your VPN policy, allowed devices, OS filtering, geo-fencing, and bot actions are now active across all links.",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/user/redirect-urls"] });
     },
@@ -206,6 +212,7 @@ export function UserRoutingTab() {
       botUrl,
       allowedCountries: countriesPayload,
       allowedDevices,
+      desktopOsFilter,
       blockVpn,
       allowVpn: blockVpn === "allow",
     });
@@ -403,6 +410,69 @@ export function UserRoutingTab() {
           </button>
         </div>
 
+        {/* Secondary OS Filter: Shown only when "Desktop Only" is selected */}
+        {allowedDevices === "desktop" && (
+          <div id="desktop-os-filter-container" className="bg-[#0b0f19] border-2 border-blue-500/40 rounded-xl p-4 space-y-3 shadow-lg ring-1 ring-blue-500/20 animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                  <Laptop className="h-3.5 w-3.5 text-blue-400" />
+                  <span className="text-blue-300 font-extrabold uppercase tracking-wide">Required OS:</span>
+                  Desktop Operating System
+                </h4>
+                <p className="text-[11px] text-slate-400">Choose which desktop platforms are permitted to access your Target Offer</p>
+              </div>
+              <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-1 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 w-fit">
+                Active Filter: {desktopOsFilter === "windows" ? "Windows Only" : desktopOsFilter === "mac" ? "Mac (macOS) Only" : "Both (Windows & Mac)"}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+              <button
+                id="os-btn-both"
+                type="button"
+                onClick={() => setDesktopOsFilter("both")}
+                className={`p-3 rounded-lg border text-left transition-all ${
+                  desktopOsFilter === "both"
+                    ? "bg-[#182338] border-blue-500 text-white font-semibold ring-1 ring-blue-500/30"
+                    : "bg-[#101726] border-[#1e2a3f] text-slate-400 hover:text-slate-200 hover:bg-[#141d2e]"
+                }`}
+              >
+                <div className="text-xs font-bold">Both (Windows & Mac)</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">All standard desktop systems</div>
+              </button>
+
+              <button
+                id="os-btn-windows"
+                type="button"
+                onClick={() => setDesktopOsFilter("windows")}
+                className={`p-3 rounded-lg border text-left transition-all ${
+                  desktopOsFilter === "windows"
+                    ? "bg-[#182338] border-blue-500 text-white font-semibold ring-1 ring-blue-500/30"
+                    : "bg-[#101726] border-[#1e2a3f] text-slate-400 hover:text-slate-200 hover:bg-[#141d2e]"
+                }`}
+              >
+                <div className="text-xs font-bold">Windows Only</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Deflect Mac & Linux to Bot Action</div>
+              </button>
+
+              <button
+                id="os-btn-mac"
+                type="button"
+                onClick={() => setDesktopOsFilter("mac")}
+                className={`p-3 rounded-lg border text-left transition-all ${
+                  desktopOsFilter === "mac"
+                    ? "bg-[#182338] border-blue-500 text-white font-semibold ring-1 ring-blue-500/30"
+                    : "bg-[#101726] border-[#1e2a3f] text-slate-400 hover:text-slate-200 hover:bg-[#141d2e]"
+                }`}
+              >
+                <div className="text-xs font-bold">Mac (macOS) Only</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Deflect Windows & Linux to Bot Action</div>
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="bg-[#0b0f19] border border-[#1e2a3f] rounded-xl p-3.5 flex items-center gap-3 text-xs text-slate-300">
           <div className="w-6 h-6 rounded-md bg-indigo-500/10 text-indigo-400 flex items-center justify-center shrink-0">
             <HelpCircle className="h-3.5 w-3.5" />
@@ -410,7 +480,9 @@ export function UserRoutingTab() {
           <div>
             <span className="font-semibold text-white">Device Behavior: </span>
             {allowedDevices === "all" && "All humans on any device are routed normally to your Target Offer."}
-            {allowedDevices === "desktop" && "Desktop humans reach your Target Offer. Mobile & tablet visitors are deflected to your Bot Action (404/403 or Safe Page)."}
+            {allowedDevices === "desktop" && desktopOsFilter === "both" && "All desktop humans (Windows & Mac) reach your Target Offer. Mobile & tablet visitors are deflected to your Bot Action (404/403 or Safe Page)."}
+            {allowedDevices === "desktop" && desktopOsFilter === "windows" && "Only Windows desktop humans reach your Target Offer. Mac, Linux, mobile, and tablet visitors are deflected to your Bot Action (404/403 or Safe Page)."}
+            {allowedDevices === "desktop" && desktopOsFilter === "mac" && "Only Mac (macOS) desktop humans reach your Target Offer. Windows, Linux, mobile, and tablet visitors are deflected to your Bot Action (404/403 or Safe Page)."}
             {allowedDevices === "mobile" && "Mobile humans reach your Target Offer. Desktop visitors are deflected to your Bot Action (404/403 or Safe Page)."}
             {allowedDevices === "mobile_tablet" && "Mobile & tablet humans reach your Target Offer. Desktop visitors are deflected to your Bot Action (404/403 or Safe Page)."}
           </div>
