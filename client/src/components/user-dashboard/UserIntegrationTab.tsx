@@ -122,6 +122,8 @@ curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
     'apiKey' => $apiKey,
     'ip' => $visitorIp,
     'userAgent' => $visitorUserAgent,
+    'acceptLanguage' => $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '',
+    'accept' => $_SERVER['HTTP_ACCEPT'] ?? '',
     'email' => $email,
     'queryString' => $_SERVER['QUERY_STRING'] ?? ''
 ]));

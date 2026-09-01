@@ -3521,12 +3521,26 @@ Disallow: /*`);
 
         // Check header anomalies (synthetic browsers omitting standard headers)
         if (visitorType !== 'Bot') {
-          const headerCheck = checkHeaderAnomalies(req.headers || {}, userAgent);
-          if (headerCheck.isSuspicious) {
-            visitorType = 'Bot';
-            detectionMethod = 'Synthetic Browser Headers';
-            blockReason = headerCheck.reason || 'Synthetic browser headers detected';
-            console.log(`🚫 BLOCKED (Tier 1 - Header Anomaly): ${clientIp} - ${headerCheck.reason}`);
+          const isApiForwarded = Boolean(req.body?.userAgent || req.body?.ip);
+          const effectiveHeaders = isApiForwarded
+            ? {
+                accept: req.body?.accept || req.body?.headers?.['accept'] || req.body?.headers?.['Accept'] || '',
+                'accept-language': req.body?.acceptLanguage || req.body?.accept_language || req.body?.headers?.['accept-language'] || req.body?.headers?.['Accept-Language'] || '',
+              }
+            : (req.headers || {});
+
+          // Only perform header anomaly checks if:
+          // 1) It's a direct visitor HTTP request, OR
+          // 2) The forwarding proxy/PHP script explicitly provided the visitor's HTTP headers in the payload
+          const hasForwardedHeaders = Boolean(req.body?.accept || req.body?.acceptLanguage || req.body?.headers);
+          if (!isApiForwarded || hasForwardedHeaders) {
+            const headerCheck = checkHeaderAnomalies(effectiveHeaders, userAgent);
+            if (headerCheck.isSuspicious) {
+              visitorType = 'Bot';
+              detectionMethod = 'Synthetic Browser Headers';
+              blockReason = headerCheck.reason || 'Synthetic browser headers detected';
+              console.log(`🚫 BLOCKED (Tier 1 - Header Anomaly): ${clientIp} - ${headerCheck.reason}`);
+            }
           }
         }
 
