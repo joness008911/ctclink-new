@@ -480,7 +480,7 @@ export class MemStorage implements IStorage {
       status: insertApiKey.status ?? 'active',
       expirationPeriod: insertApiKey.expirationPeriod ?? 'unlimited',
       expiresAt,
-      callLimit: insertApiKey.callLimit ?? 1000,
+      callLimit: insertApiKey.callLimit ?? 5000,
       callCount: 0,
       lastUsed: null,
       id,
@@ -523,8 +523,10 @@ export class MemStorage implements IStorage {
         return false;
       }
       
+      const limit = apiKey.callLimit ?? 5000;
       // Check if call limit reached
-      if (apiKey.callCount >= apiKey.callLimit) {
+      if ((apiKey.callCount || 0) >= limit) {
+        await this.updateApiKey(apiKey.id, { status: 'expired' });
         return false;
       }
       
@@ -1380,8 +1382,9 @@ export class DatabaseStorage {
       return false;
     }
     
+    const limit = apiKey.callLimit ?? 5000;
     // Check if call limit reached
-    if (apiKey.callCount >= apiKey.callLimit) {
+    if ((apiKey.callCount || 0) >= limit) {
       await this.updateApiKey(apiKey.id, { status: 'expired' });
       return false;
     }

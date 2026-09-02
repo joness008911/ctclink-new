@@ -43,6 +43,7 @@ import {
   limit,
   deleteDoc,
   updateDoc,
+  increment,
 } from "firebase/firestore";
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
@@ -318,7 +319,7 @@ export class FirestoreStorage implements IStorage {
       status: apiKey.status || "active",
       expirationPeriod: apiKey.expirationPeriod || "unlimited",
       expiresAt: apiKey.expiresAt ? new Date(apiKey.expiresAt) : null,
-      callLimit: apiKey.callLimit ?? 1000,
+      callLimit: apiKey.callLimit ?? 5000,
       callCount: 0,
       lastUsed: null,
       createdAt: now,
@@ -429,10 +430,30 @@ export class FirestoreStorage implements IStorage {
     try {
       const apiKey = await this.getApiKey(keyValue);
       if (!apiKey) return false;
-      const newCount = (apiKey.callCount || 0) + 1;
+
+      // Check if key is expired by date
+      if (apiKey.expiresAt && new Date() > apiKey.expiresAt) {
+        await this.updateApiKey(apiKey.id, { status: "expired" });
+        return false;
+      }
+
+      // Check if key is paused or inactive
+      if (apiKey.status !== "active") {
+        return false;
+      }
+
+      const limit = apiKey.callLimit ?? 5000;
+      // Check if call limit reached
+      if ((apiKey.callCount || 0) >= limit) {
+        await this.updateApiKey(apiKey.id, { status: "expired" });
+        return false;
+      }
+
+      // Atomic increment in Firestore for accurate counting under concurrent requests
       await updateDoc(doc(this.db, "api_keys", apiKey.id), {
-        callCount: newCount,
+        callCount: increment(1),
         lastUsed: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       });
       return true;
     } catch (e) {

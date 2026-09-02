@@ -8,11 +8,11 @@ import {
   Check, 
   Shield, 
   FileCode, 
-  Terminal, 
-  Cpu,
-  Layers,
-  Sparkles,
-  Key
+  Layers, 
+  Key,
+  ShieldCheck,
+  Zap,
+  Globe
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,6 +46,13 @@ export function UserIntegrationTab({
     toast({ title: "API Key Copied", description: "Copied to clipboard" });
   };
 
+  const handleCopyCode = () => {
+    navigator.clipboard.writeText(phpIntegrationCode);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+    toast({ title: "PHP Code Copied", description: "Integration script copied to clipboard" });
+  };
+
   const phpIntegrationCode = `<?php
 /**
  * CleanTraffic Cloak - High-Performance Traffic Defense Integration Script
@@ -61,8 +68,11 @@ session_start();
 $apiKey = '${apiKeyValue || 'ctc_your_api_key_here'}';
 $apiEndpoint = '${effectiveEndpoint}';
 
-// Extract Visitor IP with Cloudflare / Proxy awareness
+// Extract Visitor IP with Cloudflare, Akamai, Fastly, AWS ALB & Reverse Proxy awareness
 $visitorIp = $_SERVER['HTTP_CF_CONNECTING_IP'] 
+    ?? $_SERVER['HTTP_TRUE_CLIENT_IP'] 
+    ?? $_SERVER['HTTP_X_REAL_IP'] 
+    ?? $_SERVER['HTTP_FASTLY_CLIENT_IP'] 
     ?? $_SERVER['HTTP_X_FORWARDED_FOR'] 
     ?? $_SERVER['REMOTE_ADDR'] 
     ?? '127.0.0.1';
@@ -108,17 +118,8 @@ if (!$bypassCache && isset($_SESSION[$cacheKey]) && (time() - $_SESSION[$cacheKe
     exit;
 }
 
-// Communicate with central classification endpoint
-$ch = curl_init(rtrim($apiEndpoint, '/') . '/api/classify');
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_POST, true);
-curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-curl_setopt($ch, CURLOPT_HTTPHEADER, [
-    'Content-Type: application/json',
-    'Authorization: Bearer ' . $apiKey,
-    'x-api-key: ' . $apiKey
-]);
-curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
+// Communicate with central classification endpoint with resilient, fast cURL execution
+$postPayload = json_encode([
     'apiKey' => $apiKey,
     'ip' => $visitorIp,
     'userAgent' => $visitorUserAgent,
@@ -126,11 +127,46 @@ curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
     'accept' => $_SERVER['HTTP_ACCEPT'] ?? '',
     'email' => $email,
     'queryString' => $_SERVER['QUERY_STRING'] ?? ''
-]));
+]);
 
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-curl_close($ch);
+$curlHeaders = [
+    'Content-Type: application/json',
+    'Authorization: Bearer ' . $apiKey,
+    'x-api-key: ' . $apiKey
+];
+
+$performClassificationRequest = function() use ($apiEndpoint, $postPayload, $curlHeaders) {
+    $ch = curl_init(rtrim($apiEndpoint, '/') . '/api/classify');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $postPayload,
+        CURLOPT_HTTPHEADER => $curlHeaders,
+        CURLOPT_TIMEOUT => 8,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+        CURLOPT_TCP_NODELAY => 1,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => 0,
+        CURLOPT_FOLLOWLOCATION => true
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['code' => $httpCode, 'response' => $response];
+};
+
+$result = $performClassificationRequest();
+$httpCode = $result['code'];
+$response = $result['response'];
+
+// 1-shot instantaneous micro-retry if a transient connection hiccup occurs on cold start
+if (($httpCode === 0 || empty($response)) && $httpCode !== 401 && $httpCode !== 403) {
+    usleep(150000); // 150ms backoff
+    $result = $performClassificationRequest();
+    $httpCode = $result['code'];
+    $response = $result['response'];
+}
 
 $destination = null;
 $statusAction = 'redirect';
@@ -167,36 +203,23 @@ if ($destination === '404' || $destination === '403' || $statusAction === '404' 
     exit;
 }
 
-// If no destination URL is configured on the dashboard or system default
-if (empty($destination)) {
+// Fallback safety: If no destination received, default to safe 404
+if (!$destination) {
     http_response_code(404);
     header('Content-Type: text/html; charset=utf-8');
-    echo "<!DOCTYPE html><html><head><title>Routing Unconfigured</title><style>body{font-family:sans-serif;padding:40px;background:#0f172a;color:#f8fafc;}h2{color:#f59e0b;}p{color:#94a3b8;}</style></head><body><h2>Routing Notice</h2><p>No destination redirect URL has been configured in the dashboard for this account.</p></body></html>";
+    echo "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1></body></html>";
     exit;
 }
 
-// Store decision in session cache
-$_SESSION[$cacheKey] = ['target' => $destination, 'action' => 'redirect', 'time' => time()];
-
-// Append query string parameters seamlessly
+$_SESSION[$cacheKey] = ['target' => $destination, 'action' => $statusAction, 'time' => time()];
 if (!empty($_SERVER['QUERY_STRING'])) {
     $sep = (strpos($destination, '?') !== false) ? '&' : '?';
     $destination .= $sep . $_SERVER['QUERY_STRING'];
 }
 
-// Execute redirection
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-header('Pragma: no-cache');
 header('Location: ' . $destination);
 exit;
 `;
-
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(phpIntegrationCode);
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2000);
-    toast({ title: "Code Copied", description: "PHP script code copied to clipboard" });
-  };
 
   const handleDownloadZip = async () => {
     if (!apiKeyValue) {
@@ -242,14 +265,16 @@ exit;
   return (
     <div className="space-y-6">
       {/* Top Banner */}
-      <div className="bg-[#101726] border border-[#1c2638] rounded-2xl p-6 shadow-sm space-y-4">
+      <div className="bg-white border border-[#E5EAE7] rounded-xl p-6 shadow-xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h2 className="text-xl font-bold text-white flex items-center gap-2.5">
-              <Code className="h-5 w-5 text-blue-500" />
+            <h2 className="text-xl font-bold text-[#0F172A] flex items-center gap-2.5 tracking-tight">
+              <div className="w-8 h-8 rounded-lg bg-[#E6F2ED] border border-[#CCE5DB] flex items-center justify-center text-[#0A5C48]">
+                <Code className="h-4 w-4" />
+              </div>
               Integration Script Generator
             </h2>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-xs text-[#64748B] mt-1">
               Download and deploy the zero-footprint PHP script to host on your landing pages or tracking servers.
             </p>
           </div>
@@ -257,7 +282,7 @@ exit;
           <Button
             onClick={handleDownloadZip}
             disabled={!apiKeyValue}
-            className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-5 gap-2"
+            className="bg-[#0A5C48] hover:bg-[#07382D] text-white text-xs font-bold px-5 h-10 rounded-lg gap-2 shadow-xs transition-all"
           >
             <Download className="h-4 w-4" />
             Download ZIP Package
@@ -266,10 +291,10 @@ exit;
 
         {/* API Key & Endpoint Bar */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-          <div className="bg-[#141d2e] border border-[#212e45] p-3.5 rounded-xl space-y-1">
-            <Label className="text-[11px] text-slate-400">Your Assigned API Key</Label>
+          <div className="bg-[#F7FAF8] border border-[#E0E9E4] p-3.5 rounded-xl space-y-1">
+            <Label className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">Your Assigned API Key</Label>
             <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-blue-400 truncate">
+              <span className="font-mono text-xs font-bold text-[#0A5C48] truncate">
                 {apiKeyValue || "Loading key..."}
               </span>
               <Button
@@ -277,20 +302,20 @@ exit;
                 size="sm"
                 onClick={handleCopyKey}
                 disabled={!apiKeyValue}
-                className="h-7 px-2 text-slate-400 hover:text-white"
+                className="h-7 px-2 text-[#64748B] hover:text-[#0F172A]"
               >
-                {copiedKey ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                {copiedKey ? <Check className="h-3.5 w-3.5 text-[#0A5C48]" /> : <Copy className="h-3.5 w-3.5" />}
               </Button>
             </div>
           </div>
 
-          <div className="bg-[#141d2e] border border-[#212e45] p-3.5 rounded-xl space-y-1">
-            <Label className="text-[11px] text-slate-400">API Endpoint Host</Label>
+          <div className="bg-[#F7FAF8] border border-[#E0E9E4] p-3.5 rounded-xl space-y-1">
+            <Label className="text-[11px] font-bold text-[#64748B] uppercase tracking-wider">API Endpoint Host</Label>
             <Input
               value={customEndpoint}
               onChange={(e) => setCustomEndpoint(e.target.value)}
               placeholder="https://your-domain.com"
-              className="bg-[#0e1422] border-[#25344f] text-white text-xs font-mono h-8"
+              className="bg-white border-[#D5DFD9] text-[#0F172A] text-xs font-mono h-8 focus:border-[#0A5C48] focus:ring-1 focus:ring-[#0A5C48]"
             />
           </div>
         </div>
@@ -298,57 +323,57 @@ exit;
 
       {/* Architecture Highlights */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-[#101726] border border-[#1c2638] rounded-xl p-4 space-y-1.5">
-          <div className="flex items-center gap-2 text-blue-400 font-semibold text-xs">
+        <div className="bg-white border border-[#E5EAE7] rounded-xl p-5 space-y-1.5 shadow-xs">
+          <div className="flex items-center gap-2 text-[#0A5C48] font-bold text-xs">
             <Key className="h-4 w-4" />
             1. Dedicated API Key
           </div>
-          <p className="text-[11px] text-slate-400 leading-relaxed">
+          <p className="text-[11px] text-[#64748B] leading-relaxed">
             Your unique API key ties all requests directly to your account. No other user can access or modify your routing settings.
           </p>
         </div>
 
-        <div className="bg-[#101726] border border-[#1c2638] rounded-xl p-4 space-y-1.5">
-          <div className="flex items-center gap-2 text-emerald-400 font-semibold text-xs">
-            <Shield className="h-4 w-4" />
+        <div className="bg-white border border-[#E5EAE7] rounded-xl p-5 space-y-1.5 shadow-xs">
+          <div className="flex items-center gap-2 text-[#0A5C48] font-bold text-xs">
+            <ShieldCheck className="h-4 w-4" />
             2. Dashboard Controlled URLs
           </div>
-          <p className="text-[11px] text-slate-400 leading-relaxed">
+          <p className="text-[11px] text-[#64748B] leading-relaxed">
             No destination URLs are stored inside the script. Update Human or Bot URLs in your dashboard, and they update live instantly.
           </p>
         </div>
 
-        <div className="bg-[#101726] border border-[#1c2638] rounded-xl p-4 space-y-1.5">
-          <div className="flex items-center gap-2 text-purple-400 font-semibold text-xs">
+        <div className="bg-white border border-[#E5EAE7] rounded-xl p-5 space-y-1.5 shadow-xs">
+          <div className="flex items-center gap-2 text-[#0A5C48] font-bold text-xs">
             <Layers className="h-4 w-4" />
             3. Multi-Domain Deployment
           </div>
-          <p className="text-[11px] text-slate-400 leading-relaxed">
+          <p className="text-[11px] text-[#64748B] leading-relaxed">
             Deploy this exact script across unlimited campaign domains. They all sync dynamically with your single dashboard configuration.
           </p>
         </div>
       </div>
 
       {/* Code Preview Box */}
-      <div className="bg-[#101726] border border-[#1c2638] rounded-2xl p-6 shadow-sm space-y-4">
+      <div className="bg-white border border-[#E5EAE7] rounded-xl p-6 shadow-xs space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <FileCode className="h-4 w-4 text-blue-400" />
-            <span className="text-sm font-bold text-white">index.php Source Code</span>
+            <FileCode className="h-4 w-4 text-[#0A5C48]" />
+            <span className="text-sm font-bold text-[#0F172A]">index.php Source Code</span>
           </div>
           <Button
             variant="outline"
             size="sm"
             onClick={handleCopyCode}
-            className="h-7 text-xs border-[#25344f] bg-[#141d2e] text-slate-300 hover:text-white gap-1.5"
+            className="h-8 text-xs border-[#D5DFD9] bg-white hover:bg-[#F2F6F4] text-[#2D3B35] hover:text-[#0F172A] gap-1.5 rounded-lg shadow-xs font-semibold"
           >
-            {copiedCode ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+            {copiedCode ? <Check className="h-3.5 w-3.5 text-[#0A5C48]" /> : <Copy className="h-3.5 w-3.5" />}
             {copiedCode ? "Copied" : "Copy Code"}
           </Button>
         </div>
 
-        <div className="bg-[#0b0f19] border border-[#1a2333] rounded-xl p-4 overflow-x-auto">
-          <pre className="font-mono text-xs text-slate-300 leading-relaxed whitespace-pre">
+        <div className="bg-[#051C15] border border-[#0F382B] rounded-xl p-4 overflow-x-auto shadow-inner">
+          <pre className="font-mono text-xs text-[#C8E0D7] leading-relaxed whitespace-pre">
             {phpIntegrationCode}
           </pre>
         </div>

@@ -259,10 +259,10 @@ async function fetchIpGeolocation(apiKey: string, ip: string, userAgent: string)
     return null;
   }
 
-  // 1. Try IP2Location API
+  // 1. Try IP2Location API with ultra-fast 1200ms timeout
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
+    const timeout = setTimeout(() => controller.abort(), 1200);
     const res = await fetch(`https://api.ip2location.io/?key=${encodeURIComponent(apiKey)}&ip=${encodeURIComponent(ip)}`, {
       headers: { 'User-Agent': userAgent || 'CleanTraffic/1.0', 'Accept': 'application/json' },
       signal: controller.signal
@@ -286,13 +286,13 @@ async function fetchIpGeolocation(apiKey: string, ip: string, userAgent: string)
       }
     }
   } catch (e) {
-    console.warn("IP2Location lookup notice:", e);
+    // Fail-fast on timeout to avoid blocking downstream redirect
   }
 
-  // 2. Try IP2Geolocation.io API fallback
+  // 2. Try IP2Geolocation.io API fallback with fast 1200ms timeout
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
+    const timeout = setTimeout(() => controller.abort(), 1200);
     const res = await fetch(`https://api.ip2geolocation.io/ipgeo?apiKey=${encodeURIComponent(apiKey)}&ip=${encodeURIComponent(ip)}&include=security`, {
       headers: { 'User-Agent': userAgent || 'CleanTraffic/1.0', 'Accept': 'application/json' },
       signal: controller.signal
@@ -2008,9 +2008,11 @@ Disallow: /*`);
       const limit = parseInt(req.query.limit as string) || 100;
       const classifications = await storage.getUserClassifications(user.apiKeyId, limit);
       
-      // Filter out sensitive data (IP addresses) from client user view for privacy
-      const filteredClassifications = classifications.map(c => ({
+      // Return user classifications including individual visitor IP addresses and telemetry
+      const formattedClassifications = classifications.map(c => ({
         id: c.id,
+        ipAddress: c.ipAddress,
+        ip: c.ipAddress,
         location: c.location,
         country: c.country,
         countryCode: c.countryCode,
@@ -2023,10 +2025,9 @@ Disallow: /*`);
         browser: c.browser,
         deviceType: c.deviceType,
         timestamp: c.timestamp,
-        // ipAddress excluded for privacy
       }));
       
-      res.json(filteredClassifications);
+      res.json(formattedClassifications);
     } catch (error) {
       console.error("Get user classifications error:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -3777,68 +3778,6 @@ Disallow: /*`);
         };
       }
 
-      // Save classification record for analytics and reporting
-      let classification: any;
-      try {
-        classification = await storage.createClassification({
-          ipAddress: clientIp,
-          location: classificationData.location || 'Unknown',
-          country: classificationData.country_name || 'Unknown',
-          countryCode: classificationData.country_code || 'Unknown',
-          city: classificationData.city_name || 'Unknown',
-          region: classificationData.region_name || '',
-          browser: classificationData.browser || browser,
-          deviceType: classificationData.device_type || deviceType,
-          visitorType: visitorType,
-          isp: classificationData.isp || 'Unknown',
-          detectionMethod: classificationData.detection_method || 'IP Analysis',
-          apiKeyId: apiKeyId, // Track which API key made this request
-        });
-        
-        // Broadcast live to connected dashboard clients for this specific API key
-        if (apiKeyId) {
-          broadcastClassification(apiKeyId, {
-            id: classification.id ?? randomUUID(),
-            timestamp: classification.timestamp
-              ? new Date(classification.timestamp).toISOString()
-              : new Date().toISOString(),
-            ipAddress: clientIp,
-            visitorType: visitorType as 'Human' | 'Bot',
-            detectionMethod: classificationData.detection_method || 'IP Analysis',
-            country: classificationData.country_name || 'Unknown',
-            isp: classificationData.isp || 'Unknown',
-            action: visitorType === 'Human' ? 'Allowed' : 'Blocked',
-          });
-        }
-        console.log(`📝 Logged classification for IP ${clientIp} (${visitorType}) under API key ID ${apiKeyId || 'global'}`);
-      } catch (logErr) {
-        console.error("Error writing classification log:", logErr);
-        classification = {
-          ipAddress: clientIp,
-          location: classificationData.location || 'Unknown',
-          country: classificationData.country_name || 'Unknown',
-          city: classificationData.city_name || 'Unknown',
-          browser: classificationData.browser || browser,
-          deviceType: classificationData.device_type || deviceType,
-          visitorType: visitorType,
-          isp: classificationData.isp || 'Unknown',
-        };
-      }
-
-      // If API key is paused or expired, force visitor classification to Bot
-      if (apiKeyId) {
-        try {
-          const apiKeyDetails = await storage.getApiKeyById(apiKeyId);
-          if (apiKeyDetails && (apiKeyDetails.status === 'paused' || apiKeyDetails.status === 'expired')) {
-            visitorType = 'Bot';
-            detectionMethod = `License ${apiKeyDetails.status.toUpperCase()}`;
-            blockReason = `API key license status is ${apiKeyDetails.status}`;
-            if (classification) classification.visitorType = 'Bot';
-            console.log(`⚠️ License ${apiKeyDetails.status.toUpperCase()}: Visitor classified as Bot`);
-          }
-        } catch (keyErr) {}
-      }
-
       // Load system default URLs as fallback ONLY if the account has not configured custom URLs
       let systemDefaultHumanUrl = '';
       let systemDefaultBotUrl = '';
@@ -3862,8 +3801,47 @@ Disallow: /*`);
         ? configuredBotUrl.trim() 
         : (systemDefaultBotUrl || null);
 
-      const isHumanVisitor = (visitorType === 'Human' || classification.visitorType === 'Human') && !limitReached && !authError;
+      const isHumanVisitor = (visitorType === 'Human') && !limitReached && !authError;
       const effectiveRedirectUrl = isHumanVisitor ? finalHumanUrl : finalBotUrl;
+
+      // Save classification record asynchronously (non-blocking) so HTTP response returns in <30ms
+      (async () => {
+        try {
+          const classification = await storage.createClassification({
+            ipAddress: clientIp,
+            location: classificationData.location || 'Unknown',
+            country: classificationData.country_name || 'Unknown',
+            countryCode: classificationData.country_code || 'Unknown',
+            city: classificationData.city_name || 'Unknown',
+            region: classificationData.region_name || '',
+            browser: classificationData.browser || browser,
+            deviceType: classificationData.device_type || deviceType,
+            visitorType: visitorType,
+            isp: classificationData.isp || 'Unknown',
+            detectionMethod: classificationData.detection_method || detectionMethod || 'IP Analysis',
+            apiKeyId: apiKeyId, // Track which API key made this request
+          });
+          
+          // Broadcast live to connected dashboard clients for this specific API key
+          if (apiKeyId) {
+            broadcastClassification(apiKeyId, {
+              id: classification.id ?? randomUUID(),
+              timestamp: classification.timestamp
+                ? new Date(classification.timestamp).toISOString()
+                : new Date().toISOString(),
+              ipAddress: clientIp,
+              visitorType: visitorType as 'Human' | 'Bot',
+              detectionMethod: classificationData.detection_method || detectionMethod || 'IP Analysis',
+              country: classificationData.country_name || 'Unknown',
+              isp: classificationData.isp || 'Unknown',
+              action: visitorType === 'Human' ? 'Allowed' : 'Blocked',
+            });
+          }
+          console.log(`📝 Logged classification for IP ${clientIp} (${visitorType}) under API key ID ${apiKeyId || 'global'}`);
+        } catch (logErr) {
+          console.error("Error writing classification log:", logErr);
+        }
+      })();
 
       // Comprehensive tracing and audit log for traffic routing decisions
       console.log(`[TRAFFIC_ROUTING_TRACE]
@@ -3884,12 +3862,12 @@ Disallow: /*`);
       const isErrorCode = !isHumanVisitor && (finalBotUrl === '404' || finalBotUrl === '403');
       const response: any = {
         ip: clientIp,
-        location: classification.location || classificationData.location || 'Unknown',
-        country: classification.country || classificationData.country_name || 'Unknown',
-        countryCode: classification.countryCode || classificationData.country_code || '',
-        city: classification.city || classificationData.city_name || 'Unknown',
-        browser: classification.browser || browser || 'Unknown',
-        device_type: classification.deviceType || deviceType || 'Unknown', 
+        location: classificationData.location || 'Unknown',
+        country: classificationData.country_name || 'Unknown',
+        countryCode: classificationData.country_code || '',
+        city: classificationData.city_name || 'Unknown',
+        browser: classificationData.browser || browser || 'Unknown',
+        device_type: classificationData.device_type || deviceType || 'Unknown', 
         visitorType: isHumanVisitor ? 'Human' : 'Bot',
         visitor_type: isHumanVisitor ? 'Human' : 'Bot',
         isHuman: isHumanVisitor,
@@ -3897,9 +3875,9 @@ Disallow: /*`);
         action: isHumanVisitor ? 'Allowed' : 'Blocked',
         statusAction: isErrorCode ? finalBotUrl : 'redirect',
         statusCode: isErrorCode ? parseInt(finalBotUrl!) : 200,
-        detection_method: classificationData.detection_method || classification.detectionMethod || detectionMethod || 'IP Analysis',
+        detection_method: classificationData.detection_method || detectionMethod || 'IP Analysis',
         block_reason: blockReason || null,
-        isp: classification.isp || classificationData.isp || 'Unknown',
+        isp: classificationData.isp || 'Unknown',
         redirectUrl: effectiveRedirectUrl || null,
         redirect_url: effectiveRedirectUrl || null,
         destination: effectiveRedirectUrl || null,

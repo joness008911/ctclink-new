@@ -43,7 +43,7 @@ export const apiKeys = pgTable("api_keys", {
   status: text("status").default("active").notNull(), // active, paused, expired
   expirationPeriod: text("expiration_period").default("unlimited").notNull(), // daily, weekly, monthly, unlimited
   expiresAt: timestamp("expires_at"),
-  callLimit: integer("call_limit").default(1000).notNull(),
+  callLimit: integer("call_limit").default(5000).notNull(),
   callCount: integer("call_count").default(0).notNull(),
   lastUsed: timestamp("last_used"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -190,7 +190,7 @@ export const insertApiKeySchema = createInsertSchema(apiKeys).omit({
   callCount: true,
 }).extend({
   expirationPeriod: z.enum(["10seconds", "1minute", "1hour", "daily", "weekly", "monthly", "unlimited"]).default("unlimited"),
-  callLimit: z.number().min(1).max(100000).default(1000),
+  callLimit: z.number().min(1).max(100000).default(5000),
 });
 
 export const insertSettingSchema = createInsertSchema(settings).omit({

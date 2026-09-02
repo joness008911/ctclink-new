@@ -18,9 +18,7 @@ import {
   Laptop,
   Smartphone,
   Tablet,
-  Globe,
-  AlertTriangle,
-  FileCode2
+  Globe
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -45,14 +43,14 @@ export function UserRoutingTab() {
   const countryDropdownRef = useRef<HTMLDivElement>(null);
 
   // 1. Fetch User's Real IP & Auto-Detected Country
-  const { data: detectedLocation, isLoading: isLocating } = useQuery<{
+  const { data: detectedLocation } = useQuery<{
     ip: string;
     countryCode: string;
     countryName: string;
     city?: string;
   }>({
     queryKey: ["/api/client/current-location"],
-    staleTime: 1000 * 60 * 10, // Cache for 10 minutes
+    staleTime: 1000 * 60 * 10,
   });
 
   // 2. Fetch User's Saved Routing Rules from Backend
@@ -93,7 +91,6 @@ export function UserRoutingTab() {
         }
         setHasUserModifiedCountries(true);
       } else if (!hasUserModifiedCountries && detectedLocation?.countryCode) {
-        // Default to user's detected country IP if no configuration exists yet
         const defaultCode = detectedLocation.countryCode.toUpperCase();
         setSelectedCountries([defaultCode]);
       }
@@ -166,9 +163,10 @@ export function UserRoutingTab() {
   const removeCountry = (code: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setHasUserModifiedCountries(true);
-    const updated = selectedCountries.filter((c) => c !== code);
+    const upper = code.toUpperCase();
+    const updated = selectedCountries.filter((c) => c !== upper);
     if (updated.length === 0) {
-      setSelectedCountries(["ALL"]);
+      setSelectedCountries(detectedLocation?.countryCode ? [detectedLocation.countryCode.toUpperCase()] : ["ALL"]);
     } else {
       setSelectedCountries(updated);
     }
@@ -179,24 +177,26 @@ export function UserRoutingTab() {
       setHasUserModifiedCountries(true);
       setSelectedCountries([detectedLocation.countryCode.toUpperCase()]);
       toast({
-        title: "Defaulted to Your Detected IP",
-        description: `Set allowed country to ${detectedLocation.countryName} (${detectedLocation.countryCode}).`,
+        title: "Geo-Targeting Set to Your Location",
+        description: `Configured allowed traffic to ${detectedLocation.countryName} (${detectedLocation.countryCode}).`,
       });
     }
   };
 
   const filteredCountryOptions = useMemo(() => {
-    const term = countrySearch.toLowerCase().trim();
-    if (!term) return COUNTRIES_LIST;
+    const search = countrySearch.toLowerCase().trim();
+    if (!search) return COUNTRIES_LIST;
     return COUNTRIES_LIST.filter(
-      (c) => c.name.toLowerCase().includes(term) || c.code.toLowerCase().includes(term)
+      (c) =>
+        c.name.toLowerCase().includes(search) ||
+        c.code.toLowerCase().includes(search)
     );
   }, [countrySearch]);
 
   const handleSave = () => {
-    if (!humanUrl || !botUrl) {
+    if (!humanUrl.trim() || !botUrl.trim()) {
       toast({
-        title: "Missing Configuration",
+        title: "Missing Destination Configuration",
         description: "Please specify both Target Offer (Human URL) and Bot Action (404, 403, or Safe URL).",
         variant: "destructive",
       });
@@ -227,20 +227,20 @@ export function UserRoutingTab() {
   const isBotUrl = botUrl.trim().startsWith("http://") || botUrl.trim().startsWith("https://");
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6 w-full">
       {/* ─────────────────────────────────────────────────────────────
           SECTION 1: BLOCKING CONTROLS (VPN & PROXIES)
       ───────────────────────────────────────────────────────────── */}
-      <div className="bg-[#101726] border border-[#1c2638] rounded-2xl p-6 space-y-5 shadow-lg">
-        <div className="flex items-center gap-2.5 border-b border-[#1c2638] pb-3">
-          <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-[#f43f5e]">
+      <div className="bg-white border border-[#E5EAE7] rounded-xl p-6 space-y-5 shadow-xs">
+        <div className="flex items-center gap-2.5 border-b border-[#E5EAE7] pb-3.5">
+          <div className="w-8 h-8 rounded-lg bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600">
             <Shield className="h-4 w-4" />
           </div>
           <div>
-            <h3 className="text-base font-bold text-white tracking-tight">
+            <h3 className="text-base font-bold text-[#0F172A] tracking-tight">
               VPN & Proxies Policy
             </h3>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-[#64748B]">
               Configure filtering and deflection rules for anonymizers, proxies, and VPN tunnels
             </p>
           </div>
@@ -249,36 +249,36 @@ export function UserRoutingTab() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-1">
           {/* Block VPN and Proxies Select */}
           <div className="space-y-2">
-            <Label className="text-xs font-semibold text-slate-200">
-              VPN and Proxies Policy
+            <Label className="text-xs font-bold text-[#2D3B35]">
+              VPN & Proxies Enforcement
             </Label>
             <div className="relative">
-              <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-rose-400 pointer-events-none">
+              <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-rose-600 pointer-events-none">
                 <Shield className="h-4 w-4" />
               </div>
               <select
                 value={blockVpn}
                 onChange={(e) => setBlockVpn(e.target.value as "block" | "allow")}
-                className="w-full h-11 pl-11 pr-10 bg-[#0b0f19] border border-[#223049] rounded-xl text-sm font-medium text-slate-100 appearance-none focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all cursor-pointer hover:border-[#2f4265]"
+                className="w-full h-11 pl-11 pr-10 bg-white border border-[#D5DFD9] rounded-lg text-xs font-semibold text-[#0F172A] appearance-none focus:outline-none focus:ring-1 focus:ring-[#0A5C48] focus:border-[#0A5C48] transition-all cursor-pointer hover:border-[#82928A]"
               >
                 <option value="block">Block VPN & Proxies (Deflect to Bot Action / Error)</option>
-                <option value="allow">Allow VPN & Proxies (Permit clean residential VPNs)</option>
+                <option value="allow">Allow VPN & Proxies (Permit residential VPNs)</option>
               </select>
-              <ChevronDown className="h-4 w-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <ChevronDown className="h-4 w-4 text-[#64748B] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              When set to <span className="text-rose-300 font-semibold">"Block"</span>, visitors detected using VPNs, Tor exit nodes, residential proxies, or datacenter IPs are automatically deflected based on your Bot & Filtered Traffic Action.
+            <p className="text-[11px] text-[#64748B] leading-relaxed">
+              When set to <span className="text-rose-600 font-bold">"Block"</span>, visitors detected using VPNs, Tor exit nodes, residential proxies, or datacenter IPs are automatically deflected.
             </p>
           </div>
 
           {/* Quick Info Box */}
-          <div className="bg-[#0b0f19] border border-[#1e2a3f] rounded-xl p-4 flex items-start gap-3">
-            <div className="w-6 h-6 rounded-md bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shrink-0 mt-0.5">
+          <div className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-4 flex items-start gap-3">
+            <div className="w-6 h-6 rounded-md bg-[#E6F2ED] border border-[#CCE5DB] flex items-center justify-center text-[#0A5C48] shrink-0 mt-0.5">
               <HelpCircle className="h-3.5 w-3.5" />
             </div>
-            <div className="space-y-1 text-xs text-slate-300">
-              <p className="font-semibold text-white">Multi-Layer Threat Inspection</p>
-              <p className="text-[11px] text-slate-400 leading-relaxed">
+            <div className="space-y-1 text-xs text-[#2D3B35]">
+              <p className="font-bold text-[#0F172A]">Multi-Layer Threat Inspection</p>
+              <p className="text-[11px] text-[#64748B] leading-relaxed">
                 Traffic is evaluated against IP reputation feeds, datacenter ASNs, open proxy ports, and headless browser attributes in sub-millisecond response times.
               </p>
             </div>
@@ -289,17 +289,17 @@ export function UserRoutingTab() {
       {/* ─────────────────────────────────────────────────────────────
           SECTION 2: DEVICE FILTERING RULES (MOBILE & DESKTOP)
       ───────────────────────────────────────────────────────────── */}
-      <div className="bg-[#101726] border border-[#1c2638] rounded-2xl p-6 space-y-5 shadow-lg">
-        <div className="flex items-center gap-2.5 border-b border-[#1c2638] pb-3">
-          <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+      <div className="bg-white border border-[#E5EAE7] rounded-xl p-6 space-y-5 shadow-xs">
+        <div className="flex items-center gap-2.5 border-b border-[#E5EAE7] pb-3.5">
+          <div className="w-8 h-8 rounded-lg bg-[#EBF5F1] border border-[#CCE5DB] flex items-center justify-center text-[#0A5C48]">
             <Laptop className="h-4 w-4" />
           </div>
           <div>
-            <h3 className="text-base font-bold text-white tracking-tight">
+            <h3 className="text-base font-bold text-[#0F172A] tracking-tight">
               Device Filtering & Targeting
             </h3>
-            <p className="text-xs text-slate-400">
-              Control which devices are allowed to access your Target Offer. Restricted devices are deflected to your Bot Action (404/403 or Safe Page).
+            <p className="text-xs text-[#64748B]">
+              Control which devices are allowed to access your Target Offer. Restricted devices are deflected to your Bot Action.
             </p>
           </div>
         </div>
@@ -311,23 +311,23 @@ export function UserRoutingTab() {
             onClick={() => setAllowedDevices("all")}
             className={`p-4 rounded-xl border text-left transition-all relative flex flex-col justify-between space-y-3 ${
               allowedDevices === "all"
-                ? "bg-[#182338] border-indigo-500 ring-2 ring-indigo-500/20 shadow-md"
-                : "bg-[#0b0f19] border-[#1e2a3f] hover:border-[#2b3a55] hover:bg-[#121927]"
+                ? "bg-[#EBF5F1] border-[#0A5C48] ring-1 ring-[#0A5C48] shadow-xs"
+                : "bg-white border-[#E5EAE7] hover:border-[#D5DFD9] hover:bg-[#F7FAF8]"
             }`}
           >
             <div className="flex items-center justify-between">
-              <div className="w-8 h-8 rounded-lg bg-indigo-500/15 text-indigo-300 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-[#E6F2ED] text-[#0A5C48] flex items-center justify-center">
                 <Globe className="h-4 w-4" />
               </div>
               {allowedDevices === "all" && (
-                <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold">
+                <span className="w-5 h-5 rounded-full bg-[#0A5C48] text-white flex items-center justify-center text-[10px] font-bold">
                   ✓
                 </span>
               )}
             </div>
             <div>
-              <div className="text-xs font-bold text-white">All Devices</div>
-              <div className="text-[11px] text-slate-400 mt-0.5">Desktop, Mobile & Tablet allowed</div>
+              <div className="text-xs font-bold text-[#0F172A]">All Devices</div>
+              <div className="text-[11px] text-[#64748B] mt-0.5">Desktop, Mobile & Tablet allowed</div>
             </div>
           </button>
 
@@ -337,23 +337,23 @@ export function UserRoutingTab() {
             onClick={() => setAllowedDevices("desktop")}
             className={`p-4 rounded-xl border text-left transition-all relative flex flex-col justify-between space-y-3 ${
               allowedDevices === "desktop"
-                ? "bg-[#182338] border-blue-500 ring-2 ring-blue-500/20 shadow-md"
-                : "bg-[#0b0f19] border-[#1e2a3f] hover:border-[#2b3a55] hover:bg-[#121927]"
+                ? "bg-[#EBF5F1] border-[#0A5C48] ring-1 ring-[#0A5C48] shadow-xs"
+                : "bg-white border-[#E5EAE7] hover:border-[#D5DFD9] hover:bg-[#F7FAF8]"
             }`}
           >
             <div className="flex items-center justify-between">
-              <div className="w-8 h-8 rounded-lg bg-blue-500/15 text-blue-300 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
                 <Laptop className="h-4 w-4" />
               </div>
               {allowedDevices === "desktop" && (
-                <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-bold">
+                <span className="w-5 h-5 rounded-full bg-[#0A5C48] text-white flex items-center justify-center text-[10px] font-bold">
                   ✓
                 </span>
               )}
             </div>
             <div>
-              <div className="text-xs font-bold text-white">Desktop Only</div>
-              <div className="text-[11px] text-slate-400 mt-0.5">Deflect mobile visitors to error / bot page</div>
+              <div className="text-xs font-bold text-[#0F172A]">Desktop Only</div>
+              <div className="text-[11px] text-[#64748B] mt-0.5">Deflect mobile visitors to error page</div>
             </div>
           </button>
 
@@ -363,23 +363,23 @@ export function UserRoutingTab() {
             onClick={() => setAllowedDevices("mobile")}
             className={`p-4 rounded-xl border text-left transition-all relative flex flex-col justify-between space-y-3 ${
               allowedDevices === "mobile"
-                ? "bg-[#182338] border-emerald-500 ring-2 ring-emerald-500/20 shadow-md"
-                : "bg-[#0b0f19] border-[#1e2a3f] hover:border-[#2b3a55] hover:bg-[#121927]"
+                ? "bg-[#EBF5F1] border-[#0A5C48] ring-1 ring-[#0A5C48] shadow-xs"
+                : "bg-white border-[#E5EAE7] hover:border-[#D5DFD9] hover:bg-[#F7FAF8]"
             }`}
           >
             <div className="flex items-center justify-between">
-              <div className="w-8 h-8 rounded-lg bg-emerald-500/15 text-emerald-300 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-[#E6F2ED] text-[#0A5C48] flex items-center justify-center">
                 <Smartphone className="h-4 w-4" />
               </div>
               {allowedDevices === "mobile" && (
-                <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px] font-bold">
+                <span className="w-5 h-5 rounded-full bg-[#0A5C48] text-white flex items-center justify-center text-[10px] font-bold">
                   ✓
                 </span>
               )}
             </div>
             <div>
-              <div className="text-xs font-bold text-white">Mobile Only</div>
-              <div className="text-[11px] text-slate-400 mt-0.5">Deflect desktop visitors to error / bot page</div>
+              <div className="text-xs font-bold text-[#0F172A]">Mobile Only</div>
+              <div className="text-[11px] text-[#64748B] mt-0.5">Deflect desktop visitors to error page</div>
             </div>
           </button>
 
@@ -389,41 +389,41 @@ export function UserRoutingTab() {
             onClick={() => setAllowedDevices("mobile_tablet")}
             className={`p-4 rounded-xl border text-left transition-all relative flex flex-col justify-between space-y-3 ${
               allowedDevices === "mobile_tablet"
-                ? "bg-[#182338] border-purple-500 ring-2 ring-purple-500/20 shadow-md"
-                : "bg-[#0b0f19] border-[#1e2a3f] hover:border-[#2b3a55] hover:bg-[#121927]"
+                ? "bg-[#EBF5F1] border-[#0A5C48] ring-1 ring-[#0A5C48] shadow-xs"
+                : "bg-white border-[#E5EAE7] hover:border-[#D5DFD9] hover:bg-[#F7FAF8]"
             }`}
           >
             <div className="flex items-center justify-between">
-              <div className="w-8 h-8 rounded-lg bg-purple-500/15 text-purple-300 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center">
                 <Tablet className="h-4 w-4" />
               </div>
               {allowedDevices === "mobile_tablet" && (
-                <span className="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center text-[10px] font-bold">
+                <span className="w-5 h-5 rounded-full bg-[#0A5C48] text-white flex items-center justify-center text-[10px] font-bold">
                   ✓
                 </span>
               )}
             </div>
             <div>
-              <div className="text-xs font-bold text-white">Mobile & Tablet</div>
-              <div className="text-[11px] text-slate-400 mt-0.5">Deflect desktop visitors to error / bot page</div>
+              <div className="text-xs font-bold text-[#0F172A]">Mobile & Tablet</div>
+              <div className="text-[11px] text-[#64748B] mt-0.5">Deflect desktop visitors to error page</div>
             </div>
           </button>
         </div>
 
-        {/* Secondary OS Filter: Shown only when "Desktop Only" is selected */}
+        {/* Secondary OS Filter */}
         {allowedDevices === "desktop" && (
-          <div id="desktop-os-filter-container" className="bg-[#0b0f19] border-2 border-blue-500/40 rounded-xl p-4 space-y-3 shadow-lg ring-1 ring-blue-500/20 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div id="desktop-os-filter-container" className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-4 space-y-3 shadow-xs animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
-                <h4 className="text-xs font-bold text-white flex items-center gap-2">
-                  <Laptop className="h-3.5 w-3.5 text-blue-400" />
-                  <span className="text-blue-300 font-extrabold uppercase tracking-wide">Required OS:</span>
+                <h4 className="text-xs font-bold text-[#0F172A] flex items-center gap-2">
+                  <Laptop className="h-3.5 w-3.5 text-[#0A5C48]" />
+                  <span className="text-[#0A5C48] font-bold uppercase tracking-wide">Required OS:</span>
                   Desktop Operating System
                 </h4>
-                <p className="text-[11px] text-slate-400">Choose which desktop platforms are permitted to access your Target Offer</p>
+                <p className="text-[11px] text-[#64748B]">Choose which desktop platforms are permitted to access your Target Offer</p>
               </div>
-              <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-1 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 w-fit">
-                Active Filter: {desktopOsFilter === "windows" ? "Windows Only" : desktopOsFilter === "mac" ? "Mac (macOS) Only" : "Both (Windows & Mac)"}
+              <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-1 rounded-md bg-[#E6F2ED] text-[#07382D] border border-[#CCE5DB] w-fit">
+                Active: {desktopOsFilter === "windows" ? "Windows Only" : desktopOsFilter === "mac" ? "Mac (macOS) Only" : "Both (Windows & Mac)"}
               </span>
             </div>
 
@@ -434,12 +434,12 @@ export function UserRoutingTab() {
                 onClick={() => setDesktopOsFilter("both")}
                 className={`p-3 rounded-lg border text-left transition-all ${
                   desktopOsFilter === "both"
-                    ? "bg-[#182338] border-blue-500 text-white font-semibold ring-1 ring-blue-500/30"
-                    : "bg-[#101726] border-[#1e2a3f] text-slate-400 hover:text-slate-200 hover:bg-[#141d2e]"
+                    ? "bg-[#EBF5F1] border-[#0A5C48] text-[#07382D] font-bold"
+                    : "bg-white border-[#E5EAE7] text-[#64748B] hover:text-[#0F172A] hover:bg-[#F7FAF8]"
                 }`}
               >
                 <div className="text-xs font-bold">Both (Windows & Mac)</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">All standard desktop systems</div>
+                <div className="text-[10px] text-[#64748B] mt-0.5">All standard desktop systems</div>
               </button>
 
               <button
@@ -448,12 +448,12 @@ export function UserRoutingTab() {
                 onClick={() => setDesktopOsFilter("windows")}
                 className={`p-3 rounded-lg border text-left transition-all ${
                   desktopOsFilter === "windows"
-                    ? "bg-[#182338] border-blue-500 text-white font-semibold ring-1 ring-blue-500/30"
-                    : "bg-[#101726] border-[#1e2a3f] text-slate-400 hover:text-slate-200 hover:bg-[#141d2e]"
+                    ? "bg-[#EBF5F1] border-[#0A5C48] text-[#07382D] font-bold"
+                    : "bg-white border-[#E5EAE7] text-[#64748B] hover:text-[#0F172A] hover:bg-[#F7FAF8]"
                 }`}
               >
                 <div className="text-xs font-bold">Windows Only</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Deflect Mac & Linux to Bot Action</div>
+                <div className="text-[10px] text-[#64748B] mt-0.5">Deflect Mac & Linux to Bot Action</div>
               </button>
 
               <button
@@ -462,29 +462,29 @@ export function UserRoutingTab() {
                 onClick={() => setDesktopOsFilter("mac")}
                 className={`p-3 rounded-lg border text-left transition-all ${
                   desktopOsFilter === "mac"
-                    ? "bg-[#182338] border-blue-500 text-white font-semibold ring-1 ring-blue-500/30"
-                    : "bg-[#101726] border-[#1e2a3f] text-slate-400 hover:text-slate-200 hover:bg-[#141d2e]"
+                    ? "bg-[#EBF5F1] border-[#0A5C48] text-[#07382D] font-bold"
+                    : "bg-white border-[#E5EAE7] text-[#64748B] hover:text-[#0F172A] hover:bg-[#F7FAF8]"
                 }`}
               >
                 <div className="text-xs font-bold">Mac (macOS) Only</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Deflect Windows & Linux to Bot Action</div>
+                <div className="text-[10px] text-[#64748B] mt-0.5">Deflect Windows & Linux to Bot Action</div>
               </button>
             </div>
           </div>
         )}
 
-        <div className="bg-[#0b0f19] border border-[#1e2a3f] rounded-xl p-3.5 flex items-center gap-3 text-xs text-slate-300">
-          <div className="w-6 h-6 rounded-md bg-indigo-500/10 text-indigo-400 flex items-center justify-center shrink-0">
+        <div className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-3.5 flex items-center gap-3 text-xs text-[#2D3B35]">
+          <div className="w-6 h-6 rounded-md bg-[#E6F2ED] text-[#0A5C48] flex items-center justify-center shrink-0">
             <HelpCircle className="h-3.5 w-3.5" />
           </div>
           <div>
-            <span className="font-semibold text-white">Device Behavior: </span>
+            <span className="font-bold text-[#0F172A]">Device Routing Mode: </span>
             {allowedDevices === "all" && "All humans on any device are routed normally to your Target Offer."}
-            {allowedDevices === "desktop" && desktopOsFilter === "both" && "All desktop humans (Windows & Mac) reach your Target Offer. Mobile & tablet visitors are deflected to your Bot Action (404/403 or Safe Page)."}
-            {allowedDevices === "desktop" && desktopOsFilter === "windows" && "Only Windows desktop humans reach your Target Offer. Mac, Linux, mobile, and tablet visitors are deflected to your Bot Action (404/403 or Safe Page)."}
-            {allowedDevices === "desktop" && desktopOsFilter === "mac" && "Only Mac (macOS) desktop humans reach your Target Offer. Windows, Linux, mobile, and tablet visitors are deflected to your Bot Action (404/403 or Safe Page)."}
-            {allowedDevices === "mobile" && "Mobile humans reach your Target Offer. Desktop visitors are deflected to your Bot Action (404/403 or Safe Page)."}
-            {allowedDevices === "mobile_tablet" && "Mobile & tablet humans reach your Target Offer. Desktop visitors are deflected to your Bot Action (404/403 or Safe Page)."}
+            {allowedDevices === "desktop" && desktopOsFilter === "both" && "All desktop humans (Windows & Mac) reach your Target Offer. Mobile & tablet visitors are deflected to your Bot Action."}
+            {allowedDevices === "desktop" && desktopOsFilter === "windows" && "Only Windows desktop humans reach your Target Offer. Mac, Linux, mobile, and tablet visitors are deflected."}
+            {allowedDevices === "desktop" && desktopOsFilter === "mac" && "Only Mac (macOS) desktop humans reach your Target Offer. Windows, Linux, mobile, and tablet visitors are deflected."}
+            {allowedDevices === "mobile" && "Mobile humans reach your Target Offer. Desktop visitors are deflected."}
+            {allowedDevices === "mobile_tablet" && "Mobile & tablet humans reach your Target Offer. Desktop visitors are deflected."}
           </div>
         </div>
       </div>
@@ -492,34 +492,34 @@ export function UserRoutingTab() {
       {/* ─────────────────────────────────────────────────────────────
           SECTION 3: MANAGE COUNTRIES (GEO-FENCING & AUTO-DETECT)
       ───────────────────────────────────────────────────────────── */}
-      <div className="bg-[#101726] border border-[#1c2638] rounded-2xl p-6 space-y-5 shadow-lg">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#1c2638] pb-3">
+      <div className="bg-white border border-[#E5EAE7] rounded-xl p-6 space-y-5 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#E5EAE7] pb-3.5">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+            <div className="w-8 h-8 rounded-lg bg-[#E6F2ED] border border-[#CCE5DB] flex items-center justify-center text-[#0A5C48]">
               <Flag className="h-4 w-4" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-white tracking-tight">
+              <h3 className="text-base font-bold text-[#0F172A] tracking-tight">
                 Manage Countries (Geo-Fencing)
               </h3>
-              <p className="text-xs text-slate-400">
-                Allow specific countries and deflect all unapproved regions to your Bot Action
+              <p className="text-xs text-[#64748B]">
+                Allow specific countries and deflect unapproved regions to your Bot Action
               </p>
             </div>
           </div>
 
-          {/* Auto-detected IP indicator pill with quick reset button */}
+          {/* Auto-detected IP indicator */}
           {detectedCountryCode && (
-            <div className="flex items-center gap-2 bg-[#0b0f19] border border-[#1e2a3f] px-3 py-1.5 rounded-xl">
-              <LocateFixed className="h-3.5 w-3.5 text-emerald-400" />
-              <span className="text-xs text-slate-300">
-                Your IP Location: <strong className="text-white">{detectedFlag} {detectedCountryName} ({detectedCountryCode})</strong>
+            <div className="flex items-center gap-2 bg-[#F7FAF8] border border-[#E0E9E4] px-3 py-1.5 rounded-lg shadow-xs">
+              <LocateFixed className="h-3.5 w-3.5 text-[#0A5C48]" />
+              <span className="text-xs text-[#2D3B35]">
+                Your IP: <strong className="text-[#0F172A]">{detectedFlag} {detectedCountryName} ({detectedCountryCode})</strong>
               </span>
               <button
                 type="button"
                 onClick={setAutoDetectedCountry}
                 title="Default to your detected country"
-                className="ml-1 text-[11px] font-semibold text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors"
+                className="ml-1 text-[11px] font-bold text-[#0A5C48] hover:text-[#07382D] underline underline-offset-2 transition-colors"
               >
                 Use Default
               </button>
@@ -529,18 +529,18 @@ export function UserRoutingTab() {
 
         <div className="space-y-2 relative" ref={countryDropdownRef}>
           <div className="flex items-center justify-between">
-            <Label className="text-xs font-semibold text-slate-200">
+            <Label className="text-xs font-bold text-[#2D3B35]">
               Allowed Countries
             </Label>
-            <span className="text-[11px] text-slate-400">
-              Click search to add more countries • Click ✕ on a badge to remove
+            <span className="text-[11px] text-[#64748B]">
+              Click search to add more • Click ✕ on a badge to remove
             </span>
           </div>
           
-          {/* Tag Input Container with dark background and burgundy pill badges */}
+          {/* Tag Input Container */}
           <div 
             onClick={() => setIsCountryDropdownOpen(true)}
-            className="min-h-[48px] w-full p-2 bg-[#0b0f19] border border-[#223049] rounded-xl flex flex-wrap items-center gap-2 focus-within:ring-2 focus-within:ring-rose-500/20 focus-within:border-rose-500 transition-all cursor-text hover:border-[#2f4265]"
+            className="min-h-[48px] w-full p-2 bg-white border border-[#D5DFD9] rounded-lg flex flex-wrap items-center gap-2 focus-within:ring-1 focus-within:ring-[#0A5C48] focus-within:border-[#0A5C48] transition-all cursor-text hover:border-[#82928A]"
           >
             {selectedCountries.map((code) => {
               const item = COUNTRIES_LIST.find((c) => c.code === code);
@@ -549,16 +549,16 @@ export function UserRoutingTab() {
               return (
                 <span
                   key={code}
-                  className="inline-flex items-center gap-1.5 bg-[#9f1239] hover:bg-[#881337] text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors shadow-sm"
+                  className="inline-flex items-center gap-1.5 bg-[#F2F6F4] border border-[#DEE7E2] text-[#0F172A] text-xs font-semibold px-2.5 py-1 rounded-md transition-colors"
                 >
                   <span className="text-sm leading-none">{flag}</span>
-                  <span className="text-white">{name}</span>
+                  <span className="text-[#0F172A]">{name}</span>
                   <button
                     type="button"
                     onClick={(e) => removeCountry(code, e)}
-                    className="border-l border-white/20 pl-1.5 ml-1 text-white/80 hover:text-white"
+                    className="border-l border-[#D5DFD9] pl-1.5 ml-1 text-[#64748B] hover:text-[#DC2626]"
                   >
-                    <X className="h-3.5 w-3.5" />
+                    <X className="h-3 w-3" />
                   </button>
                 </span>
               );
@@ -573,17 +573,17 @@ export function UserRoutingTab() {
               }}
               onFocus={() => setIsCountryDropdownOpen(true)}
               placeholder={selectedCountries.length === 0 ? "Search to choose countries..." : "Search & add more countries..."}
-              className="flex-1 min-w-[160px] bg-transparent border-0 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none px-2 py-1"
+              className="flex-1 min-w-[160px] bg-transparent border-0 text-xs text-[#0F172A] placeholder:text-[#94A3B8] focus:outline-none px-2 py-1"
             />
           </div>
 
-          <p className="text-[11px] text-slate-400">
+          <p className="text-[11px] text-[#64748B]">
             Only visitors from approved countries can view your Target Offer. All other countries are instantly deflected to your Bot Action (404/403 or Safe Page). Select "All Countries" for global allowance.
           </p>
 
           {/* Country Dropdown Options Menu */}
           {isCountryDropdownOpen && (
-            <div className="absolute left-0 right-0 top-full mt-2 bg-[#0e1422] border border-[#223049] rounded-xl shadow-2xl z-50 max-h-64 overflow-y-auto p-2 space-y-1 animate-in fade-in-50 duration-150 backdrop-blur-md">
+            <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-[#E5EAE7] rounded-xl shadow-xl z-50 max-h-64 overflow-y-auto p-2 space-y-1 animate-in fade-in-50 duration-150">
               {filteredCountryOptions.map((c) => {
                 const isSelected = selectedCountries.includes(c.code);
                 return (
@@ -591,18 +591,18 @@ export function UserRoutingTab() {
                     key={c.code}
                     type="button"
                     onClick={() => handleCountrySelect(c.code)}
-                    className={`w-full flex items-center justify-between px-3.5 py-2 rounded-lg text-xs font-medium text-left transition-colors ${
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium text-left transition-colors ${
                       isSelected 
-                        ? "bg-[#9f1239]/20 text-rose-300 font-bold border border-[#9f1239]/40" 
-                        : "text-slate-200 hover:bg-[#182338] hover:text-white"
+                        ? "bg-[#EBF5F1] text-[#07382D] font-bold border border-[#CCE5DB]" 
+                        : "text-[#2D3B35] hover:bg-[#F7FAF8] hover:text-[#0F172A]"
                     }`}
                   >
                     <div className="flex items-center gap-2.5">
                       <span className="text-base leading-none">{c.flag}</span>
-                      <span className="text-slate-100">{c.name}</span>
-                      <span className="text-[10px] text-slate-400 uppercase font-mono">({c.code})</span>
+                      <span className="text-[#0F172A] font-semibold">{c.name}</span>
+                      <span className="text-[10px] text-[#64748B] uppercase font-mono">({c.code})</span>
                     </div>
-                    {isSelected && <Check className="h-4 w-4 text-rose-400" />}
+                    {isSelected && <Check className="h-4 w-4 text-[#0A5C48]" />}
                   </button>
                 );
               })}
@@ -614,35 +614,35 @@ export function UserRoutingTab() {
       {/* ─────────────────────────────────────────────────────────────
           SECTION 4: DESTINATION ENDPOINTS (HUMAN URL & BOT / ERROR ACTION)
       ───────────────────────────────────────────────────────────── */}
-      <div className="bg-[#101726] border border-[#1c2638] rounded-2xl p-6 space-y-5 shadow-lg">
-        <div className="flex items-center gap-2.5 border-b border-[#1c2638] pb-3">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+      <div className="bg-white border border-[#E5EAE7] rounded-xl p-6 space-y-5 shadow-xs">
+        <div className="flex items-center gap-2.5 border-b border-[#E5EAE7] pb-3.5">
+          <div className="w-8 h-8 rounded-lg bg-[#E6F2ED] border border-[#CCE5DB] flex items-center justify-center text-[#0A5C48]">
             <LinkIcon className="h-4 w-4" />
           </div>
           <div>
-            <h3 className="text-base font-bold text-white tracking-tight">
-              Traffic Destinations & Bot Error Controls
+            <h3 className="text-base font-bold text-[#0F172A] tracking-tight">
+              Traffic Destinations & Bot Deflection Controls
             </h3>
-            <p className="text-xs text-slate-400">
-              Define the destination addresses for verified human visitors, and choose an error page or URL for blocked traffic
+            <p className="text-xs text-[#64748B]">
+              Define destination addresses for verified human visitors, and choose an error page or URL for blocked traffic
             </p>
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {/* Target Offer (Human URL) */}
-          <div className="bg-[#0b0f19] border border-[#1e2a3f] rounded-xl p-5 space-y-3">
+          <div className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                <div className="w-8 h-8 rounded-lg bg-[#E6F2ED] border border-[#CCE5DB] text-[#0A5C48] flex items-center justify-center">
                   <Users className="h-4 w-4" />
                 </div>
                 <div>
-                  <h4 className="text-xs font-bold text-white">Target Offer (Human Visitors)</h4>
-                  <p className="text-[11px] text-slate-400">Approved users passing country, device & VPN rules</p>
+                  <h4 className="text-xs font-bold text-[#0F172A]">Target Offer (Human Visitors)</h4>
+                  <p className="text-[11px] text-[#64748B]">Approved users passing country, device & VPN rules</p>
                 </div>
               </div>
-              <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-[#E6F2ED] text-[#07382D] border border-[#CCE5DB]">
                 Money Page
               </span>
             </div>
@@ -653,40 +653,40 @@ export function UserRoutingTab() {
                 value={humanUrl}
                 onChange={(e) => setHumanUrl(e.target.value)}
                 placeholder="https://myoffer.com/landing-page"
-                className="bg-[#121927] border-[#223049] text-xs font-mono text-slate-100 h-10 placeholder:text-slate-500 focus:border-emerald-500 focus:ring-emerald-500/20"
+                className="bg-white border-[#D5DFD9] text-xs font-mono text-[#0F172A] h-10 placeholder:text-[#94A3B8] focus:border-[#0A5C48] focus:ring-1 focus:ring-[#0A5C48]"
               />
-              <p className="text-[11px] text-slate-400">
+              <p className="text-[11px] text-[#64748B]">
                 Query parameters and tracking tokens are forwarded automatically.
               </p>
             </div>
           </div>
 
           {/* Safe Landing & Bot Error Code Action */}
-          <div className="bg-[#0b0f19] border border-[#1e2a3f] rounded-xl p-5 space-y-3">
+          <div className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center">
+                <div className="w-8 h-8 rounded-lg bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center">
                   <Bot className="h-4 w-4" />
                 </div>
                 <div>
-                  <h4 className="text-xs font-bold text-white">Bot & Filtered Traffic Action</h4>
-                  <p className="text-[11px] text-slate-400">Enter 404, 403, or a Safe Page URL</p>
+                  <h4 className="text-xs font-bold text-[#0F172A]">Bot & Filtered Traffic Action</h4>
+                  <p className="text-[11px] text-[#64748B]">Enter 404, 403, or a Safe Page URL</p>
                 </div>
               </div>
               {isBot404 ? (
-                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
                   HTTP 404 NOT FOUND
                 </span>
               ) : isBot403 ? (
-                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
                   HTTP 403 FORBIDDEN
                 </span>
               ) : isBotUrl ? (
-                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
                   SAFE REDIRECT URL
                 </span>
               ) : (
-                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-slate-500/15 text-slate-300 border border-slate-500/30">
+                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
                   BOT ACTION
                 </span>
               )}
@@ -697,10 +697,10 @@ export function UserRoutingTab() {
               <button
                 type="button"
                 onClick={() => setBotUrl("404")}
-                className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${
+                className={`text-[11px] font-bold px-2.5 py-1 rounded-md border transition-all ${
                   isBot404
-                    ? "bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-sm"
-                    : "bg-[#121927] text-slate-400 border-[#223049] hover:text-white hover:border-[#2f4265]"
+                    ? "bg-rose-50 text-rose-700 border-rose-300"
+                    : "bg-white text-[#64748B] border-[#D5DFD9] hover:text-[#0F172A] hover:border-[#82928A]"
                 }`}
               >
                 404 Not Found
@@ -708,10 +708,10 @@ export function UserRoutingTab() {
               <button
                 type="button"
                 onClick={() => setBotUrl("403")}
-                className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${
+                className={`text-[11px] font-bold px-2.5 py-1 rounded-md border transition-all ${
                   isBot403
-                    ? "bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-sm"
-                    : "bg-[#121927] text-slate-400 border-[#223049] hover:text-white hover:border-[#2f4265]"
+                    ? "bg-amber-50 text-amber-700 border-amber-300"
+                    : "bg-white text-[#64748B] border-[#D5DFD9] hover:text-[#0F172A] hover:border-[#82928A]"
                 }`}
               >
                 403 Forbidden
@@ -723,10 +723,10 @@ export function UserRoutingTab() {
                     setBotUrl("https://");
                   }
                 }}
-                className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${
+                className={`text-[11px] font-bold px-2.5 py-1 rounded-md border transition-all ${
                   isBotUrl
-                    ? "bg-blue-500/20 text-blue-300 border-blue-500/50 shadow-sm"
-                    : "bg-[#121927] text-slate-400 border-[#223049] hover:text-white hover:border-[#2f4265]"
+                    ? "bg-blue-50 text-blue-700 border-blue-300"
+                    : "bg-white text-[#64748B] border-[#D5DFD9] hover:text-[#0F172A] hover:border-[#82928A]"
                 }`}
               >
                 Custom Safe URL
@@ -739,9 +739,9 @@ export function UserRoutingTab() {
                 value={botUrl}
                 onChange={(e) => setBotUrl(e.target.value)}
                 placeholder="Enter 404, 403, or https://example.com/safe"
-                className="bg-[#121927] border-[#223049] text-xs font-mono text-slate-100 h-10 placeholder:text-slate-500 focus:border-rose-500 focus:ring-rose-500/20"
+                className="bg-white border-[#D5DFD9] text-xs font-mono text-[#0F172A] h-10 placeholder:text-[#94A3B8] focus:border-[#0A5C48] focus:ring-1 focus:ring-[#0A5C48]"
               />
-              <p className="text-[11px] text-slate-400">
+              <p className="text-[11px] text-[#64748B]">
                 {isBot404 && "Visitors failing checks will see your server's native 404 Not Found error page."}
                 {isBot403 && "Visitors failing checks will see your server's native 403 Forbidden error page."}
                 {isBotUrl && "Visitors failing checks will be seamlessly redirected to your Safe Landing URL."}
@@ -755,15 +755,15 @@ export function UserRoutingTab() {
       {/* ─────────────────────────────────────────────────────────────
           SAVE ACTION BAR
       ───────────────────────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 bg-[#101726] border border-[#1c2638] rounded-2xl shadow-lg">
-        <div className="text-xs text-slate-400 flex items-center gap-2">
-          <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
-          <span>Rules are saved permanently and take effect in real time on all tracking links.</span>
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 bg-white border border-[#E5EAE7] rounded-xl shadow-xs">
+        <div className="text-xs text-[#64748B] flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-[#0A5C48] shrink-0" />
+          <span>Rules take effect in real time across all integrated tracking links.</span>
         </div>
         <Button
           onClick={handleSave}
           disabled={updateUrlsMutation.isPending || isLoadingUrls}
-          className="w-full sm:w-auto bg-[#9f1239] hover:bg-[#be123c] text-white text-xs font-semibold px-7 h-11 rounded-xl shadow-lg transition-all flex items-center justify-center gap-2"
+          className="w-full sm:w-auto bg-[#0A5C48] hover:bg-[#07382D] text-white text-xs font-bold px-6 h-10 rounded-lg shadow-xs transition-all flex items-center justify-center gap-2"
         >
           <Save className="h-4 w-4" />
           {updateUrlsMutation.isPending ? "Saving Rules..." : "Save Configuration"}
