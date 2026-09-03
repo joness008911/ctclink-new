@@ -249,9 +249,15 @@ export function UserRoutingTab() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-1">
           {/* Block VPN and Proxies Select */}
           <div className="space-y-2">
-            <Label className="text-xs font-bold text-[#2D3B35]">
-              VPN & Proxies Enforcement
-            </Label>
+            <div className="flex items-center justify-between">
+              <Label className="text-xs font-bold text-[#2D3B35]">
+                VPN & Proxies Enforcement
+              </Label>
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                <ShieldCheck className="h-3 w-3 text-emerald-600" />
+                Zero-Blind-Trust Protected
+              </span>
+            </div>
             <div className="relative">
               <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-rose-600 pointer-events-none">
                 <Shield className="h-4 w-4" />
@@ -261,13 +267,21 @@ export function UserRoutingTab() {
                 onChange={(e) => setBlockVpn(e.target.value as "block" | "allow")}
                 className="w-full h-11 pl-11 pr-10 bg-white border border-[#D5DFD9] rounded-lg text-xs font-semibold text-[#0F172A] appearance-none focus:outline-none focus:ring-1 focus:ring-[#0A5C48] focus:border-[#0A5C48] transition-all cursor-pointer hover:border-[#82928A]"
               >
-                <option value="block">Block VPN & Proxies (Deflect to Bot Action / Error)</option>
-                <option value="allow">Allow VPN & Proxies (Permit residential VPNs)</option>
+                <option value="block">Block All VPN & Proxies (Deflect to Bot Action / Error)</option>
+                <option value="allow">Allow Clean Consumer VPNs (Safe Multi-Layer Verification — Blocks botnets & scrapers)</option>
               </select>
               <ChevronDown className="h-4 w-4 text-[#64748B] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
             <p className="text-[11px] text-[#64748B] leading-relaxed">
-              When set to <span className="text-rose-600 font-bold">"Block"</span>, visitors detected using VPNs, Tor exit nodes, residential proxies, or datacenter IPs are automatically deflected.
+              {blockVpn === "allow" ? (
+                <>
+                  <span className="text-emerald-700 font-bold">Safe Verification Active:</span> CleanTraffic does not blind-trust proxy visitors. Genuine consumer privacy networks (Apple iCloud Private Relay, Google One, NordVPN) are verified and permitted, while botnets, scrapers, and malicious residential proxy pools remain blocked.
+                </>
+              ) : (
+                <>
+                  When set to <span className="text-rose-600 font-bold">"Block"</span>, all visitors detected using VPNs, Tor exit nodes, residential proxies, or datacenter IPs are deflected immediately.
+                </>
+              )}
             </p>
           </div>
 

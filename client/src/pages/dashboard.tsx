@@ -30,7 +30,8 @@ import {
   X,
   ChevronRight,
   Sparkles,
-  Activity
+  Activity,
+  ArrowRight
 } from "lucide-react";
 import ClassificationTable from "@/components/classification-table";
 import DetectionRules from "@/components/detection-rules";
@@ -85,6 +86,14 @@ export default function Dashboard() {
   
   const { data: user } = useQuery<AuthUser>({
     queryKey: ["/api/auth/user"],
+  });
+
+  const { data: ip2LocationHealth } = useQuery<{
+    status: 'healthy' | 'exhausted' | 'invalid_key' | 'degraded' | 'unconfigured';
+    alertMessage: string | null;
+  }>({
+    queryKey: ["/api/ip2geo-api-key/health"],
+    refetchInterval: 30000,
   });
 
   const logoutMutation = useMutation({
@@ -465,6 +474,38 @@ export default function Dashboard() {
 
           {/* Tab Views Content */}
           <div className="p-4 sm:p-6 lg:p-8 flex-1">
+            {/* Proactive IP2Location Health Alert Banner */}
+            {ip2LocationHealth && (ip2LocationHealth.status === 'exhausted' || ip2LocationHealth.status === 'invalid_key') && (
+              <div 
+                className="mb-6 p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-rose-500/10 border-rose-500/30 text-rose-800 dark:text-rose-200 shadow-sm"
+                data-testid="banner-ip2location-alert"
+              >
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="h-5 w-5 text-rose-600 dark:text-rose-400 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="font-semibold text-sm">
+                      {ip2LocationHealth.status === 'exhausted'
+                        ? 'IP2Location API Quota Depleted (INSUFFICIENT_CREDIT)'
+                        : 'IP2Location API Key Invalid or Expired'}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                      {ip2LocationHealth.alertMessage || 'CleanTraffic fail-safe fallback is active to ensure zero visitor disruption. Geolocation accuracy will be limited until credits are replenished.'}
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setActiveTab('settings')}
+                  className="shrink-0 text-xs border-rose-500/40 hover:bg-rose-500/15"
+                  data-testid="button-resolve-ip2location"
+                >
+                  Resolve in Settings
+                  <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+                </Button>
+              </div>
+            )}
+
             <TabsContent value="overview" className="mt-0 space-y-6">
               <ClassificationTable />
             </TabsContent>

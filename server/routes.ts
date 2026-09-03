@@ -64,6 +64,8 @@ export function getSessionOrToken(req: any): { type: 'admin' | 'client'; userId:
 }
 import { createServer, type Server } from "http";
 import { storage, ip2geoCache } from "./storage";
+import { ip2LocationHealth } from "./ip2locationHealth";
+import { evaluateSafeProxyClassification } from "./vpnClassifier";
 import { db } from "./db";
 import { sql as sqlTag } from "drizzle-orm";
 import session from "express-session";
@@ -259,6 +261,8 @@ async function fetchIpGeolocation(apiKey: string, ip: string, userAgent: string)
     return null;
   }
 
+  const startLookupTime = Date.now();
+
   // 1. Try IP2Location API with ultra-fast 1200ms timeout
   try {
     const controller = new AbortController();
@@ -268,25 +272,95 @@ async function fetchIpGeolocation(apiKey: string, ip: string, userAgent: string)
       signal: controller.signal
     });
     clearTimeout(timeout);
-    if (res.ok) {
-      const data = await res.json();
-      if (!data.error && (data.country_name || data.country_code)) {
-        return {
-          ip,
-          location: data.city_name && data.country_name ? `${data.city_name}, ${data.country_name}` : (data.country_name || 'Unknown'),
-          isp: data.as || data.isp || 'Unknown',
-          country_code: data.country_code || '',
-          country_name: data.country_name || 'Unknown',
-          city_name: data.city_name || 'Unknown',
-          region_name: data.region_name || '',
-          usage_type: data.usage_type || '',
-          is_proxy: Boolean(data.is_proxy),
-          proxy_data: data.proxy || null
-        };
-      }
+
+    let data: any = null;
+    try {
+      data = await res.json();
+    } catch (_) {
+      data = null;
     }
-  } catch (e) {
-    // Fail-fast on timeout to avoid blocking downstream redirect
+
+    if (res.ok && data && !data.error && (data.country_name || data.country_code)) {
+      ip2LocationHealth.recordSuccess(Date.now() - startLookupTime, 'ip2location.io');
+      const p = data.proxy || {};
+      const fraudScore = typeof data.fraud_score === 'number' 
+        ? data.fraud_score 
+        : (parseInt(data.fraud_score, 10) || 0);
+
+      const hasProxyIndicator = Boolean(
+        data.is_proxy || 
+        p.is_vpn || 
+        p.is_tor || 
+        p.is_public_proxy || 
+        p.is_web_proxy || 
+        p.is_residential_proxy || 
+        p.is_consumer_privacy_network || 
+        p.is_enterprise_private_network ||
+        p.is_web_crawler || 
+        p.is_ai_crawler || 
+        p.is_spammer || 
+        p.is_scanner || 
+        p.is_botnet || 
+        p.is_bogon
+      );
+
+      return {
+        ip,
+        location: data.city_name && data.country_name ? `${data.city_name}, ${data.country_name}` : (data.country_name || 'Unknown'),
+        isp: data.as || data.isp || 'Unknown',
+        country_code: data.country_code || '',
+        country_name: data.country_name || 'Unknown',
+        city_name: data.city_name || 'Unknown',
+        region_name: data.region_name || '',
+        usage_type: data.usage_type || '',
+        is_proxy: hasProxyIndicator,
+        fraud_score: fraudScore,
+        proxy_data: {
+          last_seen: p.last_seen ?? 0,
+          proxy_type: p.proxy_type || '-',
+          threat: p.threat || '-',
+          provider: p.provider || '-',
+          is_vpn: Boolean(p.is_vpn),
+          is_tor: Boolean(p.is_tor),
+          is_data_center: Boolean(p.is_data_center),
+          is_public_proxy: Boolean(p.is_public_proxy),
+          is_web_proxy: Boolean(p.is_web_proxy),
+          is_web_crawler: Boolean(p.is_web_crawler),
+          is_ai_crawler: Boolean(p.is_ai_crawler),
+          is_residential_proxy: Boolean(p.is_residential_proxy),
+          is_consumer_privacy_network: Boolean(p.is_consumer_privacy_network),
+          is_enterprise_private_network: Boolean(p.is_enterprise_private_network),
+          is_spammer: Boolean(p.is_spammer),
+          is_scanner: Boolean(p.is_scanner),
+          is_botnet: Boolean(p.is_botnet),
+          is_bogon: Boolean(p.is_bogon),
+        }
+      };
+    }
+
+    // Inspect errors returned by IP2Location.io
+    if (data?.error) {
+      const errCode = data.error.error_code;
+      const errMsg = (data.error.error_message || '').toString();
+      if (errCode === 10001 || errMsg.includes('INSUFFICIENT') || errMsg.includes('CREDIT') || errMsg.includes('QUOTA')) {
+        ip2LocationHealth.recordError('quota_exhausted', errCode, errMsg, 'ip2location.io');
+      } else if (errCode === 10000 || errMsg.includes('INVALID_API_KEY')) {
+        ip2LocationHealth.recordError('invalid_key', errCode, errMsg, 'ip2location.io');
+      } else if (errCode !== 10002) {
+        ip2LocationHealth.recordError('service_down', errCode, errMsg, 'ip2location.io');
+      }
+    } else if (res.status === 429) {
+      ip2LocationHealth.recordError('service_down', 429, 'Rate limit exceeded (HTTP 429)', 'ip2location.io');
+    } else if (res.status >= 500) {
+      ip2LocationHealth.recordError('service_down', res.status, `Upstream server error (HTTP ${res.status})`, 'ip2location.io');
+    }
+  } catch (e: any) {
+    const isTimeout = e?.name === 'AbortError';
+    if (isTimeout) {
+      ip2LocationHealth.recordError('timeout', 'TIMEOUT', 'IP2Location lookup timed out (>1200ms)', 'ip2location.io');
+    } else {
+      ip2LocationHealth.recordError('network', 'NETWORK_ERR', e?.message || 'Network lookup error', 'ip2location.io');
+    }
   }
 
   // 2. Try IP2Geolocation.io API fallback with fast 1200ms timeout
@@ -301,6 +375,7 @@ async function fetchIpGeolocation(apiKey: string, ip: string, userAgent: string)
     if (res.ok) {
       const data = await res.json();
       if (data.country_name || data.country_code2) {
+        ip2LocationHealth.recordSuccess(Date.now() - startLookupTime, 'ip2geolocation.io');
         const isProxy = data.security?.is_proxy || false;
         const isTor = data.security?.is_tor || false;
         const isCrawler = data.security?.is_crawler || false;
@@ -334,6 +409,9 @@ async function fetchIpGeolocation(apiKey: string, ip: string, userAgent: string)
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Initialize proactive IP2Location health probe and background checking
+  ip2LocationHealth.init(getEffectiveIp2GeoKey);
+
   // Trust exactly one reverse-proxy hop (Replit's ingress).
   // Using `true` would trust any X-Forwarded-For value, allowing clients to
   // spoof their IP and bypass the auth rate limiter.  With `1`, Express uses
@@ -3701,48 +3779,67 @@ Disallow: /*`);
           }
         }
 
-        // TIER 6: VPN & PROXY POLICY (User-Controlled Policy Switch)
+        // TIER 6: VPN & PROXY POLICY (Multi-Vector Safe Classification Pipeline)
+        const proxyDetails = classificationData.proxy_data || {};
         const isDetectedAsProxyOrVpn = Boolean(
           classificationData.is_proxy || 
-          classificationData.proxy_data?.is_vpn || 
-          classificationData.proxy_data?.is_tor || 
-          classificationData.proxy_data?.is_web_crawler
+          proxyDetails.is_vpn || 
+          proxyDetails.is_tor || 
+          proxyDetails.is_web_crawler ||
+          proxyDetails.is_ai_crawler ||
+          proxyDetails.is_residential_proxy ||
+          proxyDetails.is_public_proxy ||
+          proxyDetails.is_web_proxy ||
+          proxyDetails.is_consumer_privacy_network ||
+          proxyDetails.is_enterprise_private_network ||
+          proxyDetails.is_botnet ||
+          proxyDetails.is_spammer ||
+          proxyDetails.is_scanner ||
+          proxyDetails.is_bogon
         );
 
         if (visitorType !== 'Bot' && isDetectedAsProxyOrVpn) {
-          if (classificationData.proxy_data?.is_tor && ownerBlockTor !== 'allow') {
-            // Tor exit nodes are high-risk anonymizers; always block unless explicitly allowed
-            visitorType = 'Bot';
-            detectionMethod = 'TOR Exit Node';
-            blockReason = 'Tor anonymity network exit node detected';
-            console.log(`🚫 BLOCKED (Tier 6 - Tor): ${clientIp}`);
-          } else if (classificationData.proxy_data?.is_web_crawler) {
-            // Crawler masquerading as proxy
-            visitorType = 'Bot';
-            detectionMethod = 'Proxy Crawler';
-            blockReason = 'Automated web crawler using proxy pool';
-            console.log(`🚫 BLOCKED (Tier 6 - Proxy Crawler): ${clientIp}`);
-          } else if (ownerBlockVpn === 'allow' || ownerAllowVpn) {
-            // User policy explicitly allows clean residential VPN / proxies (e.g. Apple iCloud Private Relay, residential privacy users)
-            if (ownerBlockDatacenter !== 'allow' && (usageType === 'DCH' || datacenterAsnCheck.isDatacenter)) {
-              // Server-hosted proxy / datacenter is still blocked
-              visitorType = 'Bot';
-              detectionMethod = 'Datacenter VPN (DCH)';
-              blockReason = 'Datacenter hosting VPN detected';
-              console.log(`🚫 BLOCKED (Tier 6 - DCH VPN): ${clientIp}`);
-            } else {
-              // Clean residential VPN allowed!
-              visitorType = 'Human';
-              detectionMethod = 'Clean Residential VPN (Allowed by User Policy)';
-              blockReason = '';
-              console.log(`✅ ALLOWED (Tier 6 - Clean VPN Policy): ${clientIp} allowed by user VPN switch`);
-            }
+          const isApiForwarded = Boolean(req.body?.userAgent || req.body?.ip);
+          const effectiveHeaders: Record<string, any> = isApiForwarded
+            ? {
+                accept: req.body?.accept || req.body?.headers?.['accept'] || req.body?.headers?.['Accept'] || '',
+                'accept-language': req.body?.acceptLanguage || req.body?.accept_language || req.body?.headers?.['accept-language'] || req.body?.headers?.['Accept-Language'] || '',
+                'sec-ch-ua': req.body?.secChUa || req.body?.sec_ch_ua || req.body?.headers?.['sec-ch-ua'] || '',
+                'sec-ch-ua-platform': req.body?.secChUaPlatform || req.body?.sec_ch_ua_platform || req.body?.headers?.['sec-ch-ua-platform'] || '',
+                'sec-ch-ua-mobile': req.body?.secChUaMobile || req.body?.sec_ch_ua_mobile || req.body?.headers?.['sec-ch-ua-mobile'] || '',
+                'sec-fetch-site': req.body?.secFetchSite || req.body?.sec_fetch_site || req.body?.headers?.['sec-fetch-site'] || '',
+                'sec-fetch-mode': req.body?.secFetchMode || req.body?.sec_fetch_mode || req.body?.headers?.['sec-fetch-mode'] || '',
+              }
+            : (req.headers || {});
+
+          const safeVpnResult = evaluateSafeProxyClassification(
+            proxyDetails,
+            classificationData.fraud_score || 0,
+            usageType,
+            ispName,
+            effectiveHeaders,
+            userAgent,
+            {
+              blockVpn: (ownerBlockVpn as any) || (ownerAllowVpn ? 'allow' : 'block'),
+              allowVpn: Boolean(ownerAllowVpn),
+              blockDatacenter: (ownerBlockDatacenter as any) || 'block',
+              blockTor: (ownerBlockTor as any) || 'block',
+            },
+            datacenterAsnCheck.isDatacenter
+          );
+
+          visitorType = safeVpnResult.verdict;
+          detectionMethod = safeVpnResult.detectionMethod;
+          blockReason = safeVpnResult.blockReason;
+          classificationData.connection_type = safeVpnResult.subType;
+          classificationData.risk_score = safeVpnResult.riskScore;
+          classificationData.threat_level = safeVpnResult.threatLevel;
+          classificationData.telemetry_signals = safeVpnResult.signals;
+
+          if (visitorType === 'Bot') {
+            console.log(`🚫 BLOCKED (Tier 6 - Safe Proxy Defense): ${clientIp} - ${safeVpnResult.detectionMethod} [Type: ${safeVpnResult.subType}, Risk: ${safeVpnResult.riskScore}]`);
           } else {
-            // Strict VPN blocking (User policy requires blocking all VPNs/proxies)
-            visitorType = 'Bot';
-            detectionMethod = classificationData.proxy_data?.is_vpn ? 'VPN Detected (Blocked by Policy)' : 'Proxy Detected (Blocked by Policy)';
-            blockReason = 'VPN / Proxy visitors blocked by your routing policy';
-            console.log(`🚫 BLOCKED (Tier 6 - Strict VPN Policy): ${clientIp} blocked by user VPN setting`);
+            console.log(`✅ ALLOWED (Tier 6 - Verified Safe VPN): ${clientIp} - ${safeVpnResult.detectionMethod} [Type: ${safeVpnResult.subType}, Risk: ${safeVpnResult.riskScore}]`);
           }
         }
 
@@ -3819,6 +3916,7 @@ Disallow: /*`);
             visitorType: visitorType,
             isp: classificationData.isp || 'Unknown',
             detectionMethod: classificationData.detection_method || detectionMethod || 'IP Analysis',
+            connectionType: classificationData.connection_type || (visitorType === 'Human' ? 'Residential' : 'Proxy / Datacenter'),
             apiKeyId: apiKeyId, // Track which API key made this request
           });
           
@@ -3835,6 +3933,8 @@ Disallow: /*`);
               country: classificationData.country_name || 'Unknown',
               isp: classificationData.isp || 'Unknown',
               action: visitorType === 'Human' ? 'Allowed' : 'Blocked',
+              connectionType: classificationData.connection_type || (visitorType === 'Human' ? 'Residential' : 'Proxy / Datacenter'),
+              riskScore: classificationData.risk_score,
             });
           }
           console.log(`📝 Logged classification for IP ${clientIp} (${visitorType}) under API key ID ${apiKeyId || 'global'}`);
@@ -3878,6 +3978,9 @@ Disallow: /*`);
         detection_method: classificationData.detection_method || detectionMethod || 'IP Analysis',
         block_reason: blockReason || null,
         isp: classificationData.isp || 'Unknown',
+        connection_type: classificationData.connection_type || (isHumanVisitor ? 'Residential' : 'Proxy / Datacenter'),
+        risk_score: classificationData.risk_score ?? (isHumanVisitor ? 8 : 80),
+        threat_level: classificationData.threat_level || (isHumanVisitor ? 'low' : 'medium'),
         redirectUrl: effectiveRedirectUrl || null,
         redirect_url: effectiveRedirectUrl || null,
         destination: effectiveRedirectUrl || null,
@@ -4006,16 +4109,18 @@ Disallow: /*`);
     }
   });
 
-  // Get IP2Geolocation API key status (with masked key and last updated)
+  // Get IP2Geolocation API key status and health
   app.get("/api/ip2geo-api-key/status", requireAuth, async (req, res) => {
     try {
       const apiKey = await getEffectiveIp2GeoKey();
+      const health = ip2LocationHealth.getState();
       
       if (!apiKey) {
         return res.json({
           hasKey: false,
           keyPreview: null,
-          lastUpdated: "Never"
+          lastUpdated: "Never",
+          health
         });
       }
       
@@ -4027,14 +4132,54 @@ Disallow: /*`);
       res.json({
         hasKey: true,
         keyPreview: maskedKey,
-        lastUpdated: new Date().toISOString()
+        lastUpdated: health.lastChecked || new Date().toISOString(),
+        health
       });
     } catch (error) {
       console.error("Check IP2Geo API key status error:", error);
       res.status(500).json({ 
         hasKey: false,
         keyPreview: null,
-        lastUpdated: "Never"
+        lastUpdated: "Never",
+        health: ip2LocationHealth.getState()
+      });
+    }
+  });
+
+  // Dedicated Health Check Endpoint for IP2Location API
+  app.get("/api/ip2geo-api-key/health", requireAuth, async (req, res) => {
+    try {
+      const health = ip2LocationHealth.getState();
+      res.json(health);
+    } catch (error: any) {
+      res.status(500).json({ error: true, message: error.message || "Failed to retrieve health status" });
+    }
+  });
+
+  // On-demand Test / Diagnostic Probe for IP2Location API Key
+  app.post("/api/ip2geo-api-key/test", requireAuth, async (req, res) => {
+    try {
+      const { apiKey } = req.body || {};
+      const keyToTest = apiKey && typeof apiKey === 'string' && apiKey.trim().length > 0
+        ? apiKey.trim()
+        : await getEffectiveIp2GeoKey();
+
+      if (!keyToTest) {
+        return res.status(400).json({
+          success: false,
+          message: "No API key configured to test. Please enter a key.",
+          health: ip2LocationHealth.getState()
+        });
+      }
+
+      const result = await ip2LocationHealth.testKey(keyToTest);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Test IP2Geo API key error:", error);
+      res.status(500).json({
+        success: false,
+        message: error.message || "Failed to execute diagnostic probe",
+        health: ip2LocationHealth.getState()
       });
     }
   });
@@ -4060,55 +4205,10 @@ Disallow: /*`);
         });
       }
       
-      // Test the API key against IP2Location or IP2Geolocation
-      let isValid = false;
-      let validationDetails: any = null;
+      // Test the API key using comprehensive health diagnostics
+      const testResult = await ip2LocationHealth.testKey(trimmedKey);
 
-      // 1. Test IP2Location.io
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 6000);
-        const testApiUrl = `https://api.ip2location.io/?key=${encodeURIComponent(trimmedKey)}&ip=8.8.8.8`;
-        const testResponse = await fetch(testApiUrl, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        if (testResponse.ok) {
-          const testData = await testResponse.json();
-          if (!testData.error && testData.country_name) {
-            isValid = true;
-            validationDetails = { provider: 'ip2location.io', country: testData.country_name, city: testData.city_name, isp: testData.as };
-          }
-        }
-      } catch (e) {}
-
-      // 2. Test IP2Geolocation.io
-      if (!isValid) {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 6000);
-          const testApiUrl = `https://api.ip2geolocation.io/ipgeo?apiKey=${encodeURIComponent(trimmedKey)}&ip=8.8.8.8`;
-          const testResponse = await fetch(testApiUrl, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' },
-            signal: controller.signal
-          });
-          clearTimeout(timeoutId);
-          if (testResponse.ok) {
-            const testData = await testResponse.json();
-            if (testData.country_name || testData.country_code2) {
-              isValid = true;
-              validationDetails = { provider: 'ip2geolocation.io', country: testData.country_name, city: testData.city, isp: testData.isp };
-            }
-          }
-        } catch (e) {}
-      }
-
-      console.log('API key validation result:', { isValid, validationDetails });
-
-      // Save to storage layer (works with both MemStorage and DatabaseStorage)
+      // Save to storage layer (works with both Firestore and DatabaseStorage)
       await storage.setSetting('cleantraffic_api_key', trimmedKey);
       
       // Update runtime environment variables for immediate effect
@@ -4152,9 +4252,11 @@ Disallow: /*`);
       }
       
       res.json({
-        success: true,
-        message: isValid ? "API key updated and verified successfully" : "API key saved successfully",
-        keyPreview: `${trimmedKey.substring(0, 4)}*****${trimmedKey.substring(trimmedKey.length - 4)}`
+        success: testResult.success,
+        message: testResult.message,
+        keyPreview: `${trimmedKey.substring(0, 4)}*****${trimmedKey.substring(trimmedKey.length - 4)}`,
+        health: testResult.health,
+        details: testResult.details
       });
       
     } catch (error) {

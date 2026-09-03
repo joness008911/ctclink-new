@@ -125,6 +125,11 @@ $postPayload = json_encode([
     'userAgent' => $visitorUserAgent,
     'acceptLanguage' => $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '',
     'accept' => $_SERVER['HTTP_ACCEPT'] ?? '',
+    'secChUa' => $_SERVER['HTTP_SEC_CH_UA'] ?? '',
+    'secChUaMobile' => $_SERVER['HTTP_SEC_CH_UA_MOBILE'] ?? '',
+    'secChUaPlatform' => $_SERVER['HTTP_SEC_CH_UA_PLATFORM'] ?? '',
+    'secFetchSite' => $_SERVER['HTTP_SEC_FETCH_SITE'] ?? '',
+    'secFetchMode' => $_SERVER['HTTP_SEC_FETCH_MODE'] ?? '',
     'email' => $email,
     'queryString' => $_SERVER['QUERY_STRING'] ?? ''
 ]);

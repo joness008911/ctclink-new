@@ -61,15 +61,28 @@ export function VisitorDetailsDrawer({
   const isRateLimit = detectionMethod.toLowerCase().includes("rate limit") || detectionMethod.toLowerCase().includes("subscription") || detectionMethod.toLowerCase().includes("auth");
   const isIpBlocklist = detectionMethod.toLowerCase().includes("blocklist") || detectionMethod.toLowerCase().includes("cidr");
   const isBotCrawler = detectionMethod.toLowerCase().includes("crawler") || detectionMethod.toLowerCase().includes("bot") || detectionMethod.toLowerCase().includes("synthetic") || detectionMethod.toLowerCase().includes("header");
+  const isBotnet = detectionMethod.toLowerCase().includes("botnet") || detectionMethod.toLowerCase().includes("scanner") || detectionMethod.toLowerCase().includes("spammer") || detectionMethod.toLowerCase().includes("bogon");
+  const isResidentialProxyPool = detectionMethod.toLowerCase().includes("residential proxy") || detectionMethod.toLowerCase().includes("scraping pool");
+  const isConsumerPrivacy = detectionMethod.toLowerCase().includes("consumer privacy") || detectionMethod.toLowerCase().includes("relay");
+  const isVerifiedConsumerVpn = detectionMethod.toLowerCase().includes("verified consumer vpn") || detectionMethod.toLowerCase().includes("clean consumer vpn");
   const isPolicyFilter = isDeviceRestricted || isOsRestricted || isGeoRestricted;
 
   // Accurate Verdict Title
   const getVerdictTitle = () => {
     if (isHuman) {
-      if (detectionMethod.toLowerCase().includes("allowed by user")) {
-        return "Verdict: Verified Clean Human (Privacy VPN Permitted)";
+      if (isConsumerPrivacy) {
+        return "Verdict: Verified Consumer Privacy Network (Apple Relay / Privacy VPN)";
+      }
+      if (isVerifiedConsumerVpn || detectionMethod.toLowerCase().includes("allowed by user")) {
+        return "Verdict: Verified Human (Safe Multi-Layer VPN Permitted)";
       }
       return "Verdict: Verified Clean Human";
+    }
+    if (isBotnet) {
+      return "Verdict: Malicious Threat (Botnet / Scanner Host Deflected)";
+    }
+    if (isResidentialProxyPool) {
+      return "Verdict: Residential Proxy Scraping Pool Deflected";
     }
     if (isDeviceRestricted) {
       return `Verdict: Restricted by Device Policy (${visitor.deviceType || "Device"})`;
@@ -109,7 +122,10 @@ export function VisitorDetailsDrawer({
     if (visitor.riskScore !== undefined && visitor.riskScore !== null) {
       return visitor.riskScore;
     }
-    if (isHuman) return 8;
+    if (isHuman) return (isConsumerPrivacy || isVerifiedConsumerVpn) ? 14 : 8;
+    if (isBotnet) return 99;
+    if (isTor) return 98;
+    if (isResidentialProxyPool) return 88;
     if (isDeviceRestricted || isOsRestricted) return 18; // Low threat, strictly policy
     if (isGeoRestricted) return 22; // Legitimate human, out of target geo
     if (isRateLimit) return 65;
@@ -117,7 +133,6 @@ export function VisitorDetailsDrawer({
     if (isProxy) return 78;
     if (isDatacenter) return 88;
     if (isBotCrawler) return 94;
-    if (isTor) return 98;
     if (isIpBlocklist) return 95;
     return 80;
   };
@@ -144,6 +159,16 @@ export function VisitorDetailsDrawer({
   // Explicit, Accurate Telemetry Signals based on exact visitor classification
   const getExplicitTelemetrySignals = (): string[] => {
     if (isHuman) {
+      if (isConsumerPrivacy || isVerifiedConsumerVpn) {
+        return [
+          `Consumer Privacy Network (${visitor.isp || "Privacy Provider"})`,
+          "Zero-Blind-Trust Verification Passed",
+          "Clean IP Reputation (Fraud Score <25)",
+          "Authentic Browser Client Hints",
+          "Zero Scraping / Scanner Indicators",
+          "Permitted by User Routing Policy"
+        ];
+      }
       return [
         `Residential ISP (${visitor.isp || "Verified Carrier"})`,
         `Genuine ${visitor.browser || "Chrome"} Engine`,
@@ -151,6 +176,24 @@ export function VisitorDetailsDrawer({
         "Clean IP Reputation",
         "Natural Interaction Trajectory",
         "Standard Screen Dimensions"
+      ];
+    }
+    if (isBotnet) {
+      return [
+        "Identified Botnet / Vulnerability Scanner Node",
+        "High-Risk Hostile Anonymizer",
+        "Automated Exploitation Pattern",
+        "Zero Human Telemetry Traits",
+        "Immediate Deflection Enforced"
+      ];
+    }
+    if (isResidentialProxyPool) {
+      return [
+        "Residential Proxy Pool (Scraper / Rotating Node)",
+        "Elevated Threat / Fraud Threshold Exceeded",
+        "Automated Header Inconsistencies",
+        "Synthetic Traffic Trajectory",
+        "Commercial Proxy Defense Dispatched"
       ];
     }
     if (isDeviceRestricted) {
