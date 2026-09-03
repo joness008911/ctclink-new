@@ -36,6 +36,7 @@ export interface SecurityEventPayload {
   isp: string;
   action: "Allowed" | "Blocked";
   connectionType?: string;
+  usageType?: string;
   riskScore?: number;
 }
 

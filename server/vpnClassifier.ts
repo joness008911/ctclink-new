@@ -165,15 +165,16 @@ export function evaluateSafeProxyClassification(
     };
   }
 
-  if (isWebCrawler || isAiCrawler) {
+  if (isWebCrawler || isAiCrawler || usageType === 'SES') {
+    const isSes = usageType === 'SES';
     return {
       verdict: 'Bot',
-      detectionMethod: isAiCrawler ? 'AI Scraper via Proxy' : 'Proxy Web Crawler',
-      blockReason: 'Automated crawler traversing proxy pool',
+      detectionMethod: isSes ? 'Search Engine Spider (SES Usage Type)' : (isAiCrawler ? 'AI Scraper via Proxy' : 'Proxy Web Crawler'),
+      blockReason: isSes ? 'Search engine spider network address identified' : 'Automated crawler traversing proxy pool',
       riskScore: 94,
-      subType: isAiCrawler ? 'AI Training Scraper' : 'Web Crawler Proxy',
+      subType: isSes ? 'Search Engine Spider' : (isAiCrawler ? 'AI Training Scraper' : 'Web Crawler Proxy'),
       threatLevel: 'high',
-      signals: ['Crawler signature confirmed by IP intelligence', 'Automated indexing bot']
+      signals: [isSes ? 'SES usage type confirmed by IP threat intelligence' : 'Crawler signature confirmed by IP intelligence', 'Automated indexing bot']
     };
   }
 
@@ -254,6 +255,32 @@ export function evaluateSafeProxyClassification(
   if (isRecognizedConsumerVpn && !isResidentialProxy && threat !== 'high' && threat !== 'extreme') {
     riskScore -= 20;
     signals.push(`Recognized consumer privacy VPN provider: ${provider || ispName} (-20 risk)`);
+  }
+
+  // 3b. Granular IP2Location Usage Type Trust Adjustments
+  const uType = (usageType || '').toUpperCase().trim();
+  if (uType === 'EDU') {
+    riskScore -= 12;
+    signals.push('Academic/University campus network verified (EDU) (-12 risk)');
+  } else if (uType === 'GOV' || uType === 'MIL') {
+    riskScore -= 15;
+    signals.push('Government/Military network verified (GOV/MIL) (-15 risk)');
+  } else if (uType === 'COM' || uType === 'ORG') {
+    riskScore -= 10;
+    signals.push('Corporate/Commercial enterprise network verified (COM/ORG) (-10 risk)');
+  } else if (uType === 'LIB') {
+    riskScore -= 8;
+    signals.push('Public library institutional network verified (LIB) (-8 risk)');
+  } else if (uType === 'MOB' || uType === 'ISP/MOB') {
+    signals.push('Mobile cellular carrier network verified (MOB)');
+  } else if (uType === 'ISP') {
+    signals.push('Residential fixed-line broadband ISP verified (ISP)');
+  } else if (uType === 'CDN') {
+    if (isConsumerPrivacyNet) {
+      signals.push('CDN-hosted consumer privacy relay verified (Apple Relay / Cloudflare)');
+    } else {
+      signals.push('CDN reverse-proxy edge node detected (CDN)');
+    }
   }
 
   // 4. Client-Side HTTP & Header Consistency Checks
@@ -367,4 +394,26 @@ export function evaluateSafeProxyClassification(
       'Multi-vector integrity check failed: suspicious proxy pool, high fraud score, or automation indicators'
     ]
   };
+}
+
+/**
+ * Returns a human-friendly label for IP2Location usage_type codes
+ */
+export function formatUsageTypeDescription(usageType: string): string {
+  const u = (usageType || '').toUpperCase().trim();
+  switch (u) {
+    case 'ISP': return 'Residential Fixed-Line Broadband (ISP)';
+    case 'MOB': return 'Mobile Cellular Network (MOB)';
+    case 'ISP/MOB': return 'Fixed-Line / Mobile Carrier (ISP/MOB)';
+    case 'COM': return 'Commercial / Corporate Enterprise (COM)';
+    case 'EDU': return 'Academic / University Campus (EDU)';
+    case 'GOV': return 'Government Network (GOV)';
+    case 'MIL': return 'Military Facility Network (MIL)';
+    case 'ORG': return 'Non-Profit / Organization Network (ORG)';
+    case 'LIB': return 'Public / University Library (LIB)';
+    case 'CDN': return 'Content Delivery Network Edge (CDN)';
+    case 'DCH': return 'Data Center / Cloud Hosting (DCH)';
+    case 'SES': return 'Search Engine Spider (SES)';
+    default: return usageType || 'Residential Broadband';
+  }
 }

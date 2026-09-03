@@ -240,3 +240,72 @@ export function checkHeaderAnomalies(headers: Record<string, any>, userAgent: st
 
   return { isSuspicious: false };
 }
+
+/**
+ * High-performance in-memory request velocity tracker to intercept automated
+ * scrapers and headless bots executing on clean residential/office IPs.
+ */
+interface VelocityRecord {
+  timestamps: number[];
+  lastSeen: number;
+}
+
+const velocityMap = new Map<string, VelocityRecord>();
+const VELOCITY_BURST_LIMIT = 8; // Max requests within 2 seconds
+const VELOCITY_BURST_WINDOW_MS = 2000;
+const VELOCITY_RATE_LIMIT = 30; // Max requests within 15 seconds
+const VELOCITY_RATE_WINDOW_MS = 15000;
+
+export function checkRequestVelocity(clientIp: string): {
+  isVelocityExceeded: boolean;
+  reqCount?: number;
+  reason?: string;
+} {
+  if (!clientIp || clientIp === "unknown" || clientIp === "127.0.0.1" || clientIp === "::1") {
+    return { isVelocityExceeded: false };
+  }
+
+  const now = Date.now();
+  let record = velocityMap.get(clientIp);
+  if (!record) {
+    record = { timestamps: [now], lastSeen: now };
+    velocityMap.set(clientIp, record);
+    return { isVelocityExceeded: false };
+  }
+
+  // Filter timestamps within the rate window
+  record.timestamps = record.timestamps.filter((t) => now - t < VELOCITY_RATE_WINDOW_MS);
+  record.timestamps.push(now);
+  record.lastSeen = now;
+
+  // Check rapid 2-second burst limit
+  const recentBurstCount = record.timestamps.filter((t) => now - t < VELOCITY_BURST_WINDOW_MS).length;
+  if (recentBurstCount > VELOCITY_BURST_LIMIT) {
+    return {
+      isVelocityExceeded: true,
+      reqCount: recentBurstCount,
+      reason: `Rapid-fire automated click velocity (${recentBurstCount} req / 2s)`,
+    };
+  }
+
+  // Check 15-second frequency rate limit
+  if (record.timestamps.length > VELOCITY_RATE_LIMIT) {
+    return {
+      isVelocityExceeded: true,
+      reqCount: record.timestamps.length,
+      reason: `High-frequency scraping velocity (${record.timestamps.length} req / 15s)`,
+    };
+  }
+
+  // Periodic pruning if map grows large (> 5000 entries)
+  if (velocityMap.size > 5000) {
+    const cutoff = now - VELOCITY_RATE_WINDOW_MS;
+    for (const [ip, rec] of velocityMap.entries()) {
+      if (rec.lastSeen < cutoff) {
+        velocityMap.delete(ip);
+      }
+    }
+  }
+
+  return { isVelocityExceeded: false };
+}

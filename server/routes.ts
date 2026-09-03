@@ -65,7 +65,7 @@ export function getSessionOrToken(req: any): { type: 'admin' | 'client'; userId:
 import { createServer, type Server } from "http";
 import { storage, ip2geoCache } from "./storage";
 import { ip2LocationHealth } from "./ip2locationHealth";
-import { evaluateSafeProxyClassification } from "./vpnClassifier";
+import { evaluateSafeProxyClassification, formatUsageTypeDescription } from "./vpnClassifier";
 import { db } from "./db";
 import { sql as sqlTag } from "drizzle-orm";
 import session from "express-session";
@@ -97,6 +97,7 @@ import {
   checkCrawlerUserAgent,
   checkDatacenterIsp,
   checkHeaderAnomalies,
+  checkRequestVelocity,
 } from "./crawlerDetection";
 
 // ── Rate limiters ──────────────────────────────────────────────────────────
@@ -221,6 +222,18 @@ function isPrivateOrLocalIp(ip: string): boolean {
   if (clean.startsWith('10.') || clean.startsWith('192.168.') || clean.startsWith('169.254.')) return true;
   if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(clean)) return true;
   return false;
+}
+
+export function extractFirstPublicIp(rawIpOrHeader: string | string[] | undefined): string {
+  if (!rawIpOrHeader) return 'unknown';
+  const rawStr = Array.isArray(rawIpOrHeader) ? rawIpOrHeader.join(',') : String(rawIpOrHeader);
+  const parts = rawStr.split(',').map(s => s.trim().replace(/^::ffff:/, '')).filter(Boolean);
+  for (const part of parts) {
+    if (!isPrivateOrLocalIp(part)) {
+      return part;
+    }
+  }
+  return parts[0] || 'unknown';
 }
 
 export async function getEffectiveIp2GeoKey(): Promise<string> {
@@ -3485,28 +3498,32 @@ Disallow: /*`);
     let redirectVersion = 0;
     try {
       
-      // Check if IP is provided in request body (POST) or query parameter (GET) or use actual visitor IP
-      let clientIp = req.body?.ip as string ||
-                     req.query.ip as string || 
-                     req.headers['cf-connecting-ip'] || 
-                     req.headers['true-client-ip'] || 
-                     req.headers['x-client-ip'] || 
-                     req.headers['x-forwarded-for'] || 
-                     req.headers['x-real-ip'] || 
-                     req.headers['fastly-client-ip'] ||
-                     req.ip || 
-                     req.connection?.remoteAddress || 
-                     req.socket?.remoteAddress || 
-                     'unknown';
-      
-      // Handle comma-separated forwarded IPs (take the first one)
-      if (typeof clientIp === 'string' && clientIp.includes(',')) {
-        clientIp = clientIp.split(',')[0].trim();
+      // Extract Visitor IP with Cloudflare, Akamai, Fastly, AWS ALB & Reverse Proxy awareness
+      const ipCandidates = [
+        req.body?.ip,
+        req.query?.ip,
+        req.headers['cf-connecting-ip'],
+        req.headers['true-client-ip'],
+        req.headers['x-real-ip'],
+        req.headers['fastly-client-ip'],
+        req.headers['x-client-ip'],
+        req.headers['x-forwarded-for'],
+        req.ip,
+        req.connection?.remoteAddress,
+        req.socket?.remoteAddress,
+      ];
+      let clientIp = 'unknown';
+      for (const cand of ipCandidates) {
+        if (cand) {
+          const resolved = extractFirstPublicIp(cand as any);
+          if (resolved && resolved !== 'unknown') {
+            clientIp = resolved;
+            break;
+          }
+        }
       }
-      
-      // Convert array to string if needed
-      if (Array.isArray(clientIp)) {
-        clientIp = clientIp[0];
+      if (clientIp === 'unknown') {
+        clientIp = req.ip || req.connection?.remoteAddress || '127.0.0.1';
       }
       
       // Check user agent from request body (POST) or headers
@@ -3605,6 +3622,15 @@ Disallow: /*`);
           console.log(`🚫 BLOCKED (Tier 1 - Crawler Database): ${clientIp} - ${crawlerCheck.name} [${userAgent.substring(0, 40)}]`);
         }
 
+        // TIER 1B: HIGH-FREQUENCY REQUEST VELOCITY ANOMALY (Intercepts automated scrapers on clean residential IPs)
+        const velocityCheck = checkRequestVelocity(clientIp);
+        if (visitorType !== 'Bot' && velocityCheck.isVelocityExceeded) {
+          visitorType = 'Bot';
+          detectionMethod = 'High-Frequency Request Velocity';
+          blockReason = velocityCheck.reason || 'Excessive automated click velocity from single IP';
+          console.log(`🚫 BLOCKED (Tier 1B - Request Velocity): ${clientIp} - ${velocityCheck.reason}`);
+        }
+
         // Check header anomalies (synthetic browsers omitting standard headers)
         if (visitorType !== 'Bot') {
           const isApiForwarded = Boolean(req.body?.userAgent || req.body?.ip);
@@ -3696,6 +3722,14 @@ Disallow: /*`);
           detectionMethod = 'Datacenter Hosting (DCH)';
           blockReason = 'Datacenter hosting facility IP detected';
           console.log(`🚫 BLOCKED (Tier 3 - DCH Usage Type): ${clientIp}`);
+        }
+
+        // TIER 3B: SEARCH ENGINE SPIDER (SES) USAGE TYPE PRE-SCREENING
+        if (visitorType !== 'Bot' && usageType === 'SES') {
+          visitorType = 'Bot';
+          detectionMethod = 'Search Engine Spider (SES)';
+          blockReason = 'Search engine spider network address identified by IP intelligence';
+          console.log(`🚫 BLOCKED (Tier 3B - SES Usage Type): ${clientIp}`);
         }
 
         // TIER 4: SYSTEM-WIDE ISP BLACKLIST
@@ -3854,9 +3888,15 @@ Disallow: /*`);
           }
         }
 
+        if (!classificationData.connection_type) {
+          classificationData.connection_type = classificationData.usage_type
+            ? formatUsageTypeDescription(classificationData.usage_type)
+            : (visitorType === 'Human' ? 'Residential Fixed-Line Broadband (ISP)' : 'Datacenter / Cloud Server (DCH)');
+        }
+
         classificationData.visitor_type = visitorType;
         classificationData.detection_method = detectionMethod;
-        console.log(`✅ Final Classification: ${clientIp} = ${visitorType} (${detectionMethod})`);
+        console.log(`✅ Final Classification: ${clientIp} = ${visitorType} (${detectionMethod}) [Usage: ${classificationData.usage_type || 'N/A'}, Connection: ${classificationData.connection_type}]`);
 
       } catch (error) {
         console.error("Classification error caught, falling back safely:", error);
@@ -3916,7 +3956,7 @@ Disallow: /*`);
             visitorType: visitorType,
             isp: classificationData.isp || 'Unknown',
             detectionMethod: classificationData.detection_method || detectionMethod || 'IP Analysis',
-            connectionType: classificationData.connection_type || (visitorType === 'Human' ? 'Residential' : 'Proxy / Datacenter'),
+            connectionType: classificationData.connection_type || (visitorType === 'Human' ? 'Residential Broadband (ISP)' : 'Proxy / Datacenter'),
             apiKeyId: apiKeyId, // Track which API key made this request
           });
           
@@ -3933,7 +3973,8 @@ Disallow: /*`);
               country: classificationData.country_name || 'Unknown',
               isp: classificationData.isp || 'Unknown',
               action: visitorType === 'Human' ? 'Allowed' : 'Blocked',
-              connectionType: classificationData.connection_type || (visitorType === 'Human' ? 'Residential' : 'Proxy / Datacenter'),
+              connectionType: classificationData.connection_type || (visitorType === 'Human' ? 'Residential Broadband (ISP)' : 'Proxy / Datacenter'),
+              usageType: classificationData.usage_type || '',
               riskScore: classificationData.risk_score,
             });
           }
@@ -3978,7 +4019,8 @@ Disallow: /*`);
         detection_method: classificationData.detection_method || detectionMethod || 'IP Analysis',
         block_reason: blockReason || null,
         isp: classificationData.isp || 'Unknown',
-        connection_type: classificationData.connection_type || (isHumanVisitor ? 'Residential' : 'Proxy / Datacenter'),
+        usage_type: classificationData.usage_type || '',
+        connection_type: classificationData.connection_type || (isHumanVisitor ? 'Residential Broadband (ISP)' : 'Proxy / Datacenter'),
         risk_score: classificationData.risk_score ?? (isHumanVisitor ? 8 : 80),
         threat_level: classificationData.threat_level || (isHumanVisitor ? 'low' : 'medium'),
         redirectUrl: effectiveRedirectUrl || null,
