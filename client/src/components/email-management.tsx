@@ -214,12 +214,29 @@ export default function EmailManagement() {
     }
   };
 
+  // Helper to parse api error response
+  const parseError = (err: any, fallback: string) => {
+    if (!err) return fallback;
+    const msg = err.message || "";
+    try {
+      const colonIdx = msg.indexOf(":");
+      if (colonIdx !== -1) {
+        const jsonStr = msg.slice(colonIdx + 1).trim();
+        const parsed = JSON.parse(jsonStr);
+        if (parsed.message) return parsed.message;
+      }
+    } catch {}
+    return msg || fallback;
+  };
+
   // Mutations
   const saveSmtpMutation = useMutation({
     mutationFn: async () => {
+      // Auto-correct 585 port if accidentally submitted
+      const cleanPort = port === 585 ? (secure ? 465 : 587) : Number(port);
       const payload: any = {
         host: host.trim(),
-        port: Number(port),
+        port: cleanPort,
         secure,
         user: user.trim(),
         from: from.trim(),
@@ -242,7 +259,7 @@ export default function EmailManagement() {
     onError: (err: any) => {
       toast({
         title: "Save Failed",
-        description: err.message || "Failed to update SMTP settings.",
+        description: parseError(err, "Failed to update SMTP settings."),
         variant: "destructive",
       });
     },
@@ -250,9 +267,10 @@ export default function EmailManagement() {
 
   const testConnectionMutation = useMutation({
     mutationFn: async () => {
+      const cleanPort = port === 585 ? (secure ? 465 : 587) : Number(port);
       const payload: any = {
         host: host.trim(),
-        port: Number(port),
+        port: cleanPort,
         secure,
         user: user.trim(),
         from: from.trim(),
@@ -274,7 +292,7 @@ export default function EmailManagement() {
     onError: (err: any) => {
       toast({
         title: "Connection Test Failed",
-        description: err.message || "Could not authenticate with SMTP server. Please verify credentials.",
+        description: parseError(err, "Could not authenticate with SMTP server. Please verify credentials."),
         variant: "destructive",
       });
     },
@@ -517,14 +535,68 @@ export default function EmailManagement() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="smtp-port">SMTP Port</Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="smtp-port">SMTP Port</Label>
+                    <span className="text-[11px] text-muted-foreground">Standard: 465 or 587</span>
+                  </div>
                   <Input
                     id="smtp-port"
                     type="number"
                     placeholder="465 or 587"
                     value={port}
-                    onChange={(e) => setPort(Number(e.target.value))}
+                    onChange={(e) => {
+                      const newPort = Number(e.target.value);
+                      setPort(newPort);
+                      if (newPort === 465) setSecure(true);
+                      else if (newPort === 587) setSecure(false);
+                    }}
                   />
+                  <div className="flex items-center gap-1.5 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPort(465);
+                        setSecure(true);
+                      }}
+                      className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
+                        port === 465 && secure
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-muted/50 text-muted-foreground hover:bg-muted border-border"
+                      }`}
+                    >
+                      Port 465 (SSL/TLS)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPort(587);
+                        setSecure(false);
+                      }}
+                      className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
+                        port === 587 && !secure
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-muted/50 text-muted-foreground hover:bg-muted border-border"
+                      }`}
+                    >
+                      Port 587 (STARTTLS)
+                    </button>
+                  </div>
+                  {port === 585 && (
+                    <div className="flex items-center gap-2 p-2 rounded bg-amber-500/10 border border-amber-500/30 text-amber-500 text-xs">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                      <span>Port 585 is obsolete/inactive and causes connection timeouts.</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPort(465);
+                          setSecure(true);
+                        }}
+                        className="ml-auto underline font-medium hover:text-amber-400"
+                      >
+                        Auto-fix to 465
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-2">
@@ -578,7 +650,14 @@ export default function EmailManagement() {
                     Enable for Port 465 (SMTPS). Disable for Port 587 (STARTTLS).
                   </div>
                 </div>
-                <Switch checked={secure} onCheckedChange={setSecure} />
+                <Switch
+                  checked={secure}
+                  onCheckedChange={(checked) => {
+                    setSecure(checked);
+                    if (checked && port === 587) setPort(465);
+                    else if (!checked && port === 465) setPort(587);
+                  }}
+                />
               </div>
 
               {/* Save & Test Action Bar */}

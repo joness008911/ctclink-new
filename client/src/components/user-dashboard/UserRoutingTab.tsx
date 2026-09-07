@@ -18,14 +18,22 @@ import {
   Laptop,
   Smartphone,
   Tablet,
-  Globe
+  Globe,
+  Lock,
+  ShieldAlert
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { COUNTRIES_LIST, getCountryFlag } from "@/lib/countries";
 
-export function UserRoutingTab() {
+export function UserRoutingTab({
+  isReadOnly = false,
+  onUpgradeClick,
+}: {
+  isReadOnly?: boolean;
+  onUpgradeClick?: () => void;
+} = {}) {
   const { toast } = useToast();
 
   // Routing and Cloaking States
@@ -228,6 +236,27 @@ export function UserRoutingTab() {
 
   return (
     <div className="space-y-6 w-full">
+      {/* Read-Only Notice for Expired Trials */}
+      {isReadOnly && (
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-900 shadow-xs" data-testid="routing-readonly-banner">
+          <div className="flex items-center gap-2.5">
+            <ShieldAlert className="h-4 w-4 text-amber-700 shrink-0" />
+            <div>
+              <span className="font-bold">Read-Only Mode (Trial Expired):</span> All your routing policies, geofences, and cloaking targets remain fully intact and viewable. Upgrade your subscription to modify settings and resume active link defense.
+            </div>
+          </div>
+          {onUpgradeClick && (
+            <Button
+              size="sm"
+              onClick={onUpgradeClick}
+              className="bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs h-7 px-3 rounded-lg shrink-0 border-none"
+            >
+              Upgrade to Edit
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* ─────────────────────────────────────────────────────────────
           SECTION 1: BLOCKING CONTROLS (VPN & PROXIES)
       ───────────────────────────────────────────────────────────── */}
@@ -772,15 +801,32 @@ export function UserRoutingTab() {
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 bg-white border border-[#E5EAE7] rounded-xl shadow-xs">
         <div className="text-xs text-[#64748B] flex items-center gap-2">
           <ShieldCheck className="h-4 w-4 text-[#0A5C48] shrink-0" />
-          <span>Rules take effect in real time across all integrated tracking links.</span>
+          <span>
+            {isReadOnly
+              ? "All rules remain safely saved and viewable in read-only mode."
+              : "Rules take effect in real time across all integrated tracking links."}
+          </span>
         </div>
         <Button
-          onClick={handleSave}
-          disabled={updateUrlsMutation.isPending || isLoadingUrls}
-          className="w-full sm:w-auto bg-[#0A5C48] hover:bg-[#07382D] text-white text-xs font-bold px-6 h-10 rounded-lg shadow-xs transition-all flex items-center justify-center gap-2"
+          onClick={isReadOnly ? onUpgradeClick : handleSave}
+          disabled={!isReadOnly && (updateUrlsMutation.isPending || isLoadingUrls)}
+          className={`w-full sm:w-auto text-xs font-bold px-6 h-10 rounded-lg shadow-xs transition-all flex items-center justify-center gap-2 ${
+            isReadOnly
+              ? "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
+              : "bg-[#0A5C48] hover:bg-[#07382D] text-white"
+          }`}
         >
-          <Save className="h-4 w-4" />
-          {updateUrlsMutation.isPending ? "Saving Rules..." : "Save Configuration"}
+          {isReadOnly ? (
+            <>
+              <Lock className="h-4 w-4" />
+              <span>Read-Only (Upgrade to Edit)</span>
+            </>
+          ) : (
+            <>
+              <Save className="h-4 w-4" />
+              <span>{updateUrlsMutation.isPending ? "Saving Rules..." : "Save Configuration"}</span>
+            </>
+          )}
         </Button>
       </div>
     </div>

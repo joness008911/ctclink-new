@@ -123,7 +123,8 @@ export const clientUsers = pgTable("client_users", {
   complianceStatus: text("compliance_status").default("pending").notNull(), // pending, cleared, flagged, suspended
   newsletter: boolean("newsletter").default(false),
   // Billing fields
-  subscriptionStatus: text("subscription_status").default("trialing").notNull(), // trialing, active, past_due, cancelled
+  subscriptionStatus: text("subscription_status").default("trialing").notNull(), // trialing, trial_expired, active, past_due, cancelled
+  subscriptionTier: text("subscription_tier").default("Pro").notNull(), // Basic, Pro, Premium, Enterprise
   trialEndsAt: timestamp("trial_ends_at"), // null = no trial configured yet
   stripeCustomerId: text("stripe_customer_id"),
   stripeSubscriptionId: text("stripe_subscription_id"),
@@ -313,3 +314,5 @@ export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
 
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
+
+export * from "./subscription";

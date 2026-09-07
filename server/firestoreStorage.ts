@@ -48,6 +48,7 @@ import {
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 import * as ipaddr from "ipaddr.js";
+import { getTierCallLimit } from "@shared/subscription";
 
 export class FirestoreStorage implements IStorage {
   private db = firestore!;
@@ -431,20 +432,26 @@ export class FirestoreStorage implements IStorage {
       const apiKey = await this.getApiKey(keyValue);
       if (!apiKey) return false;
 
-      // Check if key is expired by date
-      if (apiKey.expiresAt && new Date() > apiKey.expiresAt) {
-        await this.updateApiKey(apiKey.id, { status: "expired" });
+      // Check if key is paused, revoked, or disabled
+      if (apiKey.status === "paused" || apiKey.status === "revoked" || apiKey.status === "disabled" || apiKey.enabled === false) {
         return false;
       }
 
-      // Check if key is paused or inactive
-      if (apiKey.status !== "active") {
-        return false;
+      // Authoritatively inspect the owner account before applying expiry or limits
+      const owner = await this.getClientUserByApiKey(apiKey.id);
+      const isOwnerActivePaid = owner && (owner.subscriptionStatus || '').toLowerCase() === 'active' && owner.status !== 'suspended' && owner.status !== 'inactive';
+
+      // Check if key is expired (only for non-paid accounts or accounts without active paid status)
+      if (!isOwnerActivePaid) {
+        if (apiKey.expiresAt && new Date() > apiKey.expiresAt) {
+          await this.updateApiKey(apiKey.id, { status: "expired" });
+          return false;
+        }
       }
 
-      const limit = apiKey.callLimit ?? 5000;
+      const limit = isOwnerActivePaid ? getTierCallLimit(owner?.subscriptionTier) : (apiKey.callLimit ?? 5000);
       // Check if call limit reached
-      if ((apiKey.callCount || 0) >= limit) {
+      if (limit > 0 && (apiKey.callCount || 0) >= limit) {
         await this.updateApiKey(apiKey.id, { status: "expired" });
         return false;
       }
@@ -933,6 +940,7 @@ export class FirestoreStorage implements IStorage {
       complianceStatus: user.complianceStatus || "cleared",
       newsletter: user.newsletter ?? false,
       subscriptionStatus: user.subscriptionStatus || "trialing",
+      subscriptionTier: user.subscriptionTier || "Pro",
       trialEndsAt: user.trialEndsAt ? new Date(user.trialEndsAt) : null,
       stripeCustomerId: user.stripeCustomerId || null,
       stripeSubscriptionId: user.stripeSubscriptionId || null,
@@ -1061,16 +1069,12 @@ export class FirestoreStorage implements IStorage {
 
       const all = await this.getAllClientUsers();
       const match = all.find(u => candidateIds.includes(u.apiKeyId || ''));
-      if (match) return match;
-      if (all.length === 1) return all[0];
-      return undefined;
+      return match;
     } catch (e) {
       try {
         const all = await this.getAllClientUsers();
         const match = all.find(u => u.apiKeyId === apiKeyId);
-        if (match) return match;
-        if (all.length === 1) return all[0];
-        return undefined;
+        return match;
       } catch (err) {
         return undefined;
       }
@@ -1199,7 +1203,7 @@ export class FirestoreStorage implements IStorage {
   }
 
   // ── Classification for Users ───────────────────────────────────────────────
-  async getUserClassifications(apiKeyId: string, limitCount = 100): Promise<Classification[]> {
+  async getUserClassifications(apiKeyId: string, limitCount = 500): Promise<Classification[]> {
     try {
       const q = query(
         collection(this.db, "classifications"),

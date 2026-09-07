@@ -21,6 +21,7 @@ import {
   MoreVertical
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { computeEffectiveAccountStatus } from "@shared/subscription";
 
 interface UserSidebarProps {
   activeTab: string;
@@ -237,62 +238,80 @@ export function UserSidebar({
         </div>
 
         {/* Usage Meter Widget (Live API Key Usage & Quota Tracker) */}
-        {!isCollapsed && (
-          <div className="p-3 mx-3 mb-2 rounded-xl bg-slate-50/80 border border-slate-200 text-xs space-y-2">
-            <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
-              <span>Usage This Month</span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded-md font-bold bg-slate-200/70 text-slate-700">
-                {billing?.subscriptionStatus === "active" ? "PRO PLAN" : "TRIAL"}
-              </span>
-            </div>
-            {(() => {
-              const used = apiKeyDetails?.callCount ?? 0;
-              const limit = apiKeyDetails?.callLimit ?? (billing?.subscriptionStatus === "trialing" ? 5000 : 50000);
-              const percentage = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
-              const trialDays = billing?.trialDaysRemaining;
-              
-              const formatK = (n: number) => {
-                if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-                if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-                return n.toString();
-              };
+        {!isCollapsed && (() => {
+          const statusSummary = computeEffectiveAccountStatus({
+            subscriptionStatus: billing?.subscriptionStatus ?? user?.subscriptionStatus,
+            subscriptionTier: billing?.subscriptionTier ?? user?.subscriptionTier,
+            trialEndsAt: billing?.trialEndsAt ?? user?.trialEndsAt,
+          });
 
-              return (
-                <>
-                  <div className="flex items-baseline justify-between font-bold text-slate-900">
-                    <span>
-                      {formatK(used)}{" "}
-                      <span className="text-slate-400 font-normal">
-                        / {formatK(limit)} requests
-                      </span>
-                    </span>
-                    <span className="text-slate-500 text-[11px]">{percentage}%</span>
-                  </div>
-                  <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                    <div 
-                      className={`h-full rounded-full transition-all duration-500 ${
-                        percentage > 90 ? "bg-rose-500" : percentage > 75 ? "bg-amber-500" : "bg-[#0A5C48]"
-                      }`}
-                      style={{ width: `${percentage}%` }}
-                    />
-                  </div>
-                  <div className="text-[10px] text-slate-400 flex items-center justify-between">
-                    <span>
-                      {billing?.subscriptionStatus === "trialing"
-                        ? trialDays !== null && trialDays !== undefined
-                          ? `Trial: ${trialDays} day${trialDays === 1 ? "" : "s"} left`
-                          : "14-Day Free Trial"
-                        : "Resets next billing cycle"}
-                    </span>
-                    <span className="text-slate-500 font-medium">
-                      {isLicenseActive ? "Active" : apiKeyDetails?.status || "Live"}
-                    </span>
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-        )}
+          const used = apiKeyDetails?.callCount ?? 0;
+          const limit = apiKeyDetails?.callLimit ?? (statusSummary.isTrial ? 5000 : 50000);
+          const percentage = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+          const trialDays = statusSummary.trialDaysRemaining;
+          
+          const formatK = (n: number) => {
+            if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+            if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+            return n.toString();
+          };
+
+          return (
+            <div className="p-3 mx-3 mb-2 rounded-xl bg-slate-50/80 border border-slate-200 text-xs space-y-2">
+              <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
+                <span>Usage This Month</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-bold ${
+                  statusSummary.isActive
+                    ? statusSummary.isTrial
+                      ? "bg-blue-100 text-blue-800"
+                      : "bg-emerald-100 text-emerald-800"
+                    : "bg-rose-100 text-rose-800"
+                }`}>
+                  {statusSummary.isActive
+                    ? (statusSummary.isTrial ? "FREE TRIAL" : `${statusSummary.tier.toUpperCase()} PLAN`)
+                    : (statusSummary.isTrialExpired ? "TRIAL EXPIRED" : statusSummary.statusLabel.toUpperCase())}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between font-bold text-slate-900">
+                <span>
+                  {formatK(used)}{" "}
+                  <span className="text-slate-400 font-normal">
+                    / {formatK(limit)} requests
+                  </span>
+                </span>
+                <span className="text-slate-500 text-[11px]">{percentage}%</span>
+              </div>
+              <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                <div 
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    statusSummary.isTrialExpired 
+                      ? "bg-rose-500" 
+                      : percentage > 90 
+                      ? "bg-rose-500" 
+                      : percentage > 75 
+                      ? "bg-amber-500" 
+                      : "bg-[#0A5C48]"
+                  }`}
+                  style={{ width: `${statusSummary.isTrialExpired ? 100 : percentage}%` }}
+                />
+              </div>
+              <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                <span>
+                  {statusSummary.isTrial
+                    ? trialDays !== null && trialDays !== undefined
+                      ? `Trial: ${trialDays} day${trialDays === 1 ? "" : "s"} left`
+                      : "7-Day Free Trial"
+                    : statusSummary.isTrialExpired
+                    ? "Trial has expired • Upgrade now"
+                    : "Active billing cycle"}
+                </span>
+                <span className={`font-medium ${statusSummary.isActive ? "text-slate-500" : "text-rose-600"}`}>
+                  {statusSummary.isActive ? (isLicenseActive ? "Active" : apiKeyDetails?.status || "Live") : "Expired"}
+                </span>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* User Account Profile Footer (Matching Reference) */}
         <div className="p-3 border-t border-[#E2E8F0] bg-white">

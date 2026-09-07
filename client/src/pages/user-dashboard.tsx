@@ -14,8 +14,12 @@ import {
   Activity,
   Search,
   Bell,
-  Code
+  Code,
+  Clock,
+  AlertTriangle,
+  Loader2
 } from "lucide-react";
+import { computeEffectiveAccountStatus } from "@shared/subscription";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -134,6 +138,12 @@ export default function UserDashboard() {
     queryKey: ["/api/whitelabel-domain"],
   });
 
+  const statusSummary = computeEffectiveAccountStatus({
+    subscriptionStatus: billing?.subscriptionStatus ?? user?.subscriptionStatus,
+    subscriptionTier: (billing as any)?.subscriptionTier ?? (user as any)?.subscriptionTier,
+    trialEndsAt: billing?.trialEndsAt ?? user?.trialEndsAt,
+  });
+
   useEffect(() => {
     if (!customEndpoint) {
       if (whitelabelData?.domain) {
@@ -187,6 +197,46 @@ export default function UserDashboard() {
   const handleToggleLicense = () => {
     const isPaused = apiKeyDetails?.status === "paused";
     toggleLicenseMutation.mutate(!isPaused);
+  };
+
+  const [isSendingVerification, setIsSendingVerification] = useState(false);
+
+  const handleInitiateVerification = async () => {
+    if (!user?.email) return;
+    setIsSendingVerification(true);
+    try {
+      const res = await userAuthApi.resendVerification({ email: user.email });
+      if (res.alreadyVerified) {
+        toast({
+          title: "Already Verified",
+          description: "Your email address is already verified.",
+        });
+        queryClient.invalidateQueries({ queryKey: ["/api/user/me"] });
+      } else {
+        toast({
+          title: "Verification Email Sent",
+          description: `A 6-digit confirmation code was sent to ${user.email}. Check your inbox!`,
+        });
+        navigate(`/verification-required?email=${encodeURIComponent(user.email)}&sent=true`);
+      }
+    } catch (err: any) {
+      let message = "Could not dispatch verification email. Please try again.";
+      try {
+        if (err.message) {
+          const parsed = JSON.parse(err.message.replace(/^\d+:\s*/, ""));
+          message = parsed.message || message;
+        }
+      } catch {
+        message = err.message || message;
+      }
+      toast({
+        title: "Failed to Send Email",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsSendingVerification(false);
+    }
   };
 
   if (userLoading) {
@@ -280,8 +330,16 @@ export default function UserDashboard() {
               </span>
             </div>
 
-            <div className="text-[11px] font-bold text-[#07382D] bg-[#E6F2ED] border border-[#CCE5DB] px-2.5 py-1 rounded-lg">
-              {billing?.subscriptionStatus === "active" ? "Enterprise Pro" : "Standard Tier"}
+            <div className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border ${
+              statusSummary.isActive
+                ? statusSummary.isTrial
+                  ? "bg-blue-50 text-blue-800 border-blue-200"
+                  : "bg-emerald-50 text-emerald-800 border-emerald-200"
+                : "bg-rose-50 text-rose-800 border-rose-200"
+            }`}>
+              {statusSummary.isActive
+                ? (statusSummary.isTrial ? `Trial (${statusSummary.trialDaysRemaining ?? 0}d left)` : `${statusSummary.tier} Plan`)
+                : (statusSummary.isTrialExpired ? "Trial Expired" : statusSummary.statusLabel)}
             </div>
           </div>
         </header>
@@ -304,13 +362,64 @@ export default function UserDashboard() {
               <span className="font-bold text-sm text-[#0F172A] tracking-tight">CleanTraffic</span>
             </div>
           </div>
-          <div className="text-[11px] font-semibold text-[#07382D] bg-[#E6F2ED] border border-[#CCE5DB] px-2.5 py-1 rounded-lg">
-            Client Portal
+          <div className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border ${
+            statusSummary.isActive
+              ? statusSummary.isTrial
+                ? "bg-blue-50 text-blue-800 border-blue-200"
+                : "bg-emerald-50 text-emerald-800 border-emerald-200"
+              : "bg-rose-50 text-rose-800 border-rose-200"
+          }`}>
+            {statusSummary.isActive
+              ? (statusSummary.isTrial ? `Trial (${statusSummary.trialDaysRemaining ?? 0}d)` : `${statusSummary.tier}`)
+              : (statusSummary.isTrialExpired ? "Trial Expired" : statusSummary.statusLabel)}
           </div>
         </div>
 
         {/* Dashboard Canvas Container */}
         <main className="flex-1 p-4 md:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
+          {/* Trial Expired Alert Banner */}
+          {statusSummary.isTrialExpired && (
+            <Alert className="bg-rose-50/95 border-rose-200 text-rose-900 rounded-xl shadow-xs" data-testid="alert-trial-expired">
+              <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+              <AlertDescription className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs w-full">
+                <div>
+                  <strong className="font-semibold text-rose-950">Your trial has expired.</strong>{" "}
+                  <span>Your trial period has ended. Traffic classification is paused. Upgrade now to restore continuous protection.</span>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => setActiveTab("settings")}
+                  className="bg-rose-600 hover:bg-rose-700 text-white font-semibold border-none h-7 px-3 text-xs rounded-lg shadow-xs shrink-0"
+                >
+                  Upgrade Account
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* Trial Expiring Soon Alert Banner */}
+          {!statusSummary.isTrialExpired && statusSummary.isExpiringSoon && (
+            <Alert className="bg-amber-50/95 border-amber-200 text-amber-900 rounded-xl shadow-xs" data-testid="alert-trial-expiring-soon">
+              <Clock className="h-4 w-4 text-amber-600 shrink-0" />
+              <AlertDescription className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs w-full">
+                <div>
+                  <strong className="font-semibold text-amber-950">Your trial is expiring soon.</strong>{" "}
+                  <span>
+                    You have {statusSummary.trialDaysRemaining} day{statusSummary.trialDaysRemaining === 1 ? "" : "s"} remaining on your trial.
+                    Upgrade now to prevent any service interruption.
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => setActiveTab("settings")}
+                  className="bg-amber-600 hover:bg-amber-700 text-white font-semibold border-none h-7 px-3 text-xs rounded-lg shadow-xs shrink-0"
+                >
+                  Upgrade to Pro
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Email Verification Banner */}
           {user?.email && !user?.emailVerified && (
             <Alert className="bg-amber-50/80 border-amber-200 text-amber-900 rounded-xl shadow-xs">
@@ -322,12 +431,18 @@ export default function UserDashboard() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => {
-                    window.location.href = `/verification-required?email=${encodeURIComponent(user.email || "")}`;
-                  }}
-                  className="bg-amber-600 hover:bg-amber-700 text-white font-semibold border-none h-7 px-3 text-xs rounded-lg shadow-xs"
+                  disabled={isSendingVerification}
+                  onClick={handleInitiateVerification}
+                  className="bg-amber-600 hover:bg-amber-700 text-white font-semibold border-none h-7 px-3 text-xs rounded-lg shadow-xs flex items-center gap-1.5"
                 >
-                  Verify Email
+                  {isSendingVerification ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>Sending Code...</span>
+                    </>
+                  ) : (
+                    <span>Verify Email</span>
+                  )}
                 </Button>
               </AlertDescription>
             </Alert>
@@ -350,7 +465,12 @@ export default function UserDashboard() {
 
           {activeTab === "live" && <UserLiveEventsTab />}
 
-          {activeTab === "routing" && <UserRoutingTab />}
+          {activeTab === "routing" && (
+            <UserRoutingTab
+              isReadOnly={!statusSummary.isActive}
+              onUpgradeClick={() => setActiveTab("settings")}
+            />
+          )}
 
           {activeTab === "integration" && (
             <UserIntegrationTab

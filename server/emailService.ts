@@ -47,6 +47,70 @@ export async function getEmailLogs(): Promise<EmailLogEntry[]> {
   return [...emailLogs];
 }
 
+// ── Sanitize & Auto-heal SMTP Configuration ────────────────────────────────
+export function sanitizeSmtpConfig(config: SmtpConfig): SmtpConfig {
+  const sanitized: SmtpConfig = {
+    ...config,
+    host: (config.host || "").trim(),
+    port: Number(config.port) || 587,
+    secure: Boolean(config.secure),
+    user: (config.user || "").trim(),
+    pass: (config.pass || "").trim(),
+    from: (config.from || "").trim(),
+    fromName: (config.fromName || "").trim(),
+    providerPreset: config.providerPreset || "custom",
+  };
+
+  // 1. Correct common typo: port 585 (invalid/obsolete port) -> 465 (SSL) or 587 (TLS)
+  if (sanitized.port === 585) {
+    sanitized.port = sanitized.secure ? 465 : 587;
+  }
+
+  // Strip whitespace from passwords (Google App Passwords are shown with spaces, e.g. "xxxx xxxx xxxx xxxx")
+  if (sanitized.pass) {
+    sanitized.pass = sanitized.pass.replace(/\s+/g, "");
+  }
+
+  // 2. Provider-specific intelligent normalization
+  const lowerHost = sanitized.host.toLowerCase();
+  if (lowerHost.includes("gmail.com") || lowerHost.includes("googlemail.com")) {
+    // Gmail supports 465 (direct SSL/TLS, secure=true) and 587 (STARTTLS, secure=false)
+    if (sanitized.port === 465) {
+      sanitized.secure = true;
+    } else if (sanitized.port === 587) {
+      sanitized.secure = false;
+    } else {
+      // Non-standard port entered for Gmail - normalize to 465 if secure, otherwise 587
+      sanitized.port = sanitized.secure ? 465 : 587;
+    }
+    // If from is empty or default non-Gmail placeholder, default to authenticated user email
+    if (!sanitized.from || sanitized.from === "noreply@cleantraffic.io") {
+      if (sanitized.user && sanitized.user.includes("@")) {
+        sanitized.from = sanitized.user;
+      }
+    }
+  } else if (lowerHost.includes("resend.com")) {
+    if (sanitized.port === 465) {
+      sanitized.secure = true;
+    } else if (sanitized.port === 587) {
+      sanitized.secure = false;
+    }
+  } else if (
+    lowerHost.includes("sendgrid.net") ||
+    lowerHost.includes("brevo.com") ||
+    lowerHost.includes("mailgun.org") ||
+    lowerHost.includes("postmarkapp.com")
+  ) {
+    if (sanitized.port === 465) {
+      sanitized.secure = true;
+    } else if (sanitized.port === 587) {
+      sanitized.secure = false;
+    }
+  }
+
+  return sanitized;
+}
+
 // ── Retrieve Active SMTP Configuration ──────────────────────────────────────
 export async function getSmtpConfig(): Promise<SmtpConfig> {
   // Check persisted settings first (from Firestore or DB)
@@ -61,7 +125,7 @@ export async function getSmtpConfig(): Promise<SmtpConfig> {
 
   // Auto-detect Resend API key shortcut if no SMTP is explicitly configured
   if (!host && process.env.RESEND_API_KEY) {
-    return {
+    return sanitizeSmtpConfig({
       host: "smtp.resend.com",
       port: 465,
       secure: true,
@@ -70,10 +134,10 @@ export async function getSmtpConfig(): Promise<SmtpConfig> {
       from: from || "onboarding@resend.dev",
       fromName: fromName || "CleanTraffic Cloak",
       providerPreset: "resend",
-    };
+    });
   }
 
-  return {
+  const rawConfig: SmtpConfig = {
     host: host.trim(),
     port: parseInt(portStr, 10) || 587,
     secure: secureStr === "true" || secureStr === "1",
@@ -83,20 +147,26 @@ export async function getSmtpConfig(): Promise<SmtpConfig> {
     fromName: fromName.trim(),
     providerPreset,
   };
+
+  return sanitizeSmtpConfig(rawConfig);
 }
 
 // ── Save SMTP Configuration ─────────────────────────────────────────────────
 export async function saveSmtpConfig(config: Partial<SmtpConfig>): Promise<void> {
-  if (config.host !== undefined) await storage.setSetting("smtp_host", config.host);
-  if (config.port !== undefined) await storage.setSetting("smtp_port", String(config.port));
-  if (config.secure !== undefined) await storage.setSetting("smtp_secure", String(config.secure));
-  if (config.user !== undefined) await storage.setSetting("smtp_user", config.user);
-  if (config.pass !== undefined && config.pass !== "••••••••") {
-    await storage.setSetting("smtp_pass", config.pass);
+  const current = await getSmtpConfig();
+  const merged: SmtpConfig = { ...current, ...config };
+  const sanitized = sanitizeSmtpConfig(merged);
+
+  await storage.setSetting("smtp_host", sanitized.host);
+  await storage.setSetting("smtp_port", String(sanitized.port));
+  await storage.setSetting("smtp_secure", String(sanitized.secure));
+  await storage.setSetting("smtp_user", sanitized.user);
+  if (sanitized.pass && sanitized.pass !== "••••••••") {
+    await storage.setSetting("smtp_pass", sanitized.pass);
   }
-  if (config.from !== undefined) await storage.setSetting("smtp_from", config.from);
-  if (config.fromName !== undefined) await storage.setSetting("smtp_from_name", config.fromName);
-  if (config.providerPreset !== undefined) await storage.setSetting("smtp_provider_preset", config.providerPreset);
+  await storage.setSetting("smtp_from", sanitized.from);
+  await storage.setSetting("smtp_from_name", sanitized.fromName);
+  await storage.setSetting("smtp_provider_preset", sanitized.providerPreset || "custom");
 }
 
 // ── Create Transporter Instance ─────────────────────────────────────────────
@@ -106,7 +176,7 @@ export async function createTransporter(overrideConfig?: Partial<SmtpConfig>): P
   isConfigured: boolean;
 }> {
   const baseConfig = await getSmtpConfig();
-  const config: SmtpConfig = { ...baseConfig, ...overrideConfig };
+  const config = sanitizeSmtpConfig({ ...baseConfig, ...overrideConfig });
 
   const isConfigured = !!(config.host && config.user && config.pass);
 
@@ -125,9 +195,42 @@ export async function createTransporter(overrideConfig?: Partial<SmtpConfig>): P
     tls: {
       rejectUnauthorized: false, // Prevents self-signed cert issues during dev
     },
+    connectionTimeout: 10000, // 10s connection timeout prevents long hangs
+    greetingTimeout: 10000,   // 10s greeting timeout
+    socketTimeout: 15000,     // 15s socket timeout
   });
 
   return { transporter, config, isConfigured: true };
+}
+
+// ── Helper: Format User-Friendly SMTP Errors ────────────────────────────────
+function formatSmtpError(error: any, config: SmtpConfig): string {
+  const errorMsg = error?.message || "";
+  const isTimeout =
+    error?.code === "ETIMEDOUT" ||
+    errorMsg.toLowerCase().includes("timeout") ||
+    errorMsg.toLowerCase().includes("connection timeout");
+
+  if (isTimeout) {
+    return `Connection timed out connecting to ${config.host}:${config.port}. Please check that the port is correct (e.g. 465 for SSL or 587 for TLS) and that outbound SMTP traffic is not blocked.`;
+  }
+
+  if (error?.code === "EAUTH" || error?.responseCode === 535) {
+    if (config.host.toLowerCase().includes("gmail.com")) {
+      return `Authentication failed for ${config.user}. Gmail requires a 16-character Google App Password (not your account password) with 2-Step Verification enabled.`;
+    }
+    return `Authentication failed for ${config.user}. Please verify your username and password or API key.`;
+  }
+
+  if (error?.code === "ENOTFOUND" || error?.code === "EAI_AGAIN") {
+    return `Could not resolve hostname "${config.host}". Please check the SMTP host address.`;
+  }
+
+  if (error?.code === "ECONNREFUSED") {
+    return `Connection refused by ${config.host}:${config.port}. The server is not accepting connections on this port.`;
+  }
+
+  return errorMsg || "Failed to establish SMTP connection. Please check your credentials.";
 }
 
 // ── Test SMTP Connection ────────────────────────────────────────────────────
@@ -144,16 +247,66 @@ export async function verifySmtpConnection(testConfig?: Partial<SmtpConfig>): Pr
       };
     }
 
-    await transporter.verify();
-    return {
-      success: true,
-      message: `Successfully connected and authenticated with SMTP server (${config.host}:${config.port}).`,
-    };
+    try {
+      await transporter.verify();
+      return {
+        success: true,
+        message: `Successfully connected and authenticated with SMTP server (${config.host}:${config.port}, secure: ${config.secure ? "SSL" : "TLS"}).`,
+      };
+    } catch (firstErr: any) {
+      // If verification timed out and host has a known alternative port (e.g. Gmail 465 <-> 587), try the sibling port!
+      const isTimeout =
+        firstErr?.code === "ETIMEDOUT" ||
+        (firstErr?.message || "").toLowerCase().includes("timeout");
+
+      const isKnownProvider =
+        config.host.toLowerCase().includes("gmail.com") ||
+        config.host.toLowerCase().includes("googlemail.com");
+
+      if (isTimeout && isKnownProvider) {
+        const altPort = config.port === 465 ? 587 : 465;
+        const altSecure = altPort === 465;
+
+        console.log(
+          `[SMTP Verification] Port ${config.port} timed out. Attempting fallback on alternative port ${altPort} (secure: ${altSecure})...`
+        );
+
+        try {
+          const altTransporter = nodemailer.createTransport({
+            host: config.host,
+            port: altPort,
+            secure: altSecure,
+            auth: { user: config.user, pass: config.pass },
+            tls: { rejectUnauthorized: false },
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 15000,
+          });
+
+          await altTransporter.verify();
+
+          // Auto-save the working port configuration
+          await saveSmtpConfig({ ...config, port: altPort, secure: altSecure });
+
+          return {
+            success: true,
+            message: `Successfully connected and authenticated on port ${altPort} (${altSecure ? "SSL" : "TLS"}). Settings automatically updated from timed-out port ${config.port}.`,
+          };
+        } catch (secondErr: any) {
+          console.error("[SMTP Verification Error (Fallback)]:", secondErr);
+          throw firstErr; // Propagate original with formatting
+        }
+      }
+
+      throw firstErr;
+    }
   } catch (error: any) {
-    console.error("[SMTP Verification Error]:", error);
+    console.warn("[SMTP Verification Check]:", error?.message || error);
+    const resolvedConfig = await getSmtpConfig();
+    const activeConfig = { ...resolvedConfig, ...testConfig };
     return {
       success: false,
-      message: error?.message || "Failed to establish SMTP connection. Please check your credentials.",
+      message: formatSmtpError(error, activeConfig),
     };
   }
 }
@@ -205,7 +358,7 @@ export const defaultEmailTemplates = {
         <div class="pin-code">{{code}}</div>
       </div>
 
-      <p style="font-size: 13px; color: #94a3b8;">This verification code and link will expire in <strong>24 hours</strong>. If you did not create an account with {{app_name}}, you can safely ignore this message.</p>
+      <p style="font-size: 13px; color: #94a3b8;">This verification code and link will expire in <strong>5 minutes</strong>. If you did not create an account with {{app_name}}, you can safely ignore this message.</p>
 
       <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #1f2937; font-size: 12px; color: #64748b;">
         Button not working? Copy and paste this link into your browser:<br>
@@ -256,7 +409,7 @@ export const defaultEmailTemplates = {
         <div class="pin-code">{{code}}</div>
       </div>
 
-      <p style="font-size: 13px; color: #94a3b8;">This code will expire in <strong>15 minutes</strong>. If you did not request a password reset, your account is still secure and no changes were made.</p>
+      <p style="font-size: 13px; color: #94a3b8;">This code will expire in <strong>5 minutes</strong>. If you did not request a password reset, your account is still secure and no changes were made.</p>
     </div>
     <div class="footer">
       &copy; {{current_year}} {{app_name}} Security System.
@@ -447,36 +600,87 @@ export async function sendEmail(options: SendEmailOptions): Promise<{
 
   const { transporter, config, isConfigured } = await createTransporter();
 
-  // If SMTP is not configured, log simulated delivery and return gracefully
+  // If SMTP is not configured, log failure and return false so UI never reports false delivery
   if (!isConfigured || !transporter) {
-    console.log(
-      `[Email Service (Simulated)] No SMTP configured. Email to ${to} (${renderedSubject}) recorded in logs.`
+    console.warn(
+      `[Email Service] Cannot dispatch email: SMTP is not configured. (Recipient: ${to}, Subject: ${renderedSubject})`
     );
     addEmailLog({
       to,
       subject: renderedSubject,
       templateType,
-      status: "simulated",
-      errorMessage: "SMTP not configured. Email logged in simulation mode.",
+      status: "failed",
+      errorMessage: "SMTP is not configured on this server. Please enter host, port, username, and password in Email Settings.",
       metadata: { variables },
     });
     return {
-      success: true,
-      simulated: true,
-      message: `SMTP not configured yet. Email logged to delivery tracker (Recipient: ${to}).`,
+      success: false,
+      simulated: false,
+      message: `Outbound email delivery service (SMTP) is not configured. Please configure SMTP in system settings.`,
     };
   }
 
   try {
-    const fromAddress = config.fromName ? `"${config.fromName}" <${config.from}>` : config.from;
+    const fromEmail = config.from || config.user;
+    const fromAddress = config.fromName ? `"${config.fromName}" <${fromEmail}>` : fromEmail;
 
-    const info = await transporter.sendMail({
-      from: fromAddress,
-      to,
-      subject: renderedSubject,
-      html: renderedHtml,
-      text: plainText,
-    });
+    let info: any;
+    try {
+      info = await transporter.sendMail({
+        from: fromAddress,
+        replyTo: fromAddress,
+        to,
+        subject: renderedSubject,
+        html: renderedHtml,
+        text: plainText,
+        headers: {
+          "X-Entity-Ref-ID": randomUUID(),
+          "X-Mailer": "CleanTraffic-Cloak-Mailer",
+        },
+      });
+    } catch (sendErr: any) {
+      // If delivery timed out and host has a known alternative port (e.g. Gmail 465 <-> 587), try the alternative port once
+      const isTimeout =
+        sendErr?.code === "ETIMEDOUT" ||
+        (sendErr?.message || "").toLowerCase().includes("timeout");
+
+      const isKnownProvider =
+        config.host.toLowerCase().includes("gmail.com") ||
+        config.host.toLowerCase().includes("googlemail.com");
+
+      if (isTimeout && isKnownProvider) {
+        const altPort = config.port === 465 ? 587 : 465;
+        const altSecure = altPort === 465;
+
+        console.log(
+          `[Email Service] Port ${config.port} timed out sending to ${to}. Retrying via alternate port ${altPort} (secure: ${altSecure})...`
+        );
+
+        const altTransporter = nodemailer.createTransport({
+          host: config.host,
+          port: altPort,
+          secure: altSecure,
+          auth: { user: config.user, pass: config.pass },
+          tls: { rejectUnauthorized: false },
+          connectionTimeout: 10000,
+          greetingTimeout: 10000,
+          socketTimeout: 15000,
+        });
+
+        info = await altTransporter.sendMail({
+          from: fromAddress,
+          to,
+          subject: renderedSubject,
+          html: renderedHtml,
+          text: plainText,
+        });
+
+        // Persist working configuration
+        await saveSmtpConfig({ ...config, port: altPort, secure: altSecure });
+      } else {
+        throw sendErr;
+      }
+    }
 
     console.log(`[Email Service] Sent email to ${to} [Message ID: ${info.messageId}]`);
 
@@ -496,19 +700,20 @@ export async function sendEmail(options: SendEmailOptions): Promise<{
     };
   } catch (error: any) {
     console.error(`[Email Service Error] Failed to send to ${to}:`, error);
+    const friendlyError = formatSmtpError(error, config);
 
     addEmailLog({
       to,
       subject: renderedSubject,
       templateType,
       status: "failed",
-      errorMessage: error?.message || "Unknown SMTP error",
+      errorMessage: friendlyError,
       metadata: { variables },
     });
 
     return {
       success: false,
-      message: error?.message || "Failed to send email via SMTP.",
+      message: friendlyError,
     };
   }
 }
@@ -521,7 +726,7 @@ export async function sendVerificationEmail(params: {
   code: string;
   token: string;
   baseUrl?: string;
-}): Promise<{ success: boolean; message: string; simulated?: boolean }> {
+}): Promise<{ success: boolean; message: string; simulated?: boolean; messageId?: string }> {
   const { to, name, code, token, baseUrl = "" } = params;
   const tpl = await getEmailTemplate("verification");
   const verificationLink = `${baseUrl}/verification-required?status=success&token=${token}&email=${encodeURIComponent(to)}`;
@@ -545,7 +750,7 @@ export async function sendPasswordResetEmail(params: {
   name?: string;
   code: string;
   token?: string;
-}): Promise<{ success: boolean; message: string; simulated?: boolean }> {
+}): Promise<{ success: boolean; message: string; simulated?: boolean; messageId?: string }> {
   const { to, name, code } = params;
   const tpl = await getEmailTemplate("reset");
 

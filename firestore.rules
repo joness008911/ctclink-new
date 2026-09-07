@@ -50,6 +50,9 @@ service cloud.firestore {
     match /audit_logs/{logId} {
       allow read, write: if true;
     }
+    match /auth_verification_tokens/{tokenId} {
+      allow read, write: if true;
+    }
     match /stripe_events/{eventId} {
       allow read, write: if true;
     }

@@ -3,6 +3,18 @@ import { z } from "zod";
 import Stripe from "stripe";
 import { randomUUID, randomBytes } from "crypto";
 import rateLimit from "express-rate-limit";
+import {
+  createVerificationToken,
+  validateVerificationCode,
+  invalidatePreviousTokens,
+  invalidateAllTokensForUser,
+  checkEmailCooldown,
+  recordEmailDispatch,
+  maskEmail,
+  TOKEN_EXPIRATION_MS,
+  MAX_VERIFICATION_ATTEMPTS,
+  EMAIL_COOLDOWN_MS,
+} from "./authVerificationService";
 
 // Extend session types
 declare module 'express-session' {
@@ -71,7 +83,7 @@ import { sql as sqlTag } from "drizzle-orm";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 const MemoryStore = createMemoryStore(session);
-import { insertClassificationSchema, type ClientUser } from "@shared/schema";
+import { insertClassificationSchema, type ClientUser, computeEffectiveAccountStatus, normalizeTier, getTierCallLimit, type AccountStatusSummary } from "@shared/schema";
 import { UAParser } from "ua-parser-js";
 import path from "path";
 import fs from "fs";
@@ -142,7 +154,6 @@ const verifyCodeLimiter = rateLimit({
 
 // Per-email dispatch cooldown tracker (prevents rapid-fire email bombing to the same address)
 const emailDispatchCooldowns = new Map<string, number>();
-const EMAIL_COOLDOWN_MS = 60 * 1000; // 60 seconds cooldown between verification emails for the same address
 
 // Per-API-key rate limit for the classification endpoint (GET + POST).
 // Key extraction mirrors every path the two handlers accept:
@@ -176,7 +187,12 @@ const classifyLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipFailedRequests: false,
-  message: { message: "Classification rate limit exceeded. Please slow down." },
+  message: {
+    status: 429,
+    code: "RATE_LIMIT_EXCEEDED",
+    message: "Too Many Requests. You have made too many requests in a short period of time. Please wait a moment and try again.",
+    error: "Too Many Requests",
+  },
 });
 
 // 10-minute silent logging: Track last log time for each IP
@@ -633,6 +649,88 @@ Disallow: /*`);
     }
   }
 
+  /**
+   * Authoritative helper that ensures user subscription status and API-key state are synchronized
+   * with current database records and time:
+   * 1. Re-fetches freshest client user record directly from storage to prevent stale in-memory state.
+   * 2. Checks trial expiration against real time (Date.now()) and persists 'trial_expired' if passed.
+   * 3. Computes comprehensive statusSummary (isActive, isPaidActive, isTrialExpired, etc.).
+   * 4. Ensures the user's API key state matches:
+   *    - If active paid or valid trial: re-activates API key (even if previously marked expired),
+   *      clears stale trial expiresAt, and updates call limit to current tier limit.
+   *    - If inactive/expired: updates API key status to 'expired'.
+   */
+  async function syncClientUserSubscription(user: ClientUser): Promise<{ user: ClientUser; statusSummary: AccountStatusSummary }> {
+    let activeUser = (await storage.getClientUser(user.id)) || user;
+    const now = new Date();
+
+    const isTrialing = (activeUser.subscriptionStatus || 'trialing').toLowerCase().trim() === 'trialing';
+    let hasExpiredTrialDate = false;
+
+    if (activeUser.trialEndsAt) {
+      const trialDate = activeUser.trialEndsAt instanceof Date ? activeUser.trialEndsAt : new Date(activeUser.trialEndsAt);
+      if (!isNaN(trialDate.getTime()) && trialDate.getTime() <= now.getTime()) {
+        hasExpiredTrialDate = true;
+      }
+    } else if (isTrialing) {
+      // If trialing but trialEndsAt is null or missing, it is expired to prevent unbounded trial
+      hasExpiredTrialDate = true;
+    }
+
+    if (isTrialing && hasExpiredTrialDate) {
+      try {
+        const updated = await storage.updateClientUser(activeUser.id, {
+          subscriptionStatus: 'trial_expired',
+        });
+        if (updated) {
+          activeUser = updated;
+          console.log(`[SUBSCRIPTION_SYNC] Automatically transitioned expired trial user ${activeUser.username} (${activeUser.id}) to 'trial_expired'`);
+        }
+      } catch (err) {
+        console.error(`[SUBSCRIPTION_SYNC] Error updating expired status for user ${activeUser.id}:`, err);
+        activeUser = { ...activeUser, subscriptionStatus: 'trial_expired' };
+      }
+    }
+
+    const statusSummary = computeEffectiveAccountStatus(activeUser);
+
+    // Keep API key status and call limit authoritatively aligned with account state
+    if (activeUser.apiKeyId) {
+      try {
+        const apiKey = (await storage.getApiKeyById(activeUser.apiKeyId)) || (await storage.getApiKey(activeUser.apiKeyId));
+        if (apiKey) {
+          if (statusSummary.isActive) {
+            const isStaleExpired = apiKey.status === 'expired';
+            const isStaleExpiresAt = statusSummary.isPaidActive && apiKey.expiresAt !== null;
+            const isStaleCallLimit = (apiKey.callLimit || 0) < statusSummary.callLimit;
+
+            if (isStaleExpired || isStaleExpiresAt || isStaleCallLimit) {
+              await storage.updateApiKey(apiKey.id, {
+                status: 'active',
+                expiresAt: statusSummary.isPaidActive ? null : (activeUser.trialEndsAt ? new Date(activeUser.trialEndsAt) : null),
+                callLimit: statusSummary.callLimit,
+                updatedAt: new Date(),
+              });
+              console.log(`[SUBSCRIPTION_SYNC] Re-activated API key ${apiKey.id} for active account ${activeUser.username} (tier: ${statusSummary.tier}, status: ${statusSummary.status})`);
+            }
+          } else {
+            if (apiKey.status === 'active') {
+              await storage.updateApiKey(apiKey.id, {
+                status: 'expired',
+                updatedAt: new Date(),
+              });
+              console.log(`[SUBSCRIPTION_SYNC] Expired API key ${apiKey.id} for inactive account ${activeUser.username} (status: ${statusSummary.status})`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[SUBSCRIPTION_SYNC] Error synchronizing API key for user ${activeUser.id}:`, err);
+      }
+    }
+
+    return { user: activeUser, statusSummary };
+  }
+
   // ---- Auth request schemas ----
   const loginSchema = z.object({
     username: z.string().min(1).max(100).trim(),
@@ -758,49 +856,6 @@ Disallow: /*`);
     idToken: z.string().optional(),
   });
 
-  // Password recovery store & schemas
-  interface PasswordResetData {
-    userId: string;
-    email: string;
-    code: string;
-    token: string;
-    expiresAt: number;
-    failedAttempts: number;
-  }
-  const passwordResetStore = new Map<string, PasswordResetData>();
-
-  // Email verification store & session tracking
-  interface EmailVerificationData {
-    userId: string;
-    email: string;
-    code: string;
-    token: string;
-    expiresAt: number;
-    createdAt: number;
-    failedAttempts: number;
-  }
-  const emailVerificationStore = new Map<string, EmailVerificationData>();
-
-  function createEmailVerificationSession(userId: string, email: string) {
-    const cleanEmail = email.toLowerCase().trim();
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const token = "ct_ev_" + randomBytes(24).toString("hex");
-    const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
-    const sessionData: EmailVerificationData = {
-      userId,
-      email: cleanEmail,
-      code,
-      token,
-      expiresAt,
-      createdAt: Date.now(),
-      failedAttempts: 0,
-    };
-    emailVerificationStore.set(cleanEmail, sessionData);
-    emailVerificationStore.set(token, sessionData);
-    console.log(`[Email Verification] Verification created for ${cleanEmail} -> PIN: ${code}, Link: /verify-email?token=${token}`);
-    return sessionData;
-  }
-
   const forgotPasswordSchema = z.object({
     email: z.string().email("Please enter a valid email address").max(100).trim(),
   });
@@ -909,6 +964,7 @@ Disallow: /*`);
         emailVerifiedAt: null,
         status: "active",
         subscriptionStatus: "trialing",
+        subscriptionTier: "Pro",
         trialEndsAt,
         tosAccepted: new Date(),
         complianceStatus: "cleared",
@@ -918,21 +974,39 @@ Disallow: /*`);
       // Provision trial API key & redirect URLs
       const apiKey = await provisionTrialForClientUser(newUser.id, username);
 
-      // Generate verification session
-      const verification = createEmailVerificationSession(newUser.id, cleanEmail);
+      // Generate cryptographically secure 5-minute verification token (SHA-256 hashed)
+      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress;
+      const { record: tokenRecord, code: verificationCode, token: verificationToken } = await createVerificationToken({
+        userId: newUser.id,
+        email: cleanEmail,
+        purpose: "email_verification",
+        ip,
+      });
+      recordEmailDispatch(cleanEmail);
 
       // Send real transactional verification email via configured SMTP / Provider
       const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
       const host = req.get('host') || 'localhost:3000';
       const baseUrl = `${protocol}://${host}`;
 
-      sendVerificationEmail({
-        to: cleanEmail,
-        name: newUser.fullName || newUser.username,
-        code: verification.code,
-        token: verification.token,
-        baseUrl,
-      }).catch((err) => console.error("[Registration Email Dispatch Error]:", err));
+      let sendRes: any = { success: false, message: "Email delivery not attempted" };
+      try {
+        sendRes = await sendVerificationEmail({
+          to: cleanEmail,
+          name: newUser.fullName || newUser.username,
+          code: verificationCode,
+          token: verificationToken,
+          baseUrl,
+        });
+        if (sendRes.success) {
+          console.log(`[AUTH_EVENT] Registration verification email dispatched to ${maskEmail(cleanEmail)} [messageId: ${sendRes.messageId || 'N/A'}]`);
+        } else {
+          console.error(`[AUTH_EVENT] Registration verification email delivery failed for ${maskEmail(cleanEmail)}: ${sendRes.message}`);
+        }
+      } catch (err: any) {
+        console.error(`[AUTH_EVENT] Registration email dispatch exception for ${maskEmail(cleanEmail)}:`, err?.message || err);
+        sendRes = { success: false, message: err?.message || "Mail delivery error" };
+      }
 
       // Generate client token
       const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
@@ -951,11 +1025,16 @@ Disallow: /*`);
       req.session.save((err) => {
         if (err) console.error("Registration session save error:", err);
         res.status(201).json({
-          message: "Registration successful! A verification email with your 6-digit confirmation code and activation link has been dispatched to your inbox.",
+          message: sendRes.success
+            ? "Registration successful! A verification email with your 6-digit confirmation code has been dispatched to your inbox."
+            : `Registration successful! Note: Outbound verification email could not be delivered (${sendRes.message}). You can resend the code in settings.`,
           requiresVerification: true,
+          emailDispatched: !!sendRes.success,
+          emailDeliveryError: !sendRes.success ? sendRes.message : undefined,
           email: cleanEmail,
           token: clientToken,
-          verificationToken: verification.token,
+          verificationToken,
+          expiresAt: tokenRecord.expiresAt,
           user: {
             id: newUser.id,
             username: newUser.username,
@@ -1067,6 +1146,7 @@ Disallow: /*`);
         email: cleanEmail,
         status: "active",
         subscriptionStatus: "trialing",
+        subscriptionTier: "Pro",
         trialEndsAt,
         tosAccepted: new Date(),
         complianceStatus: "cleared",
@@ -1186,10 +1266,7 @@ Disallow: /*`);
       req.session.clientUserId = user.id;
       req.session.clientUserAuthenticated = true;
 
-      const now = new Date();
-      const trialDaysRemaining = user.trialEndsAt
-        ? Math.max(0, Math.ceil((user.trialEndsAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
-        : null;
+      const { user: syncedUser, statusSummary } = await syncClientUserSubscription(user);
 
       req.session.save((err) => {
         if (err) {
@@ -1198,17 +1275,23 @@ Disallow: /*`);
         res.json({
           message: "Login successful",
           token: clientToken,
-          userId: user.id,
-          username: user.username,
+          userId: syncedUser.id,
+          username: syncedUser.username,
           user: {
-            id: user.id,
-            username: user.username,
-            email: user.email,
-            fullName: user.fullName,
-            status: user.status,
-            subscriptionStatus: user.subscriptionStatus,
-            trialDaysRemaining,
-            trialEndsAt: user.trialEndsAt,
+            id: syncedUser.id,
+            username: syncedUser.username,
+            email: syncedUser.email,
+            fullName: syncedUser.fullName,
+            status: syncedUser.status,
+            subscriptionStatus: statusSummary.status,
+            subscriptionTier: statusSummary.tier,
+            statusLabel: statusSummary.statusLabel,
+            tierLabel: statusSummary.tierLabel,
+            trialDaysRemaining: statusSummary.trialDaysRemaining,
+            trialEndsAt: statusSummary.trialEndsAt,
+            isActive: statusSummary.isActive,
+            isTrial: statusSummary.isTrial,
+            isTrialExpired: statusSummary.isTrialExpired,
           },
           apiKey: apiKey ? {
             name: apiKey.keyName,
@@ -1235,44 +1318,43 @@ Disallow: /*`);
       }
       const cleanEmail = parse.data.email.toLowerCase().trim();
 
-      // Per-target email cooldown check to prevent inbox flooding / email abuse
-      const lastSent = emailDispatchCooldowns.get(cleanEmail);
-      if (lastSent && Date.now() - lastSent < EMAIL_COOLDOWN_MS) {
-        const remainingSec = Math.ceil((EMAIL_COOLDOWN_MS - (Date.now() - lastSent)) / 1000);
+      // Per-target email cooldown check (60s) to prevent inbox flooding / email abuse
+      const cooldown = checkEmailCooldown(cleanEmail);
+      if (!cooldown.allowed) {
         return res.status(429).json({
-          message: `A verification code was recently requested for this email. Please wait ${remainingSec} seconds before requesting a new one.`,
-          retryAfter: remainingSec,
+          message: `A verification code was recently requested for this email. Please wait ${cooldown.remainingSec} seconds before requesting a new one.`,
+          retryAfter: cooldown.remainingSec,
         });
       }
-      emailDispatchCooldowns.set(cleanEmail, Date.now());
+
+      // Safe uniform response to protect account privacy and prevent account enumeration
+      const genericResponse = {
+        success: true,
+        message: "If an account with this email exists in our system, you will receive a verification email with instructions to reset your password.",
+        email: cleanEmail,
+      };
 
       // Look up user by email or username/email
       const user = await storage.getClientUserByEmail(cleanEmail) || await storage.getClientUserByUsernameOrEmail(cleanEmail);
       if (!user) {
-        // Safe uniform response to protect account privacy
-        return res.json({
-          success: true,
-          message: "If an account is associated with this email address, a password reset verification code has been generated.",
-          email: cleanEmail,
-        });
+        console.log(`[AUTH_EVENT] Password reset requested for non-existent email: ${maskEmail(cleanEmail)}`);
+        return res.json(genericResponse);
       }
 
-      // Generate 6-digit verification code and reset token
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const token = "pw_rst_" + randomBytes(24).toString("hex");
-      const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutes expiration
+      if (user.status === "deleted" || user.status === "deactivated") {
+        console.log(`[AUTH_EVENT] Password reset requested for deactivated account: ${maskEmail(cleanEmail)}`);
+        return res.json(genericResponse);
+      }
 
-      const resetData: PasswordResetData = {
+      // Generate cryptographically secure 5-minute reset token (SHA-256 hashed), invalidating older tokens
+      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress;
+      const { record: tokenRecord, code, token } = await createVerificationToken({
         userId: user.id,
         email: cleanEmail,
-        code,
-        token,
-        expiresAt,
-        failedAttempts: 0,
-      };
-
-      passwordResetStore.set(cleanEmail, resetData);
-      passwordResetStore.set(token, resetData);
+        purpose: "password_reset",
+        ip,
+      });
+      recordEmailDispatch(cleanEmail);
 
       // Send real password recovery email via SMTP
       sendPasswordResetEmail({
@@ -1280,15 +1362,19 @@ Disallow: /*`);
         name: user.fullName || user.username,
         code,
         token,
-      }).catch((err) => console.error("[Password Recovery Email Dispatch Error]:", err));
+      })
+        .then((emailRes) => {
+          if (emailRes.success) {
+            console.log(`[AUTH_EVENT] Password reset email sent to ${maskEmail(cleanEmail)} [messageId: ${emailRes.messageId || 'N/A'}]`);
+          } else {
+            console.error(`[AUTH_EVENT] Password reset email delivery failure for ${maskEmail(cleanEmail)}: ${emailRes.message}`);
+          }
+        })
+        .catch((err) => console.error("[Password Recovery Email Dispatch Error]:", err));
 
-      console.log(`[Password Recovery] Generated reset code ${code} for ${cleanEmail} (userId: ${user.id}, expires: 15m)`);
+      console.log(`[AUTH_EVENT] Password reset initiated for ${maskEmail(cleanEmail)} (userId: ${user.id}, expires: 5m)`);
 
-      return res.json({
-        success: true,
-        message: "If an account is associated with this email address, a password reset verification code has been dispatched to your email inbox.",
-        email: cleanEmail,
-      });
+      return res.json(genericResponse);
     } catch (error) {
       console.error("Forgot password error:", error);
       res.status(500).json({ message: "Failed to initiate password recovery. Please try again." });
@@ -1305,39 +1391,24 @@ Disallow: /*`);
       const { email, code } = parse.data;
       const cleanEmail = email.toLowerCase().trim();
 
-      const entry = passwordResetStore.get(cleanEmail);
-      if (!entry) {
-        return res.status(400).json({ valid: false, message: "No active recovery code found for this email. Please request a new code." });
-      }
+      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress;
+      const result = await validateVerificationCode({
+        email: cleanEmail,
+        code,
+        purpose: "password_reset",
+        ip,
+      });
 
-      if (Date.now() > entry.expiresAt) {
-        passwordResetStore.delete(cleanEmail);
-        if (entry.token) passwordResetStore.delete(entry.token);
-        return res.status(400).json({ valid: false, message: "Verification code has expired. Please request a new one." });
-      }
-
-      // Check max failed verification attempts to prevent 6-digit PIN brute forcing
-      if (entry.failedAttempts >= 5) {
-        passwordResetStore.delete(cleanEmail);
-        if (entry.token) passwordResetStore.delete(entry.token);
-        return res.status(429).json({
+      if (!result.valid || !result.record) {
+        const statusCode = result.status === 'invalidated' ? 429 : 400;
+        return res.status(statusCode).json({
           valid: false,
-          message: "Too many incorrect verification attempts. For your security, this code has been invalidated. Please request a new code.",
+          message: result.message,
+          remainingAttempts: result.remainingAttempts,
         });
       }
 
-      if (entry.code !== code.trim()) {
-        entry.failedAttempts = (entry.failedAttempts || 0) + 1;
-        const attemptsLeft = Math.max(0, 5 - entry.failedAttempts);
-        return res.status(400).json({
-          valid: false,
-          message: attemptsLeft > 0
-            ? `Invalid verification code. ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining.`
-            : "Invalid verification code. Maximum attempts reached.",
-        });
-      }
-
-      return res.json({ valid: true, token: entry.token });
+      return res.json({ valid: true, token: result.record.token, message: "Verification code verified successfully." });
     } catch (error) {
       console.error("Verify reset code error:", error);
       res.status(500).json({ valid: false, message: "Error verifying recovery code." });
@@ -1360,44 +1431,49 @@ Disallow: /*`);
       const { email, code, token, newPassword } = parse.data;
       const cleanEmail = email.toLowerCase().trim();
 
-      let entry = passwordResetStore.get(cleanEmail);
-      if (!entry && token) {
-        entry = passwordResetStore.get(token);
+      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress;
+      const result = await validateVerificationCode({
+        email: cleanEmail,
+        code,
+        token,
+        purpose: "password_reset",
+        ip,
+      });
+
+      if (!result.valid || !result.record) {
+        const statusCode = result.status === 'invalidated' ? 429 : 400;
+        return res.status(statusCode).json({ message: result.message });
       }
 
-      if (!entry) {
-        return res.status(400).json({ message: "No active password recovery session found. Please request a new recovery code." });
+      const user = await storage.getClientUser(result.record.userId);
+      if (!user) {
+        return res.status(404).json({ message: "User account not found." });
       }
-
-      if (Date.now() > entry.expiresAt) {
-        passwordResetStore.delete(cleanEmail);
-        if (entry.token) passwordResetStore.delete(entry.token);
-        return res.status(400).json({ message: "Recovery session has expired. Please request a new recovery code." });
-      }
-
-      if (entry.failedAttempts >= 5) {
-        passwordResetStore.delete(cleanEmail);
-        if (entry.token) passwordResetStore.delete(entry.token);
-        return res.status(429).json({ message: "Too many incorrect verification attempts. Please request a new recovery code." });
-      }
-
-      if (code && entry.code !== code.trim() && (!token || entry.token !== token)) {
-        entry.failedAttempts = (entry.failedAttempts || 0) + 1;
-        return res.status(400).json({ message: "Invalid verification code." });
+      if (user.status === "deleted" || user.status === "deactivated") {
+        return res.status(403).json({ message: "Account has been deactivated." });
       }
 
       // Hash and update the user's password securely
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await storage.updateClientUser(entry.userId, {
+      await storage.updateClientUser(user.id, {
         password: hashedPassword,
       });
 
-      // Clear the used reset token and cooldowns
-      passwordResetStore.delete(cleanEmail);
-      if (entry.token) passwordResetStore.delete(entry.token);
-      emailDispatchCooldowns.delete(cleanEmail);
+      // Invalidate all remaining password reset tokens for this user
+      await invalidateAllTokensForUser(user.id, "password_reset");
 
-      console.log(`[Password Recovery] Successfully reset password for user ${entry.userId} (${cleanEmail})`);
+      // Invalidate all active authenticated sessions/tokens for this user
+      for (const [authToken, tokenData] of authTokens.entries()) {
+        if (tokenData.userId === user.id) {
+          authTokens.delete(authToken);
+        }
+      }
+      if (req.session) {
+        delete (req.session as any).clientUserId;
+        delete (req.session as any).clientUserAuthenticated;
+      }
+
+      console.log(`[AUTH_EVENT] Successfully reset password for user ${user.id} (${maskEmail(cleanEmail)}). All active sessions invalidated.`);
 
       return res.json({
         success: true,
@@ -1425,67 +1501,76 @@ Disallow: /*`);
         return res.status(400).json({ message: "Invalid verification payload", errors: parse.error.flatten().fieldErrors });
       }
       const { email, code, token } = parse.data;
-      let entry: EmailVerificationData | undefined;
+      const cleanEmail = email ? email.toLowerCase().trim() : undefined;
 
-      if (token) {
-        entry = emailVerificationStore.get(token);
-      }
-      if (!entry && email) {
-        entry = emailVerificationStore.get(email.toLowerCase().trim());
+      const auth = getSessionOrToken(req);
+      const sessionUserId = auth?.userId || req.session?.clientUserId;
+      let sessionUser: any = null;
+      if (sessionUserId) {
+        sessionUser = await storage.getClientUser(sessionUserId);
       }
 
-      if (!entry) {
-        // Check if user is already verified
-        if (email) {
-          const existing = await storage.getClientUserByEmail(email.toLowerCase().trim());
-          if (existing && existing.emailVerified) {
-            return res.json({
-              success: true,
-              alreadyVerified: true,
-              message: "Your email address is already verified. You can access all features.",
-              user: {
-                id: existing.id,
-                email: existing.email,
-                emailVerified: true,
-              },
-            });
-          }
+      // If user is authenticated, ensure they cannot verify an email belonging to another account
+      if (sessionUser && sessionUser.email && cleanEmail && sessionUser.email.toLowerCase().trim() !== cleanEmail) {
+        return res.status(403).json({
+          message: "You can only verify the email address associated with your logged-in account.",
+        });
+      }
+
+      const targetEmail = cleanEmail || (sessionUser?.email ? sessionUser.email.toLowerCase().trim() : undefined);
+
+      // Check if user is already verified in authoritative storage
+      if (targetEmail) {
+        const existing = await storage.getClientUserByEmail(targetEmail);
+        if (existing && existing.emailVerified) {
+          return res.json({
+            success: true,
+            alreadyVerified: true,
+            message: "Your email address is already verified. You can access all features.",
+            user: {
+              id: existing.id,
+              email: existing.email,
+              emailVerified: true,
+            },
+          });
         }
-        return res.status(400).json({
-          message: "Invalid or expired verification session. Please request a new verification email.",
-        });
       }
 
-      if (Date.now() > entry.expiresAt) {
-        emailVerificationStore.delete(entry.email);
-        emailVerificationStore.delete(entry.token);
-        return res.status(400).json({
-          message: "Verification link or code has expired. Please request a new verification email.",
-        });
+      let targetUserId = sessionUser?.id;
+      if (!targetUserId && targetEmail) {
+        const matchingUser = await storage.getClientUserByEmail(targetEmail);
+        if (matchingUser) targetUserId = matchingUser.id;
       }
 
-      if (entry.failedAttempts >= 5) {
-        emailVerificationStore.delete(entry.email);
-        emailVerificationStore.delete(entry.token);
-        return res.status(429).json({
-          message: "Too many failed attempts. Please request a new verification email.",
-        });
-      }
+      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress;
+      const result = await validateVerificationCode({
+        userId: targetUserId,
+        email: targetEmail,
+        code,
+        token,
+        purpose: "email_verification",
+        ip,
+      });
 
-      if (code && entry.code !== code.trim() && (!token || entry.token !== token)) {
-        entry.failedAttempts = (entry.failedAttempts || 0) + 1;
-        const attemptsLeft = Math.max(0, 5 - entry.failedAttempts);
-        return res.status(400).json({
-          message: attemptsLeft > 0
-            ? `Invalid verification code. ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining.`
-            : "Invalid verification code. Maximum attempts reached.",
+      if (!result.valid || !result.record) {
+        const statusCode = result.status === 'invalidated' ? 429 : 400;
+        return res.status(statusCode).json({
+          message: result.message,
+          remainingAttempts: result.remainingAttempts,
+          status: result.status,
         });
       }
 
       // Mark user email verified in persistent storage
-      const user = (await storage.getClientUser(entry.userId)) || (await storage.getClientUserByEmail(entry.email));
+      const user = (await storage.getClientUser(result.record.userId)) || (await storage.getClientUserByEmail(result.record.email));
       if (!user) {
         return res.status(404).json({ message: "User account not found." });
+      }
+      if (user.status === "suspended" || user.complianceStatus === "suspended") {
+        return res.status(403).json({ message: "Account is suspended. Please contact support." });
+      }
+      if (user.status === "deleted" || user.status === "deactivated") {
+        return res.status(403).json({ message: "Account has been deactivated." });
       }
 
       const updatedUser = await storage.updateClientUser(user.id, {
@@ -1493,10 +1578,8 @@ Disallow: /*`);
         emailVerifiedAt: new Date(),
       });
 
-      // Clean up verification store
-      emailVerificationStore.delete(entry.email);
-      emailVerificationStore.delete(entry.token);
-      emailDispatchCooldowns.delete(entry.email);
+      // Invalidate all pending verification tokens for this user
+      await invalidateAllTokensForUser(user.id, "email_verification");
 
       // Create authenticated client token
       const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
@@ -1511,7 +1594,7 @@ Disallow: /*`);
       req.session.clientUserId = user.id;
       req.session.clientUserAuthenticated = true;
 
-      console.log(`[Email Verification] Email confirmed for ${user.email} (${user.id})`);
+      console.log(`[AUTH_EVENT] Email verified successfully for ${maskEmail(user.email || "")} (${user.id})`);
 
       req.session.save((err) => {
         if (err) console.error("Verify email session save error:", err);
@@ -1543,25 +1626,29 @@ Disallow: /*`);
       if (!token) {
         return res.redirect("/verification-required?error=missing_token");
       }
-      const entry = emailVerificationStore.get(token);
-      if (!entry) {
-        return res.redirect("/verification-required?error=invalid_or_expired");
-      }
-      if (Date.now() > entry.expiresAt) {
-        emailVerificationStore.delete(entry.email);
-        emailVerificationStore.delete(entry.token);
-        return res.redirect(`/verification-required?error=expired&email=${encodeURIComponent(entry.email)}`);
+      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress;
+      const result = await validateVerificationCode({
+        token,
+        purpose: "email_verification",
+        ip,
+      });
+
+      if (!result.valid || !result.record) {
+        const errorReason = result.status === 'expired' ? 'expired' : result.status === 'consumed' ? 'already_used' : 'invalid_or_expired';
+        return res.redirect(`/verification-required?error=${errorReason}`);
       }
 
-      const user = (await storage.getClientUser(entry.userId)) || (await storage.getClientUserByEmail(entry.email));
+      const user = (await storage.getClientUser(result.record.userId)) || (await storage.getClientUserByEmail(result.record.email));
       if (user) {
+        if (user.status === "suspended" || user.status === "deleted") {
+          return res.redirect("/verification-required?error=account_unavailable");
+        }
+
         await storage.updateClientUser(user.id, {
           emailVerified: true,
           emailVerifiedAt: new Date(),
         });
-        emailVerificationStore.delete(entry.email);
-        emailVerificationStore.delete(entry.token);
-        emailDispatchCooldowns.delete(entry.email);
+        await invalidateAllTokensForUser(user.id, "email_verification");
 
         const clientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
         authTokens.set(clientToken, {
@@ -1584,7 +1671,7 @@ Disallow: /*`);
 
   // Resend verification email endpoint
   const resendVerificationSchema = z.object({
-    email: z.string().email("Please provide a valid email address").max(100).trim(),
+    email: z.string().email("Please provide a valid email address").max(100).trim().optional(),
   });
 
   app.post("/api/user/resend-verification", emailVerificationLimiter, async (req, res) => {
@@ -1593,54 +1680,109 @@ Disallow: /*`);
       if (!parse.success) {
         return res.status(400).json({ message: "Invalid email address", errors: parse.error.flatten().fieldErrors });
       }
-      const cleanEmail = parse.data.email.toLowerCase().trim();
 
-      // Per-email cooldown to protect mail delivery systems
-      const lastSent = emailDispatchCooldowns.get(cleanEmail);
-      if (lastSent && Date.now() - lastSent < EMAIL_COOLDOWN_MS) {
-        const remainingSec = Math.ceil((EMAIL_COOLDOWN_MS - (Date.now() - lastSent)) / 1000);
-        return res.status(429).json({
-          message: `Please wait ${remainingSec} seconds before requesting another verification email.`,
-          retryAfter: remainingSec,
+      const auth = getSessionOrToken(req);
+      const sessionUserId = auth?.userId || req.session?.clientUserId;
+      let targetUser: any = null;
+
+      if (sessionUserId) {
+        targetUser = await storage.getClientUser(sessionUserId);
+      }
+
+      let cleanEmail = parse.data?.email ? parse.data.email.toLowerCase().trim() : "";
+      if (!cleanEmail && targetUser?.email) {
+        cleanEmail = targetUser.email.toLowerCase().trim();
+      }
+
+      if (!cleanEmail) {
+        return res.status(400).json({ message: "Please provide your account email address." });
+      }
+
+      // If user is authenticated, ensure they cannot request codes for a different user's email
+      if (targetUser && targetUser.email && targetUser.email.toLowerCase().trim() !== cleanEmail) {
+        return res.status(403).json({
+          message: "You can only request verification emails for the email address registered to your account.",
         });
       }
-      emailDispatchCooldowns.set(cleanEmail, Date.now());
 
-      const user = (await storage.getClientUserByEmail(cleanEmail)) || (await storage.getClientUserByUsernameOrEmail(cleanEmail));
+      // Per-email cooldown (60s) to protect mail delivery systems
+      const cooldown = checkEmailCooldown(cleanEmail);
+      if (!cooldown.allowed) {
+        return res.status(429).json({
+          message: `Please wait ${cooldown.remainingSec} seconds before requesting another verification email.`,
+          retryAfter: cooldown.remainingSec,
+        });
+      }
+
+      const user = targetUser || (await storage.getClientUserByEmail(cleanEmail)) || (await storage.getClientUserByUsernameOrEmail(cleanEmail));
       if (!user) {
-        // Return generic message to prevent email enumeration
+        // Return generic message to prevent email enumeration for unauthenticated requests
         return res.json({
           success: true,
           message: "If an account exists with this email, a fresh verification link and code have been sent.",
         });
       }
 
+      if (user.status === "suspended" || user.complianceStatus === "suspended") {
+        return res.status(403).json({ message: "Account is suspended. Please contact support." });
+      }
+      if (user.status === "deleted" || user.status === "deactivated") {
+        return res.status(403).json({ message: "Account has been deactivated." });
+      }
+
       if (user.emailVerified) {
         return res.json({
           success: true,
           alreadyVerified: true,
-          message: "Your email address is already verified. You can log in directly.",
+          message: "Your email address is already verified. You can access your dashboard directly.",
         });
       }
 
-      const verification = createEmailVerificationSession(user.id, cleanEmail);
+      // Generate a fresh 5-minute cryptographically secure code, automatically invalidating previous codes
+      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress;
+      const { record: tokenRecord, code: verificationCode, token: verificationToken } = await createVerificationToken({
+        userId: user.id,
+        email: cleanEmail,
+        purpose: "email_verification",
+        ip,
+      });
 
       const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
       const host = req.get('host') || 'localhost:3000';
       const baseUrl = `${protocol}://${host}`;
 
-      sendVerificationEmail({
-        to: cleanEmail,
-        name: user.fullName || user.username,
-        code: verification.code,
-        token: verification.token,
-        baseUrl,
-      }).catch((err) => console.error("[Resend Email Dispatch Error]:", err));
+      let sendRes: any;
+      try {
+        sendRes = await sendVerificationEmail({
+          to: cleanEmail,
+          name: user.fullName || user.username,
+          code: verificationCode,
+          token: verificationToken,
+          baseUrl,
+        });
+      } catch (sendErr: any) {
+        console.error(`[AUTH_EVENT] Resend verification email dispatch error for ${maskEmail(cleanEmail)}:`, sendErr?.message || sendErr);
+        sendRes = { success: false, message: sendErr?.message || "Internal mail service connection error" };
+      }
+
+      // CRITICAL: Strict delivery verification. Do not report success if SMTP failed!
+      if (!sendRes || !sendRes.success) {
+        console.error(`[AUTH_EVENT] Mail delivery rejected for ${maskEmail(cleanEmail)}: ${sendRes?.message}`);
+        // Invalidate token so no undelivered phantom code exists
+        await invalidateAllTokensForUser(user.id, "email_verification");
+        return res.status(502).json({
+          success: false,
+          message: sendRes?.message || "Mail delivery service could not deliver the verification email. Please verify SMTP settings or try again.",
+        });
+      }
+
+      recordEmailDispatch(cleanEmail);
+      console.log(`[AUTH_EVENT] Resend verification email successfully delivered to mail server for ${maskEmail(cleanEmail)} [messageId: ${sendRes.messageId || 'N/A'}]`);
 
       return res.json({
         success: true,
-        message: `A new verification email with a fresh 6-digit confirmation code and activation link has been dispatched to ${cleanEmail}. Please check your inbox and spam folder.`,
-        expiresAt: verification.expiresAt,
+        message: `A fresh 6-digit confirmation code (valid for 5 minutes) has been dispatched to ${cleanEmail}. Please check your inbox and spam folder.`,
+        expiresAt: tokenRecord.expiresAt,
       });
     } catch (error) {
       console.error("Resend verification error:", error);
@@ -1648,7 +1790,7 @@ Disallow: /*`);
     }
   });
 
-  // Check email verification status
+  // Check email verification status against authoritative database record
   app.get("/api/user/verification-status", async (req, res) => {
     try {
       const emailParam = (req.query.email as string | undefined)?.toLowerCase().trim();
@@ -1666,11 +1808,22 @@ Disallow: /*`);
         return res.status(404).json({ message: "User not found" });
       }
 
+      const { user: syncedUser, statusSummary } = await syncClientUserSubscription(user);
+
       return res.json({
-        email: user.email,
-        emailVerified: !!user.emailVerified,
-        emailVerifiedAt: user.emailVerifiedAt,
-        subscriptionStatus: user.subscriptionStatus,
+        email: syncedUser.email,
+        emailVerified: !!syncedUser.emailVerified,
+        emailVerifiedAt: syncedUser.emailVerifiedAt,
+        status: syncedUser.status,
+        subscriptionStatus: statusSummary.status,
+        subscriptionTier: statusSummary.tier,
+        statusLabel: statusSummary.statusLabel,
+        tierLabel: statusSummary.tierLabel,
+        isActive: statusSummary.isActive,
+        isTrial: statusSummary.isTrial,
+        isTrialExpired: statusSummary.isTrialExpired,
+        trialEndsAt: statusSummary.trialEndsAt,
+        trialDaysRemaining: statusSummary.trialDaysRemaining,
       });
     } catch (error) {
       console.error("Verification status check error:", error);
@@ -1717,11 +1870,17 @@ Disallow: /*`);
         return res.status(403).json({ message: "API key does not match your account" });
       }
 
+      // Authoritatively sync user subscription and API key status with database records
+      const { user: syncedUser, statusSummary } = await syncClientUserSubscription(user);
+
       if (apiKeyRecord.status === "paused") {
-        return res.status(403).json({ message: "API key is paused" });
+        return res.status(403).json({ message: "API key is currently paused in the dashboard." });
       }
-      if (apiKeyRecord.status === "expired") {
-        return res.status(403).json({ message: "API key has expired" });
+
+      if (!statusSummary.isActive) {
+        return res.status(403).json({
+          message: statusSummary.rejectionReason || "API key has expired. Please renew your subscription in the dashboard.",
+        });
       }
 
       if (!user.tosAccepted) {
@@ -1799,22 +1958,28 @@ Disallow: /*`);
   const requireActiveSubscription = async (req: any, res: any, next: any) => {
     try {
       const auth = getSessionOrToken(req);
-      const userId = auth?.userId || req.session?.clientUserId;
+      const userId = auth?.userId || req.session?.clientUserId || (req as any).clientUserId;
       if (!userId) return res.status(401).json({ message: "User not found" });
-      const user = await storage.getClientUser(userId);
-      if (!user) return res.status(401).json({ message: "User not found" });
-      const now = new Date();
-      if (
-        user.subscriptionStatus === 'active' ||
-        (user.subscriptionStatus === 'trialing' && (!user.trialEndsAt || user.trialEndsAt > now))
-      ) {
+      const rawUser = await storage.getClientUser(userId);
+      if (!rawUser) return res.status(401).json({ message: "User not found" });
+
+      const { user, statusSummary } = await syncClientUserSubscription(rawUser);
+
+      if (statusSummary.isActive) {
         return next();
       }
+
       return res.status(402).json({
-        message: "Your trial has expired or your subscription is inactive. Please upgrade to continue.",
-        subscriptionStatus: user.subscriptionStatus,
-        trialEndsAt: user.trialEndsAt,
+        message: statusSummary.isTrialExpired
+          ? "Your trial has expired. Please upgrade to continue."
+          : "Your subscription is inactive. Please upgrade to continue.",
+        subscriptionStatus: statusSummary.status,
+        subscriptionTier: statusSummary.tier,
+        statusLabel: statusSummary.statusLabel,
+        tierLabel: statusSummary.tierLabel,
+        trialEndsAt: statusSummary.trialEndsAt,
         upgradeRequired: true,
+        notification: statusSummary.notification,
       });
     } catch (error) {
       console.error("Subscription check error:", error);
@@ -1840,19 +2005,16 @@ Disallow: /*`);
   app.get("/api/user/me", requireClientAuth, async (req: any, res) => {
     try {
       const auth = getSessionOrToken(req);
-      const userId = auth?.userId || req.session?.clientUserId;
-      const user = await storage.getClientUser(userId);
-      if (!user) {
+      const userId = auth?.userId || req.session?.clientUserId || (req as any).clientUserId;
+      const rawUser = await storage.getClientUser(userId);
+      if (!rawUser) {
         return res.status(404).json({ message: "User not found" });
       }
       
+      const { user, statusSummary } = await syncClientUserSubscription(rawUser);
+
       // Get API key info
       const apiKey = user.apiKeyId ? await storage.getApiKeyById(user.apiKeyId) : null;
-      
-      const now = new Date();
-      const trialDaysRemaining = user.trialEndsAt
-        ? Math.max(0, Math.ceil((user.trialEndsAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
-        : null;
 
       res.json({ 
         id: user.id,
@@ -1862,10 +2024,18 @@ Disallow: /*`);
         emailVerifiedAt: user.emailVerifiedAt,
         status: user.status,
         createdAt: user.createdAt,
-        // Billing fields
-        subscriptionStatus: user.subscriptionStatus,
-        trialEndsAt: user.trialEndsAt,
-        trialDaysRemaining,
+        // Authoritative Billing fields
+        subscriptionStatus: statusSummary.status,
+        subscriptionTier: statusSummary.tier,
+        statusLabel: statusSummary.statusLabel,
+        tierLabel: statusSummary.tierLabel,
+        isActive: statusSummary.isActive,
+        isTrial: statusSummary.isTrial,
+        isTrialExpired: statusSummary.isTrialExpired,
+        isExpiringSoon: statusSummary.isExpiringSoon,
+        trialEndsAt: statusSummary.trialEndsAt,
+        trialDaysRemaining: statusSummary.trialDaysRemaining,
+        notification: statusSummary.notification,
         apiKey: apiKey ? {
           name: apiKey.keyName,
           status: apiKey.status,
@@ -1949,7 +2119,25 @@ Disallow: /*`);
   // Update client user's redirect URLs and routing rules
   app.put("/api/user/redirect-urls", requireClientAuth, async (req: any, res) => {
     try {
-      const userId = req.session.clientUserId;
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId || (req as any).clientUserId;
+      if (!userId) {
+        return res.status(401).json({ message: "User not found" });
+      }
+
+      const rawUser = await storage.getClientUser(userId);
+      if (rawUser) {
+        const { statusSummary } = await syncClientUserSubscription(rawUser);
+        if (!statusSummary.isActive) {
+          return res.status(403).json({
+            message: statusSummary.isTrialExpired
+              ? "Your trial has expired and your dashboard is in read-only mode. Upgrade your subscription to modify routing rules."
+              : "Your subscription is inactive and your dashboard is in read-only mode. Upgrade your subscription to modify routing rules.",
+            readOnly: true,
+          });
+        }
+      }
+
       const { 
         humanUrl, 
         botUrl, 
@@ -2089,14 +2277,20 @@ Disallow: /*`);
   });
 
   // Get client user's classifications (their traffic logs)
-  app.get("/api/user/classifications", requireClientAuth, requireActiveSubscription, async (req: any, res) => {
+  // Preserved and accessible even after trial expires (read-only history)
+  app.get("/api/user/classifications", requireClientAuth, async (req: any, res) => {
     try {
-      const user = await storage.getClientUser(req.session.clientUserId);
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId || (req as any).clientUserId;
+      if (!userId) {
+        return res.status(401).json({ message: "User not found" });
+      }
+      const user = await storage.getClientUser(userId);
       if (!user || !user.apiKeyId) {
         return res.json([]);
       }
 
-      const limit = parseInt(req.query.limit as string) || 100;
+      const limit = parseInt(req.query.limit as string) || 500;
       const classifications = await storage.getUserClassifications(user.apiKeyId, limit);
       
       // Return user classifications including individual visitor IP addresses and telemetry
@@ -2126,9 +2320,15 @@ Disallow: /*`);
   });
 
   // Get client user's statistics
-  app.get("/api/user/stats", requireClientAuth, requireActiveSubscription, async (req: any, res) => {
+  // Preserved and accessible even after trial expires (read-only history)
+  app.get("/api/user/stats", requireClientAuth, async (req: any, res) => {
     try {
-      const user = await storage.getClientUser(req.session.clientUserId);
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId || (req as any).clientUserId;
+      if (!userId) {
+        return res.status(401).json({ message: "User not found" });
+      }
+      const user = await storage.getClientUser(userId);
       if (!user || !user.apiKeyId) {
         return res.json({
           totalClassifications: 0,
@@ -2295,11 +2495,28 @@ Disallow: /*`);
 
   // ========== ADMIN CLIENT USER MANAGEMENT ROUTES ==========
   
-  // Get all client users (Admin only)
+  // Get all client users (Admin only) - Authoritative sync of subscription & trial status
   app.get("/api/interface/client-users", requireAuth, async (req, res) => {
     try {
-      const users = await storage.getAllClientUsers();
-      res.json(users);
+      const rawUsers = await storage.getAllClientUsers();
+      const syncedUsers = await Promise.all(
+        rawUsers.map(async (u) => {
+          const { user, statusSummary } = await syncClientUserSubscription(u);
+          return {
+            ...user,
+            subscriptionStatus: statusSummary.status,
+            subscriptionTier: statusSummary.tier,
+            statusLabel: statusSummary.statusLabel,
+            tierLabel: statusSummary.tierLabel,
+            trialDaysRemaining: statusSummary.trialDaysRemaining,
+            isActive: statusSummary.isActive,
+            isTrial: statusSummary.isTrial,
+            isTrialExpired: statusSummary.isTrialExpired,
+            isExpiringSoon: statusSummary.isExpiringSoon,
+          };
+        })
+      );
+      res.json(syncedUsers);
     } catch (error) {
       console.error("Get client users error:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -2333,6 +2550,84 @@ Disallow: /*`);
       res.json({ success: true, user: updated });
     } catch (error) {
       console.error("Update compliance status error:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Update client user subscription & tier (Admin only)
+  app.patch("/api/interface/client-users/:id/subscription", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { subscriptionStatus, subscriptionTier, trialDays } = req.body;
+
+      const user = await storage.getClientUser(id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      const updates: Partial<ClientUser> = {};
+
+      if (subscriptionTier) {
+        updates.subscriptionTier = normalizeTier(subscriptionTier);
+      }
+
+      if (subscriptionStatus) {
+        const cleanStatus = subscriptionStatus.toLowerCase().trim();
+        if (!['trialing', 'trial_expired', 'active', 'past_due', 'cancelled'].includes(cleanStatus)) {
+          return res.status(400).json({ message: "Invalid status. Must be: trialing, trial_expired, active, past_due, cancelled" });
+        }
+        updates.subscriptionStatus = cleanStatus;
+
+        if (cleanStatus === 'active') {
+          // Upgrading to active subscription clears trial end date
+          updates.trialEndsAt = null;
+        } else if (cleanStatus === 'trial_expired') {
+          // Set trial end date to now
+          updates.trialEndsAt = new Date();
+        } else if (cleanStatus === 'trialing') {
+          const days = typeof trialDays === 'number' && trialDays > 0 ? trialDays : 14;
+          updates.trialEndsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+        }
+      } else if (typeof trialDays === 'number' && trialDays > 0) {
+        updates.subscriptionStatus = 'trialing';
+        updates.trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+      }
+
+      const updated = await storage.updateClientUser(id, updates);
+      if (!updated) {
+        return res.status(500).json({ message: "Failed to update user subscription" });
+      }
+
+      const { user: syncedUser, statusSummary } = await syncClientUserSubscription(updated);
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: "subscription.updated",
+        targetId: id,
+        targetType: "client_user",
+        metadata: { updates, effectiveStatus: statusSummary.status, effectiveTier: statusSummary.tier },
+      });
+
+      console.log(`[ADMIN_SUBSCRIPTION_UPDATE] Admin updated user ${user.username} (${id}): status=${statusSummary.status}, tier=${statusSummary.tier}`);
+
+      res.json({
+        success: true,
+        user: {
+          ...syncedUser,
+          subscriptionStatus: statusSummary.status,
+          subscriptionTier: statusSummary.tier,
+          statusLabel: statusSummary.statusLabel,
+          tierLabel: statusSummary.tierLabel,
+          trialDaysRemaining: statusSummary.trialDaysRemaining,
+          isActive: statusSummary.isActive,
+          isTrial: statusSummary.isTrial,
+          isTrialExpired: statusSummary.isTrialExpired,
+          isExpiringSoon: statusSummary.isExpiringSoon,
+        },
+      });
+    } catch (error) {
+      console.error("Admin subscription update error:", error);
       res.status(500).json({ message: "Internal server error" });
     }
   });
@@ -2398,9 +2693,10 @@ Disallow: /*`);
       // Hash password before storing
       const hashedPassword = await bcrypt.hash(password, 10);
 
-      // Start a 14-day trial for every new client user
-      const trialDays = 14;
-      const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+      const subscriptionTier = normalizeTier(req.body.subscriptionTier || "Pro");
+      const initialStatus = req.body.subscriptionStatus === "active" ? "active" : "trialing";
+      const trialDays = typeof req.body.trialDays === "number" && req.body.trialDays > 0 ? req.body.trialDays : 14;
+      const trialEndsAt = initialStatus === "active" ? null : new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
 
       const newUser = await storage.createClientUser({
         username,
@@ -2408,9 +2704,12 @@ Disallow: /*`);
         email: email || null,
         apiKeyId: apiKeyId || null,
         status: 'active',
-        subscriptionStatus: 'trialing',
+        subscriptionStatus: initialStatus,
+        subscriptionTier,
         trialEndsAt,
       });
+
+      const { user: syncedUser, statusSummary } = await syncClientUserSubscription(newUser);
 
       void auditLog({
         actorId: (req as any).session?.userId,
@@ -2418,9 +2717,20 @@ Disallow: /*`);
         action: "client_user.created",
         targetId: newUser.id,
         targetType: "client_user",
-        metadata: { username },
+        metadata: { username, tier: subscriptionTier, status: initialStatus },
       });
-      res.json(newUser);
+      res.json({
+        ...syncedUser,
+        subscriptionStatus: statusSummary.status,
+        subscriptionTier: statusSummary.tier,
+        statusLabel: statusSummary.statusLabel,
+        tierLabel: statusSummary.tierLabel,
+        trialDaysRemaining: statusSummary.trialDaysRemaining,
+        isActive: statusSummary.isActive,
+        isTrial: statusSummary.isTrial,
+        isTrialExpired: statusSummary.isTrialExpired,
+        isExpiringSoon: statusSummary.isExpiringSoon,
+      });
     } catch (error) {
       console.error("Create client user error:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -3083,6 +3393,7 @@ Disallow: /*`);
   async function validateApiKeyForClassification(apiKey: string | null): Promise<{
     valid: boolean;
     statusCode: number;
+    code: string;
     message: string;
     apiKeyId: string | null;
     limitReached: boolean;
@@ -3091,6 +3402,7 @@ Disallow: /*`);
       return {
         valid: false,
         statusCode: 401,
+        code: "INVALID_API_KEY",
         message: "API key is required. Please provide a valid API key.",
         apiKeyId: null,
         limitReached: false,
@@ -3104,6 +3416,7 @@ Disallow: /*`);
       return {
         valid: false,
         statusCode: 401,
+        code: "INVALID_API_KEY",
         message: "Invalid API key. The provided key was not found or has been deleted.",
         apiKeyId: null,
         limitReached: false,
@@ -3114,7 +3427,8 @@ Disallow: /*`);
       return {
         valid: false,
         statusCode: 403,
-        message: "API key has been disabled. Please contact support.",
+        code: "API_KEY_REVOKED",
+        message: "API key has been disabled by the resource owner.",
         apiKeyId: validKey.id,
         limitReached: true,
       };
@@ -3124,7 +3438,8 @@ Disallow: /*`);
       return {
         valid: false,
         statusCode: 403,
-        message: "API key has been revoked.",
+        code: "API_KEY_REVOKED",
+        message: "API key has been revoked by the resource owner.",
         apiKeyId: validKey.id,
         limitReached: true,
       };
@@ -3134,36 +3449,123 @@ Disallow: /*`);
       return {
         valid: false,
         statusCode: 403,
+        code: "API_KEY_PAUSED",
         message: "API key is currently paused in the dashboard.",
         apiKeyId: validKey.id,
         limitReached: true,
       };
     }
 
-    const now = Date.now();
-    if (validKey.status === "expired" || (validKey.expiresAt && new Date(validKey.expiresAt).getTime() < now)) {
+    // Identify the user associated with this API key
+    const keyOwner = await storage.getClientUserByApiKey(validKey.id);
+    if (!keyOwner) {
+      // Scenario: Account deleted, deactivated, or missing
       return {
         valid: false,
         statusCode: 403,
-        message: "API key has expired. Please renew your subscription in the dashboard.",
+        code: "ACCOUNT_DEACTIVATED",
+        message: "Account associated with this API key no longer exists or has been deactivated.",
         apiKeyId: validKey.id,
         limitReached: true,
       };
     }
 
-    // Check subscription status for the API key owner account
-    let limitReached = false;
-    const keyOwner = await storage.getClientUserByApiKey(validKey.id);
-    if (keyOwner) {
-      const nowDate = new Date();
-      const subActive =
-        keyOwner.subscriptionStatus === "active" ||
-        (keyOwner.subscriptionStatus === "trialing" && (!keyOwner.trialEndsAt || keyOwner.trialEndsAt > nowDate));
-      if (!subActive) {
-        limitReached = true;
-      }
+    // Authoritatively check account-level states
+    if (keyOwner.status === 'suspended' || keyOwner.complianceStatus === 'suspended') {
+      return {
+        valid: false,
+        statusCode: 403,
+        code: "ACCOUNT_SUSPENDED",
+        message: "Account has been suspended. Please contact support.",
+        apiKeyId: validKey.id,
+        limitReached: true,
+      };
     }
 
+    if (keyOwner.status === 'inactive' || keyOwner.status === 'deactivated' || keyOwner.status === 'deleted') {
+      return {
+        valid: false,
+        statusCode: 403,
+        code: "ACCOUNT_DEACTIVATED",
+        message: "Account has been deactivated. Please contact support.",
+        apiKeyId: validKey.id,
+        limitReached: true,
+      };
+    }
+
+    // Retrieve current authoritative account status and subscription state from database records
+    const { user: syncedUser, statusSummary } = await syncClientUserSubscription(keyOwner);
+
+    // Re-validate API key authorization against the current subscription tier and state
+    if (statusSummary.isActive) {
+      // User has upgraded or is currently active!
+      // If the API key was previously marked expired, re-activate it immediately so it is not treated as expired
+      if (validKey.status === "expired" || (statusSummary.isPaidActive && validKey.expiresAt !== null)) {
+        await storage.updateApiKey(validKey.id, {
+          status: "active",
+          expiresAt: statusSummary.isPaidActive ? null : (syncedUser.trialEndsAt ? new Date(syncedUser.trialEndsAt) : null),
+          callLimit: statusSummary.callLimit,
+          updatedAt: new Date(),
+        });
+        validKey.status = "active";
+        validKey.expiresAt = statusSummary.isPaidActive ? null : validKey.expiresAt;
+        validKey.callLimit = statusSummary.callLimit;
+      }
+    } else {
+      // Account is not active. Authoritatively determine which state applies and return the exact required response
+      if (statusSummary.isTrialExpired) {
+        if (validKey.status !== "expired") {
+          await storage.updateApiKey(validKey.id, { status: "expired" });
+        }
+        return {
+          valid: false,
+          statusCode: 403,
+          code: "API_KEY_EXPIRED",
+          message: "API key has expired. Please renew your subscription in the dashboard.",
+          apiKeyId: validKey.id,
+          limitReached: true,
+        };
+      }
+
+      if (statusSummary.isPaidExpired) {
+        if (validKey.status !== "expired") {
+          await storage.updateApiKey(validKey.id, { status: "expired" });
+        }
+        return {
+          valid: false,
+          statusCode: 403,
+          code: "API_KEY_EXPIRED",
+          message: "Paid subscription has expired. Please renew your subscription in the dashboard to resume API calls.",
+          apiKeyId: validKey.id,
+          limitReached: true,
+        };
+      }
+
+      if (statusSummary.isCancelled) {
+        if (validKey.status !== "expired") {
+          await storage.updateApiKey(validKey.id, { status: "expired" });
+        }
+        return {
+          valid: false,
+          statusCode: 403,
+          code: "API_KEY_EXPIRED",
+          message: "Subscription has been cancelled. Please reactivate your subscription in the dashboard to resume API calls.",
+          apiKeyId: validKey.id,
+          limitReached: true,
+        };
+      }
+
+      return {
+        valid: false,
+        statusCode: 403,
+        code: "API_KEY_EXPIRED",
+        message: statusSummary.rejectionReason || "Account subscription is inactive. Please upgrade or renew your subscription in the dashboard to resume API calls.",
+        apiKeyId: validKey.id,
+        limitReached: true,
+      };
+    }
+
+    let limitReached = false;
     // Increment usage quota
     const usageAllowed = await storage.incrementApiKeyUsage(cleanKey);
     if (!usageAllowed) {
@@ -3173,6 +3575,7 @@ Disallow: /*`);
     return {
       valid: true,
       statusCode: 200,
+      code: "OK",
       message: "Authorized",
       apiKeyId: validKey.id,
       limitReached,
@@ -3195,6 +3598,7 @@ Disallow: /*`);
         destination: null,
         url: null,
         status: authResult.statusCode === 401 ? "unauthorized" : "forbidden",
+        code: authResult.code,
         message: authResult.message,
         error: authResult.message,
       });
@@ -3219,6 +3623,7 @@ Disallow: /*`);
         destination: null,
         url: null,
         status: authResult.statusCode === 401 ? "unauthorized" : "forbidden",
+        code: authResult.code,
         message: authResult.message,
         error: authResult.message,
       });
@@ -3285,24 +3690,83 @@ Disallow: /*`);
   // GET billing status for the authenticated client user
   app.get("/api/user/billing", requireClientAuth, async (req: any, res) => {
     try {
-      const user = await storage.getClientUser(req.session.clientUserId);
-      if (!user) return res.status(404).json({ message: "User not found" });
-      const now = new Date();
-      const trialDaysRemaining = user.trialEndsAt
-        ? Math.max(0, Math.ceil((user.trialEndsAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
-        : null;
-      const isActive =
-        user.subscriptionStatus === 'active' ||
-        (user.subscriptionStatus === 'trialing' && user.trialEndsAt && user.trialEndsAt > now);
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId || (req as any).clientUserId;
+      const rawUser = await storage.getClientUser(userId);
+      if (!rawUser) return res.status(404).json({ message: "User not found" });
+
+      const { user, statusSummary } = await syncClientUserSubscription(rawUser);
+
       res.json({
-        subscriptionStatus: user.subscriptionStatus,
-        trialEndsAt: user.trialEndsAt,
-        trialDaysRemaining,
-        isActive,
+        subscriptionStatus: statusSummary.status,
+        subscriptionTier: statusSummary.tier,
+        statusLabel: statusSummary.statusLabel,
+        tierLabel: statusSummary.tierLabel,
+        trialEndsAt: statusSummary.trialEndsAt,
+        trialDaysRemaining: statusSummary.trialDaysRemaining,
+        isActive: statusSummary.isActive,
+        isTrial: statusSummary.isTrial,
+        isTrialExpired: statusSummary.isTrialExpired,
+        isExpiringSoon: statusSummary.isExpiringSoon,
+        notification: statusSummary.notification,
       });
     } catch (error) {
       console.error("Get billing status error:", error);
       res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // POST upgrade subscription tier for the authenticated client user
+  app.post("/api/user/upgrade", requireClientAuth, async (req: any, res) => {
+    try {
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId || (req as any).clientUserId;
+      const rawUser = await storage.getClientUser(userId);
+      if (!rawUser) return res.status(404).json({ message: "User not found" });
+
+      const requestedTier = normalizeTier(req.body?.tier || req.body?.subscriptionTier || "Pro");
+
+      const updated = await storage.updateClientUser(rawUser.id, {
+        subscriptionStatus: "active",
+        subscriptionTier: requestedTier,
+        trialEndsAt: null, // Clear trial end date on active upgrade
+      });
+
+      if (!updated) {
+        return res.status(500).json({ message: "Failed to update subscription" });
+      }
+
+      const { user, statusSummary } = await syncClientUserSubscription(updated);
+
+      void auditLog({
+        actorId: user.id,
+        actorType: "client" as any,
+        action: "user.subscription_upgraded",
+        targetId: user.id,
+        targetType: "client_user",
+        metadata: { tier: requestedTier, previousStatus: rawUser.subscriptionStatus },
+      });
+
+      console.log(`[USER_UPGRADE] User ${user.username} (${user.id}) upgraded to ${requestedTier} tier!`);
+
+      res.json({
+        success: true,
+        message: `Successfully upgraded to ${requestedTier} tier!`,
+        subscriptionStatus: statusSummary.status,
+        subscriptionTier: statusSummary.tier,
+        statusLabel: statusSummary.statusLabel,
+        tierLabel: statusSummary.tierLabel,
+        isActive: statusSummary.isActive,
+        isTrial: statusSummary.isTrial,
+        isTrialExpired: statusSummary.isTrialExpired,
+        isExpiringSoon: statusSummary.isExpiringSoon,
+        trialEndsAt: statusSummary.trialEndsAt,
+        trialDaysRemaining: statusSummary.trialDaysRemaining,
+        notification: statusSummary.notification,
+      });
+    } catch (error) {
+      console.error("Upgrade error:", error);
+      res.status(500).json({ message: "Failed to upgrade subscription" });
     }
   });
 
@@ -3678,72 +4142,7 @@ Disallow: /*`);
           }
         }
 
-        // TIER 2: FETCH IP GEOLOCATION & THREAT INTELLIGENCE
-        const cachedData = ip2geoCache.get(clientIp);
-        if (cachedData) {
-          classificationData = { ...cachedData };
-        } else {
-          const fetchedGeo = await fetchIpGeolocation(cleanTrafficApiKey, clientIp, userAgent);
-          if (fetchedGeo) {
-            classificationData = fetchedGeo;
-            ip2geoCache.set(clientIp, classificationData, 30 * 60 * 1000);
-          } else {
-            classificationData = {
-              ip: clientIp,
-              location: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
-              isp: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
-              country_code: isPrivateOrLocalIp(clientIp) ? 'AU' : '',
-              country_name: isPrivateOrLocalIp(clientIp) ? 'Australia' : 'Unknown',
-              city_name: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
-              region_name: '',
-              usage_type: 'RES',
-              is_proxy: false
-            };
-          }
-        }
-        classificationData.browser = browser;
-        classificationData.device_type = deviceType;
-
-        const countryCode = (classificationData.country_code || '').toUpperCase();
-        const ispName = classificationData.isp || '';
-        const usageType = classificationData.usage_type || '';
-
-        // TIER 3: DATACENTER ASN / CLOUD HOSTING PRE-SCREENING
-        const datacenterAsnCheck = checkDatacenterIsp(ispName);
-        if (visitorType !== 'Bot' && ownerBlockDatacenter !== 'allow' && datacenterAsnCheck.isDatacenter) {
-          visitorType = 'Bot';
-          detectionMethod = 'Datacenter Cloud ASN';
-          blockReason = `Cloud/Datacenter provider detected: ${datacenterAsnCheck.provider}`;
-          console.log(`🚫 BLOCKED (Tier 3 - Datacenter ASN): ${clientIp} - ${datacenterAsnCheck.provider}`);
-        }
-
-        if (visitorType !== 'Bot' && ownerBlockDatacenter !== 'allow' && (usageType === 'DCH' || classificationData.proxy_data?.is_data_center)) {
-          visitorType = 'Bot';
-          detectionMethod = 'Datacenter Hosting (DCH)';
-          blockReason = 'Datacenter hosting facility IP detected';
-          console.log(`🚫 BLOCKED (Tier 3 - DCH Usage Type): ${clientIp}`);
-        }
-
-        // TIER 3B: SEARCH ENGINE SPIDER (SES) USAGE TYPE PRE-SCREENING
-        if (visitorType !== 'Bot' && usageType === 'SES') {
-          visitorType = 'Bot';
-          detectionMethod = 'Search Engine Spider (SES)';
-          blockReason = 'Search engine spider network address identified by IP intelligence';
-          console.log(`🚫 BLOCKED (Tier 3B - SES Usage Type): ${clientIp}`);
-        }
-
-        // TIER 4: SYSTEM-WIDE ISP BLACKLIST
-        if (visitorType !== 'Bot' && ispName && ispName !== 'Unknown') {
-          const isBlacklisted = await storage.isIspBlacklisted(ispName);
-          if (isBlacklisted) {
-            visitorType = 'Bot';
-            detectionMethod = 'ISP Blacklisted';
-            blockReason = `ISP blacklisted: ${ispName}`;
-            console.log(`🚫 BLOCKED (Tier 4 - ISP Blacklist): ${clientIp} - ${ispName}`);
-          }
-        }
-
-        // TIER 5A: DEVICE & OS FILTERING (Desktop vs Mobile vs Mobile & Tablet + Windows/Mac)
+        // TIER 2: USER DEVICE & OS ROUTING RULES (100% Local evaluation from User-Agent - ZERO external IP2 calls)
         if (visitorType !== 'Bot' && ownerAllowedDevices && ownerAllowedDevices !== 'all') {
           const lowerDevice = (deviceType || '').toLowerCase();
           if (ownerAllowedDevices === 'desktop') {
@@ -3751,7 +4150,7 @@ Disallow: /*`);
               visitorType = 'Bot';
               detectionMethod = 'Device Restricted (Desktop Only)';
               blockReason = `Device ${deviceType || 'non-desktop'} blocked by desktop-only policy`;
-              console.log(`🚫 BLOCKED (Tier 5A - Device Filter): ${clientIp} is ${deviceType}, policy is desktop only`);
+              console.log(`🚫 BLOCKED (Tier 2 - Device Filter): ${clientIp} is ${deviceType}, policy is desktop only`);
             } else if (ownerDesktopOsFilter && ownerDesktopOsFilter !== 'both') {
               const isWindows = /windows nt|win32|win64/i.test(userAgent);
               const isMac = /macintosh|mac os x/i.test(userAgent);
@@ -3759,132 +4158,231 @@ Disallow: /*`);
                 visitorType = 'Bot';
                 detectionMethod = 'OS Restricted (Windows Desktop Only)';
                 blockReason = `Non-Windows OS blocked by Windows-only desktop policy`;
-                console.log(`🚫 BLOCKED (Tier 5A - OS Filter): ${clientIp} blocked, required Windows desktop`);
+                console.log(`🚫 BLOCKED (Tier 2 - OS Filter): ${clientIp} blocked, required Windows desktop`);
               } else if (ownerDesktopOsFilter === 'mac' && !isMac) {
                 visitorType = 'Bot';
                 detectionMethod = 'OS Restricted (Mac Desktop Only)';
                 blockReason = `Non-Mac OS blocked by macOS-only desktop policy`;
-                console.log(`🚫 BLOCKED (Tier 5A - OS Filter): ${clientIp} blocked, required Mac desktop`);
+                console.log(`🚫 BLOCKED (Tier 2 - OS Filter): ${clientIp} blocked, required Mac desktop`);
               }
             }
           } else if (ownerAllowedDevices === 'mobile' && lowerDevice !== 'mobile') {
             visitorType = 'Bot';
             detectionMethod = 'Device Restricted (Mobile Only)';
             blockReason = `Device ${deviceType || 'non-mobile'} blocked by mobile-only policy`;
-            console.log(`🚫 BLOCKED (Tier 5A - Device Filter): ${clientIp} is ${deviceType}, policy is mobile only`);
+            console.log(`🚫 BLOCKED (Tier 2 - Device Filter): ${clientIp} is ${deviceType}, policy is mobile only`);
           } else if (ownerAllowedDevices === 'mobile_tablet' && lowerDevice !== 'mobile' && lowerDevice !== 'tablet') {
             visitorType = 'Bot';
             detectionMethod = 'Device Restricted (Mobile & Tablet Only)';
             blockReason = `Device ${deviceType || 'desktop'} blocked by mobile/tablet policy`;
-            console.log(`🚫 BLOCKED (Tier 5A - Device Filter): ${clientIp} is ${deviceType}, policy is mobile & tablet only`);
+            console.log(`🚫 BLOCKED (Tier 2 - Device Filter): ${clientIp} is ${deviceType}, policy is mobile & tablet only`);
           }
         }
 
-        // TIER 5B: USER GEO-FENCING RULES (User-defined allowed countries)
-        if (visitorType !== 'Bot' && ownerAllowedCountries.length > 0) {
-          if (countryCode && ownerAllowedCountries.includes(countryCode)) {
-            // Country is explicitly permitted by user
-            console.log(`✅ GEO-FENCING PASS: ${clientIp} country ${countryCode} is in user's allowed list [${ownerAllowedCountries.join(', ')}]`);
+        // Check if visitor was caught locally in Layer 1 or Layer 2
+        if (visitorType === 'Bot') {
+          // Zero-cost local rejection: Do NOT burn external IP2 API credits!
+          const cachedData = ip2geoCache.get(clientIp);
+          classificationData = cachedData ? { ...cachedData } : {
+            ip: clientIp,
+            location: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
+            isp: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Filtered by Rule',
+            country_code: '',
+            country_name: 'Unknown',
+            city_name: '',
+            region_name: '',
+            usage_type: 'POLICY',
+            connection_type: 'Local Rule Filter',
+          };
+          classificationData.browser = browser;
+          classificationData.device_type = deviceType;
+        } else {
+          // TIER 3: FETCH IP GEOLOCATION & THREAT INTELLIGENCE (Only for candidates that passed Layer 1 & 2)
+          const cachedData = ip2geoCache.get(clientIp);
+          if (cachedData) {
+            classificationData = { ...cachedData };
           } else {
-            // Country is outside user's target market
-            visitorType = 'Bot';
-            detectionMethod = 'Geo-Fencing Restricted';
-            blockReason = `Country ${countryCode || 'Unknown'} is not in your allowed countries (${ownerAllowedCountries.join(', ')})`;
-            console.log(`🚫 BLOCKED (Tier 5B - User Geo-Fencing): ${clientIp} (${countryCode || 'Unknown'}) not in [${ownerAllowedCountries.join(', ')}]`);
+            const fetchedGeo = await fetchIpGeolocation(cleanTrafficApiKey, clientIp, userAgent);
+            if (fetchedGeo) {
+              classificationData = fetchedGeo;
+              ip2geoCache.set(clientIp, classificationData, 30 * 60 * 1000);
+            } else {
+              classificationData = {
+                ip: clientIp,
+                location: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
+                isp: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
+                country_code: isPrivateOrLocalIp(clientIp) ? 'AU' : '',
+                country_name: isPrivateOrLocalIp(clientIp) ? 'Australia' : 'Unknown',
+                city_name: isPrivateOrLocalIp(clientIp) ? 'Localhost' : 'Unknown',
+                region_name: '',
+                usage_type: 'RES',
+                is_proxy: false
+              };
+            }
           }
-        } else if (visitorType !== 'Bot') {
-          // Fallback to system-wide country whitelist if configured
-          const systemCountryWhitelist = await storage.getCountryWhitelist();
-          const enabledCountries = systemCountryWhitelist.filter(c => c.enabled !== false);
-          if (enabledCountries.length > 0) {
-            if (countryCode) {
-              const isAllowed = await storage.isCountryAllowed(countryCode);
-              if (!isAllowed) {
+          classificationData.browser = browser;
+          classificationData.device_type = deviceType;
+
+          const countryCode = (classificationData.country_code || '').toUpperCase();
+          const ispName = classificationData.isp || '';
+          const usageType = classificationData.usage_type || '';
+
+          // TIER 3A: USER GEO-FENCING RULES (User-defined allowed countries evaluated first)
+          if (visitorType !== 'Bot' && ownerAllowedCountries.length > 0) {
+            if (countryCode && ownerAllowedCountries.includes(countryCode)) {
+              // Country is explicitly permitted by user
+              console.log(`✅ GEO-FENCING PASS: ${clientIp} country ${countryCode} is in user's allowed list [${ownerAllowedCountries.join(', ')}]`);
+            } else {
+              // Country is outside user's target market
+              visitorType = 'Bot';
+              detectionMethod = 'Geo-Fencing Restricted';
+              blockReason = `Country ${countryCode || 'Unknown'} is not in your allowed countries (${ownerAllowedCountries.join(', ')})`;
+              console.log(`🚫 BLOCKED (Tier 3A - User Geo-Fencing): ${clientIp} (${countryCode || 'Unknown'}) not in [${ownerAllowedCountries.join(', ')}]`);
+            }
+          } else if (visitorType !== 'Bot') {
+            // Fallback to system-wide country whitelist if configured
+            const systemCountryWhitelist = await storage.getCountryWhitelist();
+            const enabledCountries = systemCountryWhitelist.filter(c => c.enabled !== false);
+            if (enabledCountries.length > 0) {
+              if (countryCode) {
+                const isAllowed = await storage.isCountryAllowed(countryCode);
+                if (!isAllowed) {
+                  visitorType = 'Bot';
+                  detectionMethod = 'Country Not Whitelisted';
+                  blockReason = `Country not whitelisted: ${countryCode}`;
+                  console.log(`🚫 BLOCKED (Tier 3A - System Country Whitelist): ${clientIp} - ${countryCode}`);
+                }
+              } else {
                 visitorType = 'Bot';
                 detectionMethod = 'Country Not Whitelisted';
-                blockReason = `Country not whitelisted: ${countryCode}`;
-                console.log(`🚫 BLOCKED (Tier 5B - System Country Whitelist): ${clientIp} - ${countryCode}`);
+                blockReason = `Unknown country while geo-fencing is active`;
               }
-            } else {
+            }
+          }
+
+          // TIER 3B: DATACENTER ASN / CLOUD HOSTING PRE-SCREENING
+          const datacenterAsnCheck = checkDatacenterIsp(ispName);
+          const proxyDetailsForDch = classificationData.proxy_data || {};
+          const isKnownVpnCandidate = Boolean(
+            classificationData.is_proxy ||
+            proxyDetailsForDch.is_vpn ||
+            proxyDetailsForDch.is_residential_proxy ||
+            proxyDetailsForDch.is_consumer_privacy_network
+          );
+
+          if (visitorType !== 'Bot' && ownerBlockDatacenter !== 'allow' && !(ownerAllowVpn && isKnownVpnCandidate) && datacenterAsnCheck.isDatacenter) {
+            visitorType = 'Bot';
+            detectionMethod = 'Datacenter Cloud ASN';
+            blockReason = `Cloud/Datacenter provider detected: ${datacenterAsnCheck.provider}`;
+            console.log(`🚫 BLOCKED (Tier 3B - Datacenter ASN): ${clientIp} - ${datacenterAsnCheck.provider}`);
+          }
+
+          if (visitorType !== 'Bot' && ownerBlockDatacenter !== 'allow' && !(ownerAllowVpn && isKnownVpnCandidate) && (usageType === 'DCH' || classificationData.proxy_data?.is_data_center)) {
+            visitorType = 'Bot';
+            detectionMethod = 'Datacenter Hosting (DCH)';
+            blockReason = 'Datacenter hosting facility IP detected';
+            console.log(`🚫 BLOCKED (Tier 3B - DCH Usage Type): ${clientIp}`);
+          }
+
+          // TIER 3C: SEARCH ENGINE SPIDER (SES) USAGE TYPE PRE-SCREENING
+          if (visitorType !== 'Bot' && usageType === 'SES') {
+            visitorType = 'Bot';
+            detectionMethod = 'Search Engine Spider (SES)';
+            blockReason = 'Search engine spider network address identified by IP intelligence';
+            console.log(`🚫 BLOCKED (Tier 3C - SES Usage Type): ${clientIp}`);
+          }
+
+          // TIER 3D: SYSTEM-WIDE ISP BLACKLIST
+          if (visitorType !== 'Bot' && ispName && ispName !== 'Unknown') {
+            const isBlacklisted = await storage.isIspBlacklisted(ispName);
+            if (isBlacklisted) {
               visitorType = 'Bot';
-              detectionMethod = 'Country Not Whitelisted';
-              blockReason = `Unknown country while geo-fencing is active`;
+              detectionMethod = 'ISP Blacklisted';
+              blockReason = `ISP blacklisted: ${ispName}`;
+              console.log(`🚫 BLOCKED (Tier 3D - ISP Blacklist): ${clientIp} - ${ispName}`);
+            }
+          }
+
+          // TIER 3E: VPN & PROXY POLICY (Multi-Vector Safe Classification Pipeline)
+          const proxyDetails = classificationData.proxy_data || {};
+          const isDetectedAsProxyOrVpn = Boolean(
+            classificationData.is_proxy || 
+            proxyDetails.is_vpn || 
+            proxyDetails.is_tor || 
+            proxyDetails.is_web_crawler ||
+            proxyDetails.is_ai_crawler ||
+            proxyDetails.is_residential_proxy ||
+            proxyDetails.is_public_proxy ||
+            proxyDetails.is_web_proxy ||
+            proxyDetails.is_consumer_privacy_network ||
+            proxyDetails.is_enterprise_private_network ||
+            proxyDetails.is_botnet ||
+            proxyDetails.is_spammer ||
+            proxyDetails.is_scanner ||
+            proxyDetails.is_bogon
+          );
+
+          if (visitorType !== 'Bot' && isDetectedAsProxyOrVpn) {
+            const isApiForwarded = Boolean(req.body?.userAgent || req.body?.ip);
+            const effectiveHeaders: Record<string, any> = isApiForwarded
+              ? {
+                  accept: req.body?.accept || req.body?.headers?.['accept'] || req.body?.headers?.['Accept'] || '',
+                  'accept-language': req.body?.acceptLanguage || req.body?.accept_language || req.body?.headers?.['accept-language'] || req.body?.headers?.['Accept-Language'] || '',
+                  'sec-ch-ua': req.body?.secChUa || req.body?.sec_ch_ua || req.body?.headers?.['sec-ch-ua'] || '',
+                  'sec-ch-ua-platform': req.body?.secChUaPlatform || req.body?.sec_ch_ua_platform || req.body?.headers?.['sec-ch-ua-platform'] || '',
+                  'sec-ch-ua-mobile': req.body?.secChUaMobile || req.body?.sec_ch_ua_mobile || req.body?.headers?.['sec-ch-ua-mobile'] || '',
+                  'sec-fetch-site': req.body?.secFetchSite || req.body?.sec_fetch_site || req.body?.headers?.['sec-fetch-site'] || '',
+                  'sec-fetch-mode': req.body?.secFetchMode || req.body?.sec_fetch_mode || req.body?.headers?.['sec-fetch-mode'] || '',
+                }
+              : (req.headers || {});
+
+            const safeVpnResult = evaluateSafeProxyClassification(
+              proxyDetails,
+              classificationData.fraud_score || 0,
+              usageType,
+              ispName,
+              effectiveHeaders,
+              userAgent,
+              {
+                blockVpn: (ownerBlockVpn as any) || (ownerAllowVpn ? 'allow' : 'block'),
+                allowVpn: Boolean(ownerAllowVpn),
+                blockDatacenter: (ownerBlockDatacenter as any) || 'block',
+                blockTor: (ownerBlockTor as any) || 'block',
+              },
+              datacenterAsnCheck.isDatacenter
+            );
+
+            visitorType = safeVpnResult.verdict;
+            detectionMethod = safeVpnResult.detectionMethod;
+            blockReason = safeVpnResult.blockReason;
+            classificationData.connection_type = safeVpnResult.subType;
+            classificationData.risk_score = safeVpnResult.riskScore;
+            classificationData.threat_level = safeVpnResult.threatLevel;
+            classificationData.telemetry_signals = safeVpnResult.signals;
+
+            if (visitorType === 'Bot') {
+              console.log(`🚫 BLOCKED (Tier 3E - Safe Proxy Defense): ${clientIp} - ${safeVpnResult.detectionMethod} [Type: ${safeVpnResult.subType}, Risk: ${safeVpnResult.riskScore}]`);
+            } else {
+              console.log(`✅ ALLOWED (Tier 3E - Verified Safe VPN): ${clientIp} - ${safeVpnResult.detectionMethod} [Type: ${safeVpnResult.subType}, Risk: ${safeVpnResult.riskScore}]`);
+            }
+          }
+
+          // TIER 3F: ISP WHITELIST OVERRIDE (Allow trusted ISPs if flagged falsely)
+          if (visitorType === 'Bot' && ispName && ispName !== 'Unknown') {
+            const isWhitelisted = await storage.isIspWhitelisted(ispName);
+            if (isWhitelisted) {
+              visitorType = 'Human';
+              detectionMethod = 'ISP Whitelist Override';
+              blockReason = `ISP whitelisted (trusted): ${ispName}`;
+              console.log(`✅ ALLOWED (Tier 3F - ISP Whitelist Override): ${clientIp} - ${ispName} is trusted`);
             }
           }
         }
 
-        // TIER 6: VPN & PROXY POLICY (Multi-Vector Safe Classification Pipeline)
-        const proxyDetails = classificationData.proxy_data || {};
-        const isDetectedAsProxyOrVpn = Boolean(
-          classificationData.is_proxy || 
-          proxyDetails.is_vpn || 
-          proxyDetails.is_tor || 
-          proxyDetails.is_web_crawler ||
-          proxyDetails.is_ai_crawler ||
-          proxyDetails.is_residential_proxy ||
-          proxyDetails.is_public_proxy ||
-          proxyDetails.is_web_proxy ||
-          proxyDetails.is_consumer_privacy_network ||
-          proxyDetails.is_enterprise_private_network ||
-          proxyDetails.is_botnet ||
-          proxyDetails.is_spammer ||
-          proxyDetails.is_scanner ||
-          proxyDetails.is_bogon
-        );
-
-        if (visitorType !== 'Bot' && isDetectedAsProxyOrVpn) {
-          const isApiForwarded = Boolean(req.body?.userAgent || req.body?.ip);
-          const effectiveHeaders: Record<string, any> = isApiForwarded
-            ? {
-                accept: req.body?.accept || req.body?.headers?.['accept'] || req.body?.headers?.['Accept'] || '',
-                'accept-language': req.body?.acceptLanguage || req.body?.accept_language || req.body?.headers?.['accept-language'] || req.body?.headers?.['Accept-Language'] || '',
-                'sec-ch-ua': req.body?.secChUa || req.body?.sec_ch_ua || req.body?.headers?.['sec-ch-ua'] || '',
-                'sec-ch-ua-platform': req.body?.secChUaPlatform || req.body?.sec_ch_ua_platform || req.body?.headers?.['sec-ch-ua-platform'] || '',
-                'sec-ch-ua-mobile': req.body?.secChUaMobile || req.body?.sec_ch_ua_mobile || req.body?.headers?.['sec-ch-ua-mobile'] || '',
-                'sec-fetch-site': req.body?.secFetchSite || req.body?.sec_fetch_site || req.body?.headers?.['sec-fetch-site'] || '',
-                'sec-fetch-mode': req.body?.secFetchMode || req.body?.sec_fetch_mode || req.body?.headers?.['sec-fetch-mode'] || '',
-              }
-            : (req.headers || {});
-
-          const safeVpnResult = evaluateSafeProxyClassification(
-            proxyDetails,
-            classificationData.fraud_score || 0,
-            usageType,
-            ispName,
-            effectiveHeaders,
-            userAgent,
-            {
-              blockVpn: (ownerBlockVpn as any) || (ownerAllowVpn ? 'allow' : 'block'),
-              allowVpn: Boolean(ownerAllowVpn),
-              blockDatacenter: (ownerBlockDatacenter as any) || 'block',
-              blockTor: (ownerBlockTor as any) || 'block',
-            },
-            datacenterAsnCheck.isDatacenter
-          );
-
-          visitorType = safeVpnResult.verdict;
-          detectionMethod = safeVpnResult.detectionMethod;
-          blockReason = safeVpnResult.blockReason;
-          classificationData.connection_type = safeVpnResult.subType;
-          classificationData.risk_score = safeVpnResult.riskScore;
-          classificationData.threat_level = safeVpnResult.threatLevel;
-          classificationData.telemetry_signals = safeVpnResult.signals;
-
-          if (visitorType === 'Bot') {
-            console.log(`🚫 BLOCKED (Tier 6 - Safe Proxy Defense): ${clientIp} - ${safeVpnResult.detectionMethod} [Type: ${safeVpnResult.subType}, Risk: ${safeVpnResult.riskScore}]`);
-          } else {
-            console.log(`✅ ALLOWED (Tier 6 - Verified Safe VPN): ${clientIp} - ${safeVpnResult.detectionMethod} [Type: ${safeVpnResult.subType}, Risk: ${safeVpnResult.riskScore}]`);
-          }
-        }
-
-        // TIER 7: ISP WHITELIST OVERRIDE (Allow trusted ISPs if flagged falsely)
-        if (visitorType === 'Bot' && ispName && ispName !== 'Unknown') {
-          const isWhitelisted = await storage.isIspWhitelisted(ispName);
-          if (isWhitelisted) {
-            visitorType = 'Human';
-            detectionMethod = 'ISP Whitelist Override';
-            blockReason = `ISP whitelisted (trusted): ${ispName}`;
-            console.log(`✅ ALLOWED (Tier 7 - ISP Whitelist Override): ${clientIp} - ${ispName} is trusted`);
+        // TIER 4: REPUTATION & VERDICT FINALIZATION
+        if (visitorType === 'Human') {
+          if (detectionMethod === 'IP Analysis' || !detectionMethod) {
+            detectionMethod = 'Clean Residential IP';
           }
         }
 

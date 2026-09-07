@@ -54,6 +54,7 @@ import { db, isDatabaseConfigured } from "./db";
 import { isFirestoreAvailable } from "./firebase";
 import { FirestoreStorage } from "./firestoreStorage";
 import { eq, desc, sql, count, lt, or, inArray } from "drizzle-orm";
+import { getTierCallLimit } from "@shared/subscription";
 
 // IP2Geo Cache for performance optimization
 interface CachedIPData {
@@ -341,6 +342,7 @@ export class MemStorage implements IStorage {
       complianceStatus: "compliant",
       newsletter: false,
       subscriptionStatus: "active",
+      subscriptionTier: "Pro",
       trialEndsAt: null,
       stripeCustomerId: null,
       stripeSubscriptionId: null,
@@ -367,25 +369,6 @@ export class MemStorage implements IStorage {
   }
 
   async createClassification(insertClassification: InsertClassification): Promise<Classification> {
-    // Auto-cleanup: Delete records older than 24 hours
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    for (const [id, classification] of this.classifications.entries()) {
-      if (new Date(classification.timestamp) < twentyFourHoursAgo) {
-        this.classifications.delete(id);
-      }
-    }
-    
-    // Auto-cleanup: Keep only last 100 classifications
-    if (this.classifications.size >= 100) {
-      const sorted = Array.from(this.classifications.entries())
-        .sort((a, b) => new Date(a[1].timestamp).getTime() - new Date(b[1].timestamp).getTime());
-      
-      const toDelete = this.classifications.size - 99; // Keep 99, add 1 new = 100 total
-      for (let i = 0; i < toDelete; i++) {
-        this.classifications.delete(sorted[i][0]);
-      }
-    }
-    
     const id = randomUUID();
     const classification: Classification = { 
       ...insertClassification,
@@ -517,26 +500,31 @@ export class MemStorage implements IStorage {
   async incrementApiKeyUsage(keyValue: string): Promise<boolean> {
     const apiKey = await this.getApiKey(keyValue);
     if (apiKey) {
-      // Check if key is expired
-      if (apiKey.expiresAt && new Date() > apiKey.expiresAt) {
-        await this.updateApiKey(apiKey.id, { status: 'expired' });
+      if (apiKey.status === 'paused' || apiKey.status === 'revoked' || apiKey.status === 'disabled' || apiKey.enabled === false) {
         return false;
       }
+
+      // Authoritatively inspect the owner account before applying expiry or limits
+      const owner = await this.getClientUserByApiKey(apiKey.id);
+      const isOwnerActivePaid = owner && (owner.subscriptionStatus || '').toLowerCase() === 'active' && owner.status !== 'suspended' && owner.status !== 'inactive';
+
+      // Check if key is expired (only for non-paid accounts or accounts without active paid status)
+      if (!isOwnerActivePaid) {
+        if (apiKey.expiresAt && new Date() > apiKey.expiresAt) {
+          await this.updateApiKey(apiKey.id, { status: 'expired' });
+          return false;
+        }
+      }
       
-      const limit = apiKey.callLimit ?? 5000;
+      const limit = isOwnerActivePaid ? getTierCallLimit(owner?.subscriptionTier) : (apiKey.callLimit ?? 5000);
       // Check if call limit reached
-      if ((apiKey.callCount || 0) >= limit) {
+      if (limit > 0 && (apiKey.callCount || 0) >= limit) {
         await this.updateApiKey(apiKey.id, { status: 'expired' });
-        return false;
-      }
-      
-      // Check if key is paused or inactive
-      if (apiKey.status !== 'active') {
         return false;
       }
       
       // Increment usage
-      apiKey.callCount += 1;
+      apiKey.callCount = (apiKey.callCount || 0) + 1;
       apiKey.lastUsed = new Date();
       apiKey.updatedAt = new Date();
       this.apiKeys.set(apiKey.id, apiKey);
@@ -774,6 +762,7 @@ export class MemStorage implements IStorage {
       tosAccepted: user.tosAccepted ?? null,
       complianceStatus: user.complianceStatus ?? "pending",
       subscriptionStatus: user.subscriptionStatus ?? "trialing",
+      subscriptionTier: user.subscriptionTier ?? "Pro",
       trialEndsAt: user.trialEndsAt ?? null,
       stripeCustomerId: user.stripeCustomerId ?? null,
       stripeSubscriptionId: user.stripeSubscriptionId ?? null,
@@ -826,10 +815,7 @@ export class MemStorage implements IStorage {
     }
     const found = Array.from(this.clientUsers.values())
       .find(user => candidateIds.includes(user.apiKeyId || ''));
-    if (found) return found;
-    const all = Array.from(this.clientUsers.values());
-    if (all.length === 1) return all[0];
-    return undefined;
+    return found;
   }
 
   async getAllClientUsers(): Promise<ClientUser[]> {
@@ -914,7 +900,7 @@ export class MemStorage implements IStorage {
   }
 
   // Classification methods for users
-  async getUserClassifications(apiKeyId: string, limit: number = 10): Promise<Classification[]> {
+  async getUserClassifications(apiKeyId: string, limit: number = 500): Promise<Classification[]> {
     return Array.from(this.classifications.values())
       .filter(c => c.apiKeyId === apiKeyId)
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
@@ -1235,28 +1221,6 @@ export class DatabaseStorage {
   }
 
   async createClassification(classification: InsertClassification): Promise<Classification> {
-    // Auto-cleanup: Delete records older than 24 hours
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    await db.delete(classifications).where(lt(classifications.timestamp, twentyFourHoursAgo));
-    
-    // Auto-cleanup: Keep only last 100 classifications
-    const countResult = await db.select({ count: count() }).from(classifications);
-    const total = countResult[0]?.count || 0;
-    
-    if (total >= 100) {
-      // Delete oldest entries to maintain 100 records max
-      const toDelete = total - 99; // Keep 99, add 1 new = 100 total
-      const oldestRecords = await db
-        .select({ id: classifications.id })
-        .from(classifications)
-        .orderBy(classifications.timestamp)
-        .limit(toDelete);
-      
-      for (const record of oldestRecords) {
-        await db.delete(classifications).where(eq(classifications.id, record.id));
-      }
-    }
-    
     const [newClassification] = await db.insert(classifications).values(classification).returning();
     return newClassification;
   }
@@ -1376,21 +1340,27 @@ export class DatabaseStorage {
       return false;
     }
     
-    // Check if key is expired
-    if (apiKey.expiresAt && new Date() > apiKey.expiresAt) {
-      await this.updateApiKey(apiKey.id, { status: 'expired' });
+    // Check if key is paused or disabled
+    if (apiKey.status === 'paused' || apiKey.status === 'revoked' || apiKey.status === 'disabled' || apiKey.enabled === false) {
       return false;
     }
-    
-    const limit = apiKey.callLimit ?? 5000;
+
+    // Authoritatively inspect the owner account before applying expiry or limits
+    const owner = await this.getClientUserByApiKey(apiKey.id);
+    const isOwnerActivePaid = owner && (owner.subscriptionStatus || '').toLowerCase() === 'active' && owner.status !== 'suspended' && owner.status !== 'inactive';
+
+    // Check if key is expired (only for non-paid accounts or accounts without active paid status)
+    if (!isOwnerActivePaid) {
+      if (apiKey.expiresAt && new Date() > apiKey.expiresAt) {
+        await this.updateApiKey(apiKey.id, { status: 'expired' });
+        return false;
+      }
+    }
+
+    const limit = isOwnerActivePaid ? getTierCallLimit(owner?.subscriptionTier) : (apiKey.callLimit ?? 5000);
     // Check if call limit reached
-    if ((apiKey.callCount || 0) >= limit) {
+    if (limit > 0 && (apiKey.callCount || 0) >= limit) {
       await this.updateApiKey(apiKey.id, { status: 'expired' });
-      return false;
-    }
-    
-    // Check if key is paused or inactive
-    if (apiKey.status !== 'active') {
       return false;
     }
     
@@ -1705,10 +1675,7 @@ export class DatabaseStorage {
       .select()
       .from(clientUsers)
       .where(inArray(clientUsers.apiKeyId, candidateIds));
-    if (user) return user;
-    const allUsers = await db.select().from(clientUsers);
-    if (allUsers.length === 1) return allUsers[0];
-    return undefined;
+    return user || undefined;
   }
 
   async getAllClientUsers(): Promise<ClientUser[]> {
@@ -1845,7 +1812,7 @@ export class DatabaseStorage {
   }
 
   // Classification methods for users (filtered by API key)
-  async getUserClassifications(apiKeyId: string, limit: number = 100): Promise<Classification[]> {
+  async getUserClassifications(apiKeyId: string, limit: number = 500): Promise<Classification[]> {
     const userClassifications = await db
       .select()
       .from(classifications)

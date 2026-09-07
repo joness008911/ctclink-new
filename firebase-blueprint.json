@@ -79,6 +79,29 @@
         "botUrl": { "type": "string" }
       },
       "required": ["id", "userId", "humanUrl", "botUrl"]
+    },
+    "AuthVerificationToken": {
+      "title": "AuthVerificationToken",
+      "description": "Cryptographically secure hashed verification and password reset tokens",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "purpose": { "type": "string" },
+        "codeHash": { "type": "string" },
+        "tokenHash": { "type": "string" },
+        "token": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "expiresAt": { "type": "number" },
+        "used": { "type": "boolean" },
+        "usedAt": { "type": "number" },
+        "attemptCount": { "type": "number" },
+        "maxAttempts": { "type": "number" },
+        "status": { "type": "string" },
+        "ip": { "type": "string" }
+      },
+      "required": ["id", "userId", "email", "purpose", "codeHash", "expiresAt", "status"]
     }
   },
   "firestore": {
@@ -105,6 +128,10 @@
     "/user_redirect_urls/{userId}": {
       "schema": "UserRedirectUrls",
       "description": "User specific redirect destination configurations"
+    },
+    "/auth_verification_tokens/{tokenId}": {
+      "schema": "AuthVerificationToken",
+      "description": "Hashed email verification and password recovery security tokens"
     }
   }
 }

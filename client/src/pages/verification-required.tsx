@@ -28,13 +28,14 @@ export default function VerificationRequired() {
 
   // Extract query parameters from URL
   const getQueryParams = () => {
-    if (typeof window === "undefined") return { email: "", token: "", status: "", error: "" };
+    if (typeof window === "undefined") return { email: "", token: "", status: "", error: "", sent: "" };
     const params = new URLSearchParams(window.location.search);
     return {
       email: params.get("email") || localStorage.getItem("pending_verification_email") || "",
       token: params.get("token") || "",
       status: params.get("status") || "",
       error: params.get("error") || "",
+      sent: params.get("sent") || "",
     };
   };
 
@@ -43,6 +44,8 @@ export default function VerificationRequired() {
   const [code, setCode] = useState("");
   const [isVerified, setIsVerified] = useState(initialParams.status === "success");
   const [cooldown, setCooldown] = useState(0);
+  const [codeSent, setCodeSent] = useState(initialParams.sent === "true");
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
 
   // Sync email to localStorage
   useEffect(() => {
@@ -100,6 +103,8 @@ export default function VerificationRequired() {
     mutationFn: userAuthApi.resendVerification,
     onSuccess: (data) => {
       setCooldown(60);
+      setCodeSent(true);
+      setDeliveryError(null);
       if (data.alreadyVerified) {
         setIsVerified(true);
         toast({
@@ -126,8 +131,9 @@ export default function VerificationRequired() {
       } catch {
         msg = error.message || msg;
       }
+      setDeliveryError(msg);
       toast({
-        title: "Resend Failed",
+        title: "Delivery Error",
         description: msg,
         variant: "destructive",
       });
@@ -278,13 +284,53 @@ export default function VerificationRequired() {
                   </h1>
 
                   <p className="text-slate-300 text-sm leading-relaxed">
-                    We sent a verification link and a 6-digit confirmation code to:
+                    {codeSent
+                      ? "A fresh 6-digit confirmation code (valid for 5 minutes) has been sent to:"
+                      : "Please request your verification code to confirm ownership of:"}
                   </p>
 
                   <div className="inline-flex items-center gap-2 px-3.5 py-1.5 bg-blue-950/60 border border-blue-800/60 rounded-full text-blue-200 text-sm font-mono font-medium max-w-full overflow-hidden text-ellipsis">
                     <Inbox className="w-4 h-4 text-blue-400 flex-shrink-0" />
                     <span className="truncate">{email || "your registered email"}</span>
                   </div>
+
+                  {deliveryError && (
+                    <div className="mt-3 p-3 bg-rose-950/50 border border-rose-800/80 rounded-xl text-left text-xs text-rose-200 flex items-start gap-2.5">
+                      <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <span className="font-semibold text-rose-300">Delivery Warning:</span>
+                        <p className="text-rose-200/90 leading-relaxed">{deliveryError}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {!codeSent && (
+                    <div className="pt-2">
+                      <Button
+                        type="button"
+                        onClick={handleResend}
+                        disabled={resendMutation.isPending || cooldown > 0}
+                        className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-xl shadow-md shadow-blue-600/20 flex items-center justify-center gap-2"
+                      >
+                        {resendMutation.isPending ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            Sending Verification Code...
+                          </>
+                        ) : cooldown > 0 ? (
+                          <>
+                            <Clock className="w-4 h-4 text-blue-300" />
+                            Wait {cooldown}s before resending
+                          </>
+                        ) : (
+                          <>
+                            <Mail className="w-4 h-4" />
+                            Send Verification Code to Inbox
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  )}
                 </div>
 
                 {/* 6-Digit Code Confirmation Form */}
@@ -381,7 +427,7 @@ export default function VerificationRequired() {
                     Troubleshooting Tips:
                   </div>
                   <ul className="list-disc pl-4 space-y-1 text-[11px] leading-relaxed text-slate-400">
-                    <li>Verification codes and links expire after 24 hours.</li>
+                    <li>Verification codes and links expire after 5 minutes.</li>
                     <li>If you don't see the email after 2 minutes, check your junk or spam folder.</li>
                     <li>Ensure you clicked the most recently requested verification link.</li>
                   </ul>

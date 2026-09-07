@@ -597,6 +597,9 @@ export default function UserLogin() {
                 {/* Step 2: Enter Code and New Strong Password */}
                 {recoveryStep === 2 && (
                   <form onSubmit={handleResetPasswordSubmit} className="space-y-4">
+                    <div className="p-3 bg-white/[0.03] border border-white/10 rounded-xl text-xs text-neutral-300">
+                      Enter the 6-digit recovery code sent to your inbox. For your security, codes are single-use and expire after <strong>5 minutes</strong>.
+                    </div>
                     {/* Simulated code banner for instant preview usability */}
                     {simulatedDevCode && (
                       <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex items-center justify-between text-xs text-emerald-400">
