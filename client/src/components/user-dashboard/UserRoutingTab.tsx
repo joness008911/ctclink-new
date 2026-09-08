@@ -20,7 +20,10 @@ import {
   Tablet,
   Globe,
   Lock,
-  ShieldAlert
+  ShieldAlert,
+  Search,
+  Sparkles,
+  Share2
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,7 +39,7 @@ export function UserRoutingTab({
 } = {}) {
   const { toast } = useToast();
 
-  // Routing and Cloaking States
+  // Routing and Threat Mitigation Policy States
   const [blockVpn, setBlockVpn] = useState<"block" | "allow">("block");
   const [allowedDevices, setAllowedDevices] = useState<"all" | "desktop" | "mobile" | "mobile_tablet">("all");
   const [desktopOsFilter, setDesktopOsFilter] = useState<"both" | "windows" | "mac">("both");
@@ -44,6 +47,11 @@ export function UserRoutingTab({
   const [hasUserModifiedCountries, setHasUserModifiedCountries] = useState(false);
   const [humanUrl, setHumanUrl] = useState("");
   const [botUrl, setBotUrl] = useState("");
+
+  // Granular Bot & Crawler Policy States
+  const [allowSearchCrawlers, setAllowSearchCrawlers] = useState<"allow" | "block">("allow");
+  const [blockAiCrawlers, setBlockAiCrawlers] = useState<"block" | "allow">("block");
+  const [allowSocialPreviews, setAllowSocialPreviews] = useState<"allow" | "block">("allow");
 
   // Country Search Dropdown State
   const [countrySearch, setCountrySearch] = useState("");
@@ -70,6 +78,9 @@ export function UserRoutingTab({
     desktopOsFilter?: "both" | "windows" | "mac";
     blockVpn?: "block" | "allow";
     allowVpn?: boolean;
+    allowSearchCrawlers?: "allow" | "block";
+    blockAiCrawlers?: "block" | "allow";
+    allowSocialPreviews?: "allow" | "block";
   }>({
     queryKey: ["/api/user/redirect-urls"],
     refetchOnMount: true,
@@ -86,6 +97,15 @@ export function UserRoutingTab({
       }
       if (redirectUrls.desktopOsFilter) {
         setDesktopOsFilter(redirectUrls.desktopOsFilter);
+      }
+      if (redirectUrls.allowSearchCrawlers) {
+        setAllowSearchCrawlers(redirectUrls.allowSearchCrawlers);
+      }
+      if (redirectUrls.blockAiCrawlers) {
+        setBlockAiCrawlers(redirectUrls.blockAiCrawlers);
+      }
+      if (redirectUrls.allowSocialPreviews) {
+        setAllowSocialPreviews(redirectUrls.allowSocialPreviews);
       }
 
       // Check if user already has saved country rules
@@ -128,6 +148,9 @@ export function UserRoutingTab({
       desktopOsFilter: string;
       blockVpn: string;
       allowVpn: boolean;
+      allowSearchCrawlers: "allow" | "block";
+      blockAiCrawlers: "block" | "allow";
+      allowSocialPreviews: "allow" | "block";
     }) => {
       const response = await apiRequest("PUT", "/api/user/redirect-urls", payload);
       return response.json();
@@ -135,7 +158,7 @@ export function UserRoutingTab({
     onSuccess: () => {
       toast({
         title: "Routing Configuration Saved",
-        description: "Your VPN policy, allowed devices, OS filtering, geo-fencing, and bot actions are now active across all links.",
+        description: "Your VPN policy, crawler rules, allowed devices, geo-fencing, and bot actions are now active.",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/user/redirect-urls"] });
     },
@@ -223,6 +246,9 @@ export function UserRoutingTab({
       desktopOsFilter,
       blockVpn,
       allowVpn: blockVpn === "allow",
+      allowSearchCrawlers,
+      blockAiCrawlers,
+      allowSocialPreviews,
     });
   };
 
@@ -242,7 +268,7 @@ export function UserRoutingTab({
           <div className="flex items-center gap-2.5">
             <ShieldAlert className="h-4 w-4 text-amber-700 shrink-0" />
             <div>
-              <span className="font-bold">Read-Only Mode (Trial Expired):</span> All your routing policies, geofences, and cloaking targets remain fully intact and viewable. Upgrade your subscription to modify settings and resume active link defense.
+              <span className="font-bold">Read-Only Mode (Trial Expired):</span> All your routing policies, geofences, and threat mitigation rules remain fully intact and viewable. Upgrade your subscription to modify settings and resume active link defense.
             </div>
           </div>
           {onUpgradeClick && (
@@ -655,7 +681,204 @@ export function UserRoutingTab({
       </div>
 
       {/* ─────────────────────────────────────────────────────────────
-          SECTION 4: DESTINATION ENDPOINTS (HUMAN URL & BOT / ERROR ACTION)
+          SECTION 4: SEARCH INDEXERS & AI CRAWLER MANAGEMENT
+      ───────────────────────────────────────────────────────────── */}
+      <div className="bg-white border border-[#E5EAE7] rounded-xl p-6 space-y-5 shadow-xs">
+        <div className="flex items-center gap-2.5 border-b border-[#E5EAE7] pb-3.5">
+          <div className="w-8 h-8 rounded-lg bg-[#E6F2ED] border border-[#CCE5DB] flex items-center justify-center text-[#0A5C48]">
+            <Search className="h-4 w-4" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-[#0F172A] tracking-tight">
+              Search Indexers & AI Crawler Management
+            </h3>
+            <p className="text-xs text-[#64748B]">
+              Distinguish legitimate search engines and social link previews from automated scrapers, bad bots, and AI training harvesters
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Rule 1: Search Engine Crawlers */}
+          <div className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-4 flex flex-col justify-between space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center">
+                    <Search className="h-3.5 w-3.5" />
+                  </div>
+                  <h4 className="text-xs font-bold text-[#0F172A]">Search Engine Indexers</h4>
+                </div>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                  allowSearchCrawlers === "allow"
+                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    : "bg-rose-50 text-rose-700 border-rose-200"
+                }`}>
+                  {allowSearchCrawlers === "allow" ? "Allowed" : "Blocked"}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#64748B] leading-relaxed">
+                Permits verified search spiders (Googlebot, Bingbot, Applebot, DuckDuckGo) to crawl and index your public pages for SEO ranking.
+              </p>
+              <div className="text-[10px] font-mono text-[#0A5C48] bg-[#EBF5F1] px-2 py-1 rounded border border-[#CCE5DB]">
+                Googlebot, Bingbot, Applebot, Baidu, Yandex
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[#E0E9E4] flex items-center justify-between">
+              <span className="text-xs font-medium text-[#2D3B35]">SEO Crawler Policy</span>
+              <div className="inline-flex rounded-lg border border-[#D5DFD9] bg-white p-0.5 shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setAllowSearchCrawlers("allow")}
+                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-colors ${
+                    allowSearchCrawlers === "allow"
+                      ? "bg-[#0A5C48] text-white"
+                      : "text-[#64748B] hover:text-[#0F172A]"
+                  }`}
+                >
+                  Allow
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAllowSearchCrawlers("block")}
+                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-colors ${
+                    allowSearchCrawlers === "block"
+                      ? "bg-rose-600 text-white"
+                      : "text-[#64748B] hover:text-[#0F172A]"
+                  }`}
+                >
+                  Block
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Rule 2: AI & LLM Training Scrapers */}
+          <div className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-4 flex flex-col justify-between space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-purple-50 text-purple-700 border border-purple-200 flex items-center justify-center">
+                    <Sparkles className="h-3.5 w-3.5" />
+                  </div>
+                  <h4 className="text-xs font-bold text-[#0F172A]">AI & LLM Scrapers</h4>
+                </div>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                  blockAiCrawlers === "block"
+                    ? "bg-purple-50 text-purple-700 border-purple-200"
+                    : "bg-amber-50 text-amber-700 border-amber-200"
+                }`}>
+                  {blockAiCrawlers === "block" ? "Protected (Blocked)" : "Permitted"}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#64748B] leading-relaxed">
+                Prevents AI models and web datasets from harvesting your content, copy, and competitive intelligence for model training.
+              </p>
+              <div className="text-[10px] font-mono text-purple-700 bg-purple-50/60 px-2 py-1 rounded border border-purple-200">
+                GPTBot, ClaudeBot, CCBot, PerplexityBot, Bytespider
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[#E0E9E4] flex items-center justify-between">
+              <span className="text-xs font-medium text-[#2D3B35]">AI Scraper Policy</span>
+              <div className="inline-flex rounded-lg border border-[#D5DFD9] bg-white p-0.5 shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setBlockAiCrawlers("block")}
+                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-colors ${
+                    blockAiCrawlers === "block"
+                      ? "bg-purple-700 text-white"
+                      : "text-[#64748B] hover:text-[#0F172A]"
+                  }`}
+                >
+                  Block AI
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBlockAiCrawlers("allow")}
+                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-colors ${
+                    blockAiCrawlers === "allow"
+                      ? "bg-amber-600 text-white"
+                      : "text-[#64748B] hover:text-[#0F172A]"
+                  }`}
+                >
+                  Allow AI
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Rule 3: Social Media Link Previews */}
+          <div className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-4 flex flex-col justify-between space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 flex items-center justify-center">
+                    <Share2 className="h-3.5 w-3.5" />
+                  </div>
+                  <h4 className="text-xs font-bold text-[#0F172A]">Social Media Previews</h4>
+                </div>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                  allowSocialPreviews === "allow"
+                    ? "bg-blue-50 text-blue-700 border-blue-200"
+                    : "bg-slate-100 text-slate-700 border-slate-200"
+                }`}>
+                  {allowSocialPreviews === "allow" ? "Allowed" : "Blocked"}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#64748B] leading-relaxed">
+                Permits social platforms to generate rich Open Graph link preview thumbnails and cards when shared in messaging and social feeds.
+              </p>
+              <div className="text-[10px] font-mono text-blue-700 bg-blue-50/60 px-2 py-1 rounded border border-blue-200">
+                Facebook, Twitter/X, WhatsApp, LinkedIn, Slack
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[#E0E9E4] flex items-center justify-between">
+              <span className="text-xs font-medium text-[#2D3B35]">Preview Policy</span>
+              <div className="inline-flex rounded-lg border border-[#D5DFD9] bg-white p-0.5 shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setAllowSocialPreviews("allow")}
+                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-colors ${
+                    allowSocialPreviews === "allow"
+                      ? "bg-blue-700 text-white"
+                      : "text-[#64748B] hover:text-[#0F172A]"
+                  }`}
+                >
+                  Allow
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAllowSocialPreviews("block")}
+                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-colors ${
+                    allowSocialPreviews === "block"
+                      ? "bg-rose-600 text-white"
+                      : "text-[#64748B] hover:text-[#0F172A]"
+                  }`}
+                >
+                  Block
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Tip / explanation box */}
+        <div className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-3.5 flex items-center gap-3 text-xs text-[#2D3B35]">
+          <div className="w-6 h-6 rounded-md bg-[#E6F2ED] text-[#0A5C48] flex items-center justify-center shrink-0">
+            <HelpCircle className="h-3.5 w-3.5" />
+          </div>
+          <div className="text-[11px] text-[#64748B] leading-relaxed">
+            <span className="font-bold text-[#0F172A]">Safe SEO Coexistence: </span>
+            Allowing Search Engine Indexers lets Google and Bing crawl without penalty, while malicious web scrapers, automated brute-force scripts, and headless browser bots are deflected to your Bot Action.
+          </div>
+        </div>
+      </div>
+
+      {/* ─────────────────────────────────────────────────────────────
+          SECTION 5: DESTINATION ENDPOINTS (HUMAN URL & BOT / ERROR ACTION)
       ───────────────────────────────────────────────────────────── */}
       <div className="bg-white border border-[#E5EAE7] rounded-xl p-6 space-y-5 shadow-xs">
         <div className="flex items-center gap-2.5 border-b border-[#E5EAE7] pb-3.5">
@@ -681,12 +904,12 @@ export function UserRoutingTab({
                   <Users className="h-4 w-4" />
                 </div>
                 <div>
-                  <h4 className="text-xs font-bold text-[#0F172A]">Target Offer (Human Visitors)</h4>
+                  <h4 className="text-xs font-bold text-[#0F172A]">Target Destination (Human Visitors)</h4>
                   <p className="text-[11px] text-[#64748B]">Approved users passing country, device & VPN rules</p>
                 </div>
               </div>
               <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-[#E6F2ED] text-[#07382D] border border-[#CCE5DB]">
-                Money Page
+                Target Page
               </span>
             </div>
 
@@ -704,7 +927,7 @@ export function UserRoutingTab({
             </div>
           </div>
 
-          {/* Safe Landing & Bot Error Code Action */}
+          {/* Threat Fallback & Bot Action */}
           <div className="bg-[#F7FAF8] border border-[#E0E9E4] rounded-xl p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
@@ -713,7 +936,7 @@ export function UserRoutingTab({
                 </div>
                 <div>
                   <h4 className="text-xs font-bold text-[#0F172A]">Bot & Filtered Traffic Action</h4>
-                  <p className="text-[11px] text-[#64748B]">Enter 404, 403, or a Safe Page URL</p>
+                  <p className="text-[11px] text-[#64748B]">Enter 404, 403, or a Fallback / Block Page URL</p>
                 </div>
               </div>
               {isBot404 ? (
@@ -726,7 +949,7 @@ export function UserRoutingTab({
                 </span>
               ) : isBotUrl ? (
                 <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                  SAFE REDIRECT URL
+                  FALLBACK REDIRECT URL
                 </span>
               ) : (
                 <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">

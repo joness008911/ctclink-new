@@ -38,6 +38,9 @@ export interface VpnClassificationPolicy {
   allowVpn: boolean;
   blockDatacenter: 'block' | 'allow';
   blockTor: 'block' | 'allow';
+  allowSearchCrawlers?: 'block' | 'allow';
+  blockAiCrawlers?: 'block' | 'allow';
+  allowSocialPreviews?: 'block' | 'allow';
 }
 
 export interface VpnClassificationResult {
@@ -165,17 +168,53 @@ export function evaluateSafeProxyClassification(
     };
   }
 
-  if (isWebCrawler || isAiCrawler || usageType === 'SES') {
+  if (isAiCrawler) {
+    if (policy.blockAiCrawlers === 'allow') {
+      return {
+        verdict: 'Human',
+        detectionMethod: 'Authorized AI Crawler',
+        blockReason: '',
+        riskScore: 20,
+        subType: 'AI Crawler',
+        threatLevel: 'low',
+        signals: ['AI crawler allowed by user policy']
+      };
+    } else {
+      return {
+        verdict: 'Bot',
+        detectionMethod: 'AI Scraper via Proxy',
+        blockReason: 'Automated AI scraper traversing proxy pool',
+        riskScore: 94,
+        subType: 'AI Training Scraper',
+        threatLevel: 'high',
+        signals: ['AI Crawler signature confirmed by threat intelligence', 'Automated scraping bot']
+      };
+    }
+  }
+
+  if (isWebCrawler || usageType === 'SES') {
     const isSes = usageType === 'SES';
-    return {
-      verdict: 'Bot',
-      detectionMethod: isSes ? 'Search Engine Spider (SES Usage Type)' : (isAiCrawler ? 'AI Scraper via Proxy' : 'Proxy Web Crawler'),
-      blockReason: isSes ? 'Search engine spider network address identified' : 'Automated crawler traversing proxy pool',
-      riskScore: 94,
-      subType: isSes ? 'Search Engine Spider' : (isAiCrawler ? 'AI Training Scraper' : 'Web Crawler Proxy'),
-      threatLevel: 'high',
-      signals: [isSes ? 'SES usage type confirmed by IP threat intelligence' : 'Crawler signature confirmed by IP intelligence', 'Automated indexing bot']
-    };
+    if (policy.allowSearchCrawlers !== 'block') {
+      return {
+        verdict: 'Human',
+        detectionMethod: isSes ? 'Verified Search Engine Spider (SES)' : 'Web Crawler (Allowed by Policy)',
+        blockReason: '',
+        riskScore: 10,
+        subType: 'Search Engine Spider',
+        threatLevel: 'low',
+        signals: [isSes ? 'SES usage type confirmed' : 'Web crawler signature allowed by SEO policy']
+      };
+    } else {
+      return {
+        verdict: 'Bot',
+        detectionMethod: isSes ? 'Search Engine Spider (Blocked by Policy)' : 'Proxy Web Crawler (Blocked by Policy)',
+        blockReason: isSes ? 'Search engine spider network address identified' : 'Automated crawler traversing proxy pool',
+        riskScore: 94,
+        subType: isSes ? 'Search Engine Spider' : 'Web Crawler Proxy',
+        threatLevel: 'high',
+        signals: [isSes ? 'SES usage type confirmed by IP threat intelligence' : 'Crawler signature confirmed by IP intelligence', 'Automated indexing bot']
+      };
+    }
   }
 
   if (isTor && policy.blockTor !== 'allow') {
@@ -186,7 +225,7 @@ export function evaluateSafeProxyClassification(
       riskScore: 95,
       subType: 'Tor Anonymity Node',
       threatLevel: 'high',
-      signals: ['Tor cryptographic relay exit node', 'High-risk anonymity bypass']
+      signals: ['Tor cryptographic relay exit node', 'High-risk anonymity proxy']
     };
   }
 

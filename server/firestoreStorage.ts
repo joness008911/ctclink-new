@@ -437,22 +437,26 @@ export class FirestoreStorage implements IStorage {
         return false;
       }
 
-      // Authoritatively inspect the owner account before applying expiry or limits
+      // Check owner status
       const owner = await this.getClientUserByApiKey(apiKey.id);
-      const isOwnerActivePaid = owner && (owner.subscriptionStatus || '').toLowerCase() === 'active' && owner.status !== 'suspended' && owner.status !== 'inactive';
+      const isOwnerActive = owner && (
+        (owner.subscriptionStatus || '').toLowerCase() === 'active' ||
+        ((owner.subscriptionStatus || '').toLowerCase() === 'trialing' && (!owner.trialEndsAt || new Date(owner.trialEndsAt) > new Date()))
+      ) && owner.status !== 'suspended' && owner.status !== 'inactive';
 
-      // Check if key is expired (only for non-paid accounts or accounts without active paid status)
-      if (!isOwnerActivePaid) {
+      // Check if key is expired (only for non-active/non-entitled accounts or standalone keys)
+      if (!isOwnerActive) {
         if (apiKey.expiresAt && new Date() > apiKey.expiresAt) {
-          await this.updateApiKey(apiKey.id, { status: "expired" });
+          if (apiKey.status !== "expired") {
+            await this.updateApiKey(apiKey.id, { status: "expired" });
+          }
           return false;
         }
       }
 
-      const limit = isOwnerActivePaid ? getTierCallLimit(owner?.subscriptionTier) : (apiKey.callLimit ?? 5000);
+      const limit = isOwnerActive ? getTierCallLimit(owner?.subscriptionTier) : (apiKey.callLimit ?? 5000);
       // Check if call limit reached
       if (limit > 0 && (apiKey.callCount || 0) >= limit) {
-        await this.updateApiKey(apiKey.id, { status: "expired" });
         return false;
       }
 
@@ -1176,6 +1180,9 @@ export class FirestoreStorage implements IStorage {
     fingerprintActivate?: string;
     wildcardSubdomains?: string;
     allowVpn?: boolean;
+    allowSearchCrawlers?: string;
+    blockAiCrawlers?: string;
+    allowSocialPreviews?: string;
   }): Promise<UserRedirectUrls> {
     const existing = await this.getUserRedirectUrls(userId);
     const now = new Date();
@@ -1193,6 +1200,9 @@ export class FirestoreStorage implements IStorage {
       fingerprintActivate: urls.fingerprintActivate !== undefined ? urls.fingerprintActivate : (existing?.fingerprintActivate || "enabled"),
       wildcardSubdomains: urls.wildcardSubdomains !== undefined ? urls.wildcardSubdomains : (existing?.wildcardSubdomains || "disabled"),
       allowVpn: urls.allowVpn !== undefined ? urls.allowVpn : (urls.blockVpn === "allow" ? true : (existing?.allowVpn ?? false)),
+      allowSearchCrawlers: urls.allowSearchCrawlers !== undefined ? urls.allowSearchCrawlers : (existing?.allowSearchCrawlers || "allow"),
+      blockAiCrawlers: urls.blockAiCrawlers !== undefined ? urls.blockAiCrawlers : (existing?.blockAiCrawlers || "block"),
+      allowSocialPreviews: urls.allowSocialPreviews !== undefined ? urls.allowSocialPreviews : (existing?.allowSocialPreviews || "allow"),
       updatedAt: now,
     };
     await setDoc(doc(this.db, "user_redirect_urls", userId), {

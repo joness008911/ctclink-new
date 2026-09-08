@@ -191,7 +191,7 @@ export default function VerificationRequired() {
           </div>
           <div>
             <span className="text-xl font-bold tracking-tight text-white flex items-center gap-1.5">
-              CleanTraffic <span className="text-blue-400">Cloak</span>
+              CleanTraffic <span className="text-emerald-400">Security</span>
             </span>
             <span className="text-xs text-slate-400 block -mt-1 font-mono">
               Account Security & Verification
@@ -241,7 +241,7 @@ export default function VerificationRequired() {
                   <ul className="text-xs text-slate-300 space-y-1.5">
                     <li className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                      5,000 cloaked trial requests included
+                      5,000 protected trial requests included
                     </li>
                     <li className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
@@ -440,7 +440,7 @@ export default function VerificationRequired() {
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-slate-900/40 px-6 py-4 text-center text-xs text-slate-500 z-10">
-        <p>© {new Date().getFullYear()} CleanTraffic Cloak Enterprise Security. All rights reserved.</p>
+        <p>© {new Date().getFullYear()} CleanTraffic Enterprise Security. All rights reserved.</p>
       </footer>
     </div>
   );

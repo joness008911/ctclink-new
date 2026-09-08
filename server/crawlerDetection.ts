@@ -45,6 +45,19 @@ const KNOWN_CRAWLER_PATTERNS: Array<{ pattern: RegExp; name: string; category: s
   { pattern: /tumblr/i, name: "Tumblr Bot", category: "Social Preview Bot" },
   { pattern: /bytespider/i, name: "ByteDance / TikTok Spider", category: "Scraper" },
 
+  // AI & LLM Machine Learning Crawlers & Scrapers
+  { pattern: /gptbot/i, name: "ChatGPT / OpenAI GPTBot", category: "AI Crawler" },
+  { pattern: /chatgpt-user/i, name: "ChatGPT User Agent", category: "AI Crawler" },
+  { pattern: /oai-searchbot/i, name: "OpenAI SearchBot", category: "AI Crawler" },
+  { pattern: /claudebot|claude-web|anthropic-ai/i, name: "Anthropic ClaudeBot", category: "AI Crawler" },
+  { pattern: /perplexitybot/i, name: "PerplexityBot", category: "AI Crawler" },
+  { pattern: /ccbot/i, name: "Common Crawl Bot", category: "AI Crawler" },
+  { pattern: /cohere-ai/i, name: "Cohere AI Crawler", category: "AI Crawler" },
+  { pattern: /diffbot/i, name: "Diffbot AI Extractor", category: "AI Crawler" },
+  { pattern: /omgilibot/i, name: "Omgili AI Scraper", category: "AI Crawler" },
+  { pattern: /meta-externalagent/i, name: "Meta AI External Agent", category: "AI Crawler" },
+  { pattern: /google-extended/i, name: "Google-Extended (Gemini)", category: "AI Crawler" },
+
   // Commercial SEO, Content Scrapers & Monitoring Crawlers
   { pattern: /ahrefs(bot|siteaudit)/i, name: "AhrefsBot", category: "SEO Scraper" },
   { pattern: /semrush(bot|audit)/i, name: "SemrushBot", category: "SEO Scraper" },
@@ -133,6 +146,8 @@ const DATACENTER_ISP_PATTERNS: Array<{ pattern: RegExp; provider: string }> = [
   { pattern: /hostwinds/i, provider: "Hostwinds" },
 ];
 
+export type CrawlerType = 'search_engine' | 'ai_crawler' | 'social_preview' | 'malicious_bot' | 'none';
+
 /**
  * Checks whether a User-Agent matches known search engine crawlers, SEO tools,
  * security scanners, or automated headless browsers.
@@ -141,6 +156,7 @@ export function checkCrawlerUserAgent(userAgent: string | undefined | null): {
   isBot: boolean;
   name?: string;
   category?: string;
+  crawlerType: CrawlerType;
   patternMatched?: string;
 } {
   if (!userAgent || userAgent.trim() === "") {
@@ -148,6 +164,7 @@ export function checkCrawlerUserAgent(userAgent: string | undefined | null): {
       isBot: true,
       name: "Empty User Agent",
       category: "Automated Tool",
+      crawlerType: "malicious_bot",
       patternMatched: "Missing User-Agent Header",
     };
   }
@@ -156,10 +173,20 @@ export function checkCrawlerUserAgent(userAgent: string | undefined | null): {
 
   for (const item of KNOWN_CRAWLER_PATTERNS) {
     if (item.pattern.test(cleanUA)) {
+      let crawlerType: CrawlerType = 'malicious_bot';
+      if (item.category === "Search Engine Crawler" || item.category === "Ad Crawler") {
+        crawlerType = 'search_engine';
+      } else if (item.category === "AI Crawler") {
+        crawlerType = 'ai_crawler';
+      } else if (item.category === "Social Preview Bot") {
+        crawlerType = 'social_preview';
+      }
+
       return {
         isBot: true,
         name: item.name,
         category: item.category,
+        crawlerType,
         patternMatched: item.pattern.toString(),
       };
     }
@@ -181,11 +208,12 @@ export function checkCrawlerUserAgent(userAgent: string | undefined | null): {
       isBot: true,
       name: "Generic Bot / Crawler Signature",
       category: "Automated Robot",
+      crawlerType: "malicious_bot",
       patternMatched: "Generic Bot Keyword",
     };
   }
 
-  return { isBot: false };
+  return { isBot: false, crawlerType: "none" };
 }
 
 /**
@@ -251,10 +279,10 @@ interface VelocityRecord {
 }
 
 const velocityMap = new Map<string, VelocityRecord>();
-const VELOCITY_BURST_LIMIT = 8; // Max requests within 2 seconds
+const VELOCITY_BURST_LIMIT = 4; // Max requests within 2 seconds
 const VELOCITY_BURST_WINDOW_MS = 2000;
-const VELOCITY_RATE_LIMIT = 30; // Max requests within 15 seconds
-const VELOCITY_RATE_WINDOW_MS = 15000;
+const VELOCITY_RATE_LIMIT = 5; // Max requests within 10 seconds (triggers at 5th hit)
+const VELOCITY_RATE_WINDOW_MS = 10000;
 
 export function checkRequestVelocity(clientIp: string): {
   isVelocityExceeded: boolean;
@@ -288,12 +316,12 @@ export function checkRequestVelocity(clientIp: string): {
     };
   }
 
-  // Check 15-second frequency rate limit
-  if (record.timestamps.length > VELOCITY_RATE_LIMIT) {
+  // Check 10-second frequency rate limit (triggers on 5 or more visits within 10 seconds)
+  if (record.timestamps.length >= VELOCITY_RATE_LIMIT) {
     return {
       isVelocityExceeded: true,
       reqCount: record.timestamps.length,
-      reason: `High-frequency scraping velocity (${record.timestamps.length} req / 15s)`,
+      reason: `High-frequency scraping velocity (${record.timestamps.length} req / 10s)`,
     };
   }
 

@@ -18,7 +18,9 @@ import {
   Building2,
   Bell,
   SlidersHorizontal,
-  MoreVertical
+  MoreVertical,
+  BookOpen,
+  ExternalLink
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { computeEffectiveAccountStatus } from "@shared/subscription";
@@ -97,7 +99,7 @@ export function UserSidebar({
             <div 
               className="w-9 h-9 rounded-xl bg-[#064E3B] border border-[#047857] flex items-center justify-center text-white shadow-xs shrink-0 cursor-pointer transition-transform hover:scale-105"
               onClick={onToggleCollapse}
-              title={isCollapsed ? "Expand sidebar" : "CleanTraffic Cloak Portal"}
+              title={isCollapsed ? "Expand sidebar" : "CleanTraffic Security Portal"}
             >
               <ShieldCheck className="h-5 w-5 text-emerald-400" />
             </div>
@@ -235,6 +237,34 @@ export function UserSidebar({
               </div>
             );
           })}
+
+          {/* Dedicated Documentation Link */}
+          <div className="pt-2 mt-2 border-t border-slate-100">
+            <a
+              href="/docs"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`flex items-center gap-3 w-full px-3 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:text-[#0A5C48] hover:bg-emerald-50/60 transition-all group relative ${
+                isCollapsed ? "justify-center px-2" : ""
+              }`}
+            >
+              <div className="relative shrink-0">
+                <BookOpen className="h-4 w-4 text-slate-500 group-hover:text-[#0A5C48] transition-colors" />
+              </div>
+              {!isCollapsed && (
+                <>
+                  <span className="flex-1 truncate font-medium">Documentation</span>
+                  <ExternalLink className="h-3 w-3 text-slate-400 group-hover:text-[#0A5C48] transition-colors shrink-0" />
+                </>
+              )}
+            </a>
+            {isCollapsed && (
+              <div className="hidden lg:group-hover:flex absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2.5 py-1.5 bg-slate-900 text-white text-xs font-semibold rounded-md shadow-xl z-50 whitespace-nowrap items-center gap-2 pointer-events-none animate-in fade-in-50 zoom-in-95 duration-150">
+                <span>Documentation</span>
+                <div className="absolute top-1/2 -left-1 -translate-y-1/2 border-4 border-transparent border-r-slate-900" />
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Usage Meter Widget (Live API Key Usage & Quota Tracker) */}

@@ -162,9 +162,9 @@ export function computeEffectiveAccountStatus(user: {
       trialDaysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
     }
   } else if (rawStatus === 'trialing') {
-    // If no trial end date set but status is trialing, treat as expired to prevent infinite trial loop
-    trialDaysRemaining = 0;
-    hasTrialExpiredByDate = true;
+    // If no trial end date set but status is trialing, provide standard 14-day window rather than immediate expiry
+    trialDaysRemaining = 14;
+    hasTrialExpiredByDate = false;
   }
 
   // 3. ACTIVE PAID SUBSCRIPTION (Upgraded by user or administrator)

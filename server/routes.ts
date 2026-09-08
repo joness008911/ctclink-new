@@ -84,6 +84,7 @@ import session from "express-session";
 import createMemoryStore from "memorystore";
 const MemoryStore = createMemoryStore(session);
 import { insertClassificationSchema, type ClientUser, computeEffectiveAccountStatus, normalizeTier, getTierCallLimit, type AccountStatusSummary } from "@shared/schema";
+import { authorizeApiKey, syncClientUserSubscription, getEntitlementType, type AuthorizationResult } from "./authorizationService";
 import { UAParser } from "ua-parser-js";
 import path from "path";
 import fs from "fs";
@@ -649,87 +650,7 @@ Disallow: /*`);
     }
   }
 
-  /**
-   * Authoritative helper that ensures user subscription status and API-key state are synchronized
-   * with current database records and time:
-   * 1. Re-fetches freshest client user record directly from storage to prevent stale in-memory state.
-   * 2. Checks trial expiration against real time (Date.now()) and persists 'trial_expired' if passed.
-   * 3. Computes comprehensive statusSummary (isActive, isPaidActive, isTrialExpired, etc.).
-   * 4. Ensures the user's API key state matches:
-   *    - If active paid or valid trial: re-activates API key (even if previously marked expired),
-   *      clears stale trial expiresAt, and updates call limit to current tier limit.
-   *    - If inactive/expired: updates API key status to 'expired'.
-   */
-  async function syncClientUserSubscription(user: ClientUser): Promise<{ user: ClientUser; statusSummary: AccountStatusSummary }> {
-    let activeUser = (await storage.getClientUser(user.id)) || user;
-    const now = new Date();
-
-    const isTrialing = (activeUser.subscriptionStatus || 'trialing').toLowerCase().trim() === 'trialing';
-    let hasExpiredTrialDate = false;
-
-    if (activeUser.trialEndsAt) {
-      const trialDate = activeUser.trialEndsAt instanceof Date ? activeUser.trialEndsAt : new Date(activeUser.trialEndsAt);
-      if (!isNaN(trialDate.getTime()) && trialDate.getTime() <= now.getTime()) {
-        hasExpiredTrialDate = true;
-      }
-    } else if (isTrialing) {
-      // If trialing but trialEndsAt is null or missing, it is expired to prevent unbounded trial
-      hasExpiredTrialDate = true;
-    }
-
-    if (isTrialing && hasExpiredTrialDate) {
-      try {
-        const updated = await storage.updateClientUser(activeUser.id, {
-          subscriptionStatus: 'trial_expired',
-        });
-        if (updated) {
-          activeUser = updated;
-          console.log(`[SUBSCRIPTION_SYNC] Automatically transitioned expired trial user ${activeUser.username} (${activeUser.id}) to 'trial_expired'`);
-        }
-      } catch (err) {
-        console.error(`[SUBSCRIPTION_SYNC] Error updating expired status for user ${activeUser.id}:`, err);
-        activeUser = { ...activeUser, subscriptionStatus: 'trial_expired' };
-      }
-    }
-
-    const statusSummary = computeEffectiveAccountStatus(activeUser);
-
-    // Keep API key status and call limit authoritatively aligned with account state
-    if (activeUser.apiKeyId) {
-      try {
-        const apiKey = (await storage.getApiKeyById(activeUser.apiKeyId)) || (await storage.getApiKey(activeUser.apiKeyId));
-        if (apiKey) {
-          if (statusSummary.isActive) {
-            const isStaleExpired = apiKey.status === 'expired';
-            const isStaleExpiresAt = statusSummary.isPaidActive && apiKey.expiresAt !== null;
-            const isStaleCallLimit = (apiKey.callLimit || 0) < statusSummary.callLimit;
-
-            if (isStaleExpired || isStaleExpiresAt || isStaleCallLimit) {
-              await storage.updateApiKey(apiKey.id, {
-                status: 'active',
-                expiresAt: statusSummary.isPaidActive ? null : (activeUser.trialEndsAt ? new Date(activeUser.trialEndsAt) : null),
-                callLimit: statusSummary.callLimit,
-                updatedAt: new Date(),
-              });
-              console.log(`[SUBSCRIPTION_SYNC] Re-activated API key ${apiKey.id} for active account ${activeUser.username} (tier: ${statusSummary.tier}, status: ${statusSummary.status})`);
-            }
-          } else {
-            if (apiKey.status === 'active') {
-              await storage.updateApiKey(apiKey.id, {
-                status: 'expired',
-                updatedAt: new Date(),
-              });
-              console.log(`[SUBSCRIPTION_SYNC] Expired API key ${apiKey.id} for inactive account ${activeUser.username} (status: ${statusSummary.status})`);
-            }
-          }
-        }
-      } catch (err) {
-        console.error(`[SUBSCRIPTION_SYNC] Error synchronizing API key for user ${activeUser.id}:`, err);
-      }
-    }
-
-    return { user: activeUser, statusSummary };
-  }
+  // syncClientUserSubscription is authoritatively imported from ./authorizationService
 
   // ---- Auth request schemas ----
   const loginSchema = z.object({
@@ -2149,7 +2070,10 @@ Disallow: /*`);
         blockTor,
         fingerprintActivate,
         wildcardSubdomains,
-        allowVpn 
+        allowVpn,
+        allowSearchCrawlers,
+        blockAiCrawlers,
+        allowSocialPreviews
       } = req.body;
       
       if (!humanUrl || !botUrl) {
@@ -2253,8 +2177,12 @@ Disallow: /*`);
       const effectiveBlockVpn = blockVpn === "allow" ? "allow" : (blockVpn === "block" ? "block" : (allowVpn ? "allow" : "block"));
       const effectiveAllowVpn = effectiveBlockVpn === "allow";
 
+      const formattedAllowSearchCrawlers = allowSearchCrawlers === "block" ? "block" : "allow";
+      const formattedBlockAiCrawlers = blockAiCrawlers === "allow" ? "allow" : "block";
+      const formattedAllowSocialPreviews = allowSocialPreviews === "block" ? "block" : "allow";
+
       // Log URL update for compliance audit trail
-      console.log(`[COMPLIANCE] User ${userId} updated routing rules: human=${parsedHuman.hostname} bot=${normalizedBotUrl} allowedCountries=${formattedAllowedCountries} allowedDevices=${formattedAllowedDevices} desktopOs=${formattedDesktopOsFilter} blockVpn=${effectiveBlockVpn}`);
+      console.log(`[COMPLIANCE] User ${userId} updated routing rules: human=${parsedHuman.hostname} bot=${normalizedBotUrl} allowedCountries=${formattedAllowedCountries} allowedDevices=${formattedAllowedDevices} desktopOs=${formattedDesktopOsFilter} blockVpn=${effectiveBlockVpn} searchCrawlers=${formattedAllowSearchCrawlers} aiCrawlers=${formattedBlockAiCrawlers} socialPreviews=${formattedAllowSocialPreviews}`);
 
       const updated = await storage.setUserRedirectUrls(userId, { 
         humanUrl, 
@@ -2267,7 +2195,10 @@ Disallow: /*`);
         blockTor: blockTor || "block",
         fingerprintActivate: fingerprintActivate || "enabled",
         wildcardSubdomains: wildcardSubdomains || "disabled",
-        allowVpn: effectiveAllowVpn
+        allowVpn: effectiveAllowVpn,
+        allowSearchCrawlers: formattedAllowSearchCrawlers,
+        blockAiCrawlers: formattedBlockAiCrawlers,
+        allowSocialPreviews: formattedAllowSocialPreviews
       });
       res.json(updated);
     } catch (error) {
@@ -2473,14 +2404,42 @@ Disallow: /*`);
   // Get client user's full API key value (for PHP script generation)
   app.get("/api/user/api-key-value", requireClientAuth, async (req: any, res) => {
     try {
-      const user = await storage.getClientUser(req.session.clientUserId);
-      if (!user || !user.apiKeyId) {
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId || (req as any).clientUserId;
+      if (!userId) {
         return res.json({ keyValue: null });
       }
 
-      const apiKey = await storage.getApiKeyById(user.apiKeyId);
-      if (!apiKey) {
+      let user = await storage.getClientUser(userId);
+      if (!user) {
         return res.json({ keyValue: null });
+      }
+
+      let apiKey = user.apiKeyId
+        ? ((await storage.getApiKeyById(user.apiKeyId)) || (await storage.getApiKey(user.apiKeyId)))
+        : null;
+
+      // Auto-provision if missing
+      if (!apiKey) {
+        const { user: syncedUser, statusSummary } = await syncClientUserSubscription(user);
+        user = syncedUser;
+        apiKey = user.apiKeyId
+          ? ((await storage.getApiKeyById(user.apiKeyId)) || (await storage.getApiKey(user.apiKeyId)))
+          : null;
+
+        if (!apiKey) {
+          const keyVal = "ctc_" + randomBytes(20).toString("hex");
+          const createdKey = await storage.createApiKey({
+            keyName: `User - ${user.username}`,
+            keyValue: keyVal,
+            callLimit: statusSummary.callLimit,
+            expirationPeriod: statusSummary.isPaidActive ? "unlimited" : "weekly",
+            status: statusSummary.isActive ? "active" : "expired",
+            expiresAt: statusSummary.isPaidActive ? null : (user.trialEndsAt ? new Date(user.trialEndsAt) : null),
+          });
+          await storage.updateClientUser(user.id, { apiKeyId: createdKey.id, updatedAt: new Date() });
+          apiKey = createdKey;
+        }
       }
 
       // Return full key value (user needs this for PHP script)
@@ -2502,6 +2461,50 @@ Disallow: /*`);
       const syncedUsers = await Promise.all(
         rawUsers.map(async (u) => {
           const { user, statusSummary } = await syncClientUserSubscription(u);
+          const entitlementType = getEntitlementType(user, statusSummary);
+
+          // Get linked API key details
+          let apiKeyInfo: any = null;
+          if (user.apiKeyId) {
+            const k = (await storage.getApiKeyById(user.apiKeyId)) || (await storage.getApiKey(user.apiKeyId));
+            if (k) {
+              apiKeyInfo = {
+                id: k.id,
+                keyName: k.keyName,
+                keyValue: k.keyValue ? `${k.keyValue.slice(0, 8)}...${k.keyValue.slice(-4)}` : null,
+                status: k.status,
+                enabled: k.enabled,
+                callCount: k.callCount || 0,
+                callLimit: k.callLimit || 0,
+                expiresAt: k.expiresAt,
+                lastUsed: k.lastUsed,
+              };
+            }
+          }
+
+          // Authoritative authorization check for this user
+          let isAuthorized = false;
+          let authReason = "";
+          if (user.status === 'suspended' || user.complianceStatus === 'suspended') {
+            isAuthorized = false;
+            authReason = "Account or compliance suspended";
+          } else if (user.status === 'inactive' || user.status === 'deactivated') {
+            isAuthorized = false;
+            authReason = "Account deactivated";
+          } else if (!statusSummary.isActive) {
+            isAuthorized = false;
+            authReason = statusSummary.isTrialExpired ? "Trial expired" : (statusSummary.statusLabel || "Subscription inactive");
+          } else if (!apiKeyInfo) {
+            isAuthorized = false;
+            authReason = "No API key linked";
+          } else if (apiKeyInfo.status !== 'active' && apiKeyInfo.status !== 'expired') {
+            isAuthorized = false;
+            authReason = `API key ${apiKeyInfo.status}`;
+          } else {
+            isAuthorized = true;
+            authReason = `Authorized (${entitlementType === 'admin_promoted' ? 'Admin Promoted' : entitlementType === 'stripe_paid' ? 'Stripe Paid' : 'Trial'})`;
+          }
+
           return {
             ...user,
             subscriptionStatus: statusSummary.status,
@@ -2513,12 +2516,63 @@ Disallow: /*`);
             isTrial: statusSummary.isTrial,
             isTrialExpired: statusSummary.isTrialExpired,
             isExpiringSoon: statusSummary.isExpiringSoon,
+            entitlementType,
+            apiKey: apiKeyInfo,
+            isAuthorized,
+            authReason,
           };
         })
       );
       res.json(syncedUsers);
     } catch (error) {
       console.error("Get client users error:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Provision or regenerate an API key for a client user (Admin only)
+  app.post("/api/interface/client-users/:id/api-key", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await storage.getClientUser(id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      const { user: syncedUser, statusSummary } = await syncClientUserSubscription(user);
+      const keyVal = "ctc_" + randomBytes(20).toString("hex");
+      const createdKey = await storage.createApiKey({
+        keyName: `User - ${syncedUser.username}`,
+        keyValue: keyVal,
+        callLimit: statusSummary.callLimit,
+        expirationPeriod: statusSummary.isPaidActive ? "unlimited" : "weekly",
+        status: statusSummary.isActive ? "active" : "expired",
+        expiresAt: statusSummary.isPaidActive ? null : (syncedUser.trialEndsAt ? new Date(syncedUser.trialEndsAt) : null),
+      });
+
+      await storage.updateClientUser(syncedUser.id, { apiKeyId: createdKey.id, updatedAt: new Date() });
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: "client_user.api_key_provisioned",
+        targetId: createdKey.id,
+        targetType: "api_key",
+        metadata: { userId: syncedUser.id, username: syncedUser.username },
+      });
+
+      res.json({
+        success: true,
+        message: "API key provisioned successfully",
+        apiKey: {
+          id: createdKey.id,
+          keyName: createdKey.keyName,
+          keyValue: createdKey.keyValue,
+          status: createdKey.status,
+        },
+      });
+    } catch (error) {
+      console.error("Admin provision API key error:", error);
       res.status(500).json({ message: "Internal server error" });
     }
   });
@@ -2799,7 +2853,7 @@ Disallow: /*`);
     user: z.string().trim(),
     pass: z.string().optional(),
     from: z.string().email("Invalid sender email address").trim(),
-    fromName: z.string().trim().default("CleanTraffic Cloak"),
+    fromName: z.string().trim().default("CleanTraffic Security"),
     providerPreset: z.string().default("custom"),
   });
 
@@ -2876,10 +2930,10 @@ Disallow: /*`);
       if (testData.testRecipient) {
         const sendResult = await sendEmail({
           to: testData.testRecipient,
-          subject: "CleanTraffic Cloak - SMTP Connection Test",
+          subject: "CleanTraffic Security - SMTP Connection Test",
           html: `<div style="font-family:sans-serif; background:#0b0f19; color:#f8fafc; padding:32px; border-radius:12px;">
             <h2 style="color:#38bdf8; margin-top:0;">✅ SMTP Integration Verified!</h2>
-            <p>Congratulations! Your SMTP settings on CleanTraffic Cloak are functioning properly.</p>
+            <p>Congratulations! Your SMTP settings on CleanTraffic Security are functioning properly.</p>
             <p style="color:#94a3b8; font-size:13px;">Sent at: ${new Date().toUTCString()}</p>
           </div>`,
           templateType: "test_connection",
@@ -2971,12 +3025,12 @@ Disallow: /*`);
         code: "839201",
         verification_link: "https://cleantraffic.io/verify-email?token=ct_demo_preview_token",
         reset_link: "https://cleantraffic.io/signin",
-        app_name: "CleanTraffic Cloak",
+        app_name: "CleanTraffic Security",
         support_email: "support@cleantraffic.io",
         current_year: String(new Date().getFullYear()),
         login_link: "https://cleantraffic.io/signin",
         api_key: "ctc_9f83a210c44e9912",
-        custom_message: `<p>We are rolling out new residential bot cloaking algorithms. Your traffic filters have automatically been updated with zero downtime.</p>`,
+        custom_message: `<p>We are rolling out enhanced bot detection and threat analysis algorithms. Your traffic security filters have automatically been updated with zero downtime.</p>`,
         ...sampleVars,
       };
 
@@ -3397,188 +3451,17 @@ Disallow: /*`);
     message: string;
     apiKeyId: string | null;
     limitReached: boolean;
+    entitlementType?: string;
   }> {
-    if (!apiKey || !apiKey.trim()) {
-      return {
-        valid: false,
-        statusCode: 401,
-        code: "INVALID_API_KEY",
-        message: "API key is required. Please provide a valid API key.",
-        apiKeyId: null,
-        limitReached: false,
-      };
-    }
-
-    const cleanKey = apiKey.trim();
-    const validKey = (await storage.getApiKey(cleanKey)) || (await storage.getApiKeyById(cleanKey));
-
-    if (!validKey) {
-      return {
-        valid: false,
-        statusCode: 401,
-        code: "INVALID_API_KEY",
-        message: "Invalid API key. The provided key was not found or has been deleted.",
-        apiKeyId: null,
-        limitReached: false,
-      };
-    }
-
-    if (validKey.enabled === false || validKey.status === "disabled") {
-      return {
-        valid: false,
-        statusCode: 403,
-        code: "API_KEY_REVOKED",
-        message: "API key has been disabled by the resource owner.",
-        apiKeyId: validKey.id,
-        limitReached: true,
-      };
-    }
-
-    if (validKey.status === "revoked") {
-      return {
-        valid: false,
-        statusCode: 403,
-        code: "API_KEY_REVOKED",
-        message: "API key has been revoked by the resource owner.",
-        apiKeyId: validKey.id,
-        limitReached: true,
-      };
-    }
-
-    if (validKey.status === "paused") {
-      return {
-        valid: false,
-        statusCode: 403,
-        code: "API_KEY_PAUSED",
-        message: "API key is currently paused in the dashboard.",
-        apiKeyId: validKey.id,
-        limitReached: true,
-      };
-    }
-
-    // Identify the user associated with this API key
-    const keyOwner = await storage.getClientUserByApiKey(validKey.id);
-    if (!keyOwner) {
-      // Scenario: Account deleted, deactivated, or missing
-      return {
-        valid: false,
-        statusCode: 403,
-        code: "ACCOUNT_DEACTIVATED",
-        message: "Account associated with this API key no longer exists or has been deactivated.",
-        apiKeyId: validKey.id,
-        limitReached: true,
-      };
-    }
-
-    // Authoritatively check account-level states
-    if (keyOwner.status === 'suspended' || keyOwner.complianceStatus === 'suspended') {
-      return {
-        valid: false,
-        statusCode: 403,
-        code: "ACCOUNT_SUSPENDED",
-        message: "Account has been suspended. Please contact support.",
-        apiKeyId: validKey.id,
-        limitReached: true,
-      };
-    }
-
-    if (keyOwner.status === 'inactive' || keyOwner.status === 'deactivated' || keyOwner.status === 'deleted') {
-      return {
-        valid: false,
-        statusCode: 403,
-        code: "ACCOUNT_DEACTIVATED",
-        message: "Account has been deactivated. Please contact support.",
-        apiKeyId: validKey.id,
-        limitReached: true,
-      };
-    }
-
-    // Retrieve current authoritative account status and subscription state from database records
-    const { user: syncedUser, statusSummary } = await syncClientUserSubscription(keyOwner);
-
-    // Re-validate API key authorization against the current subscription tier and state
-    if (statusSummary.isActive) {
-      // User has upgraded or is currently active!
-      // If the API key was previously marked expired, re-activate it immediately so it is not treated as expired
-      if (validKey.status === "expired" || (statusSummary.isPaidActive && validKey.expiresAt !== null)) {
-        await storage.updateApiKey(validKey.id, {
-          status: "active",
-          expiresAt: statusSummary.isPaidActive ? null : (syncedUser.trialEndsAt ? new Date(syncedUser.trialEndsAt) : null),
-          callLimit: statusSummary.callLimit,
-          updatedAt: new Date(),
-        });
-        validKey.status = "active";
-        validKey.expiresAt = statusSummary.isPaidActive ? null : validKey.expiresAt;
-        validKey.callLimit = statusSummary.callLimit;
-      }
-    } else {
-      // Account is not active. Authoritatively determine which state applies and return the exact required response
-      if (statusSummary.isTrialExpired) {
-        if (validKey.status !== "expired") {
-          await storage.updateApiKey(validKey.id, { status: "expired" });
-        }
-        return {
-          valid: false,
-          statusCode: 403,
-          code: "API_KEY_EXPIRED",
-          message: "API key has expired. Please renew your subscription in the dashboard.",
-          apiKeyId: validKey.id,
-          limitReached: true,
-        };
-      }
-
-      if (statusSummary.isPaidExpired) {
-        if (validKey.status !== "expired") {
-          await storage.updateApiKey(validKey.id, { status: "expired" });
-        }
-        return {
-          valid: false,
-          statusCode: 403,
-          code: "API_KEY_EXPIRED",
-          message: "Paid subscription has expired. Please renew your subscription in the dashboard to resume API calls.",
-          apiKeyId: validKey.id,
-          limitReached: true,
-        };
-      }
-
-      if (statusSummary.isCancelled) {
-        if (validKey.status !== "expired") {
-          await storage.updateApiKey(validKey.id, { status: "expired" });
-        }
-        return {
-          valid: false,
-          statusCode: 403,
-          code: "API_KEY_EXPIRED",
-          message: "Subscription has been cancelled. Please reactivate your subscription in the dashboard to resume API calls.",
-          apiKeyId: validKey.id,
-          limitReached: true,
-        };
-      }
-
-      return {
-        valid: false,
-        statusCode: 403,
-        code: "API_KEY_EXPIRED",
-        message: statusSummary.rejectionReason || "Account subscription is inactive. Please upgrade or renew your subscription in the dashboard to resume API calls.",
-        apiKeyId: validKey.id,
-        limitReached: true,
-      };
-    }
-
-    let limitReached = false;
-    // Increment usage quota
-    const usageAllowed = await storage.incrementApiKeyUsage(cleanKey);
-    if (!usageAllowed) {
-      limitReached = true;
-    }
-
+    const authRes = await authorizeApiKey(apiKey);
     return {
-      valid: true,
-      statusCode: 200,
-      code: "OK",
-      message: "Authorized",
-      apiKeyId: validKey.id,
-      limitReached,
+      valid: authRes.authorized,
+      statusCode: authRes.statusCode,
+      code: authRes.code,
+      message: authRes.message,
+      apiKeyId: authRes.apiKeyId,
+      limitReached: authRes.limitReached,
+      entitlementType: authRes.entitlementType,
     };
   }
 
@@ -3588,6 +3471,18 @@ Disallow: /*`);
     const authResult = await validateApiKeyForClassification(apiKey);
 
     if (!authResult.valid) {
+      void auditLog({
+        actorType: "system",
+        action: "classification.auth_denied",
+        targetId: authResult.apiKeyId,
+        targetType: "api_key",
+        metadata: {
+          code: authResult.code,
+          statusCode: authResult.statusCode,
+          ip: (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress,
+        },
+      });
+
       return res.status(authResult.statusCode).json({
         visitorType: "Bot",
         visitor_type: "Bot",
@@ -3613,6 +3508,18 @@ Disallow: /*`);
     const authResult = await validateApiKeyForClassification(apiKey);
 
     if (!authResult.valid) {
+      void auditLog({
+        actorType: "system",
+        action: "classification.auth_denied",
+        targetId: authResult.apiKeyId,
+        targetType: "api_key",
+        metadata: {
+          code: authResult.code,
+          statusCode: authResult.statusCode,
+          ip: (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress,
+        },
+      });
+
       return res.status(authResult.statusCode).json({
         visitorType: "Bot",
         visitor_type: "Bot",
@@ -4022,6 +3929,9 @@ Disallow: /*`);
       let ownerFingerprintActivate: string = "enabled";
       let ownerWildcardSubdomains: string = "disabled";
       let ownerAllowVpn: boolean = false;
+      let ownerAllowSearchCrawlers: string = "allow";
+      let ownerBlockAiCrawlers: string = "block";
+      let ownerAllowSocialPreviews: string = "allow";
 
       if (apiKeyId) {
         try {
@@ -4050,6 +3960,9 @@ Disallow: /*`);
               ownerFingerprintActivate = redirectUrls.fingerprintActivate || "enabled";
               ownerWildcardSubdomains = redirectUrls.wildcardSubdomains || "disabled";
               ownerAllowVpn = ownerBlockVpn === "allow";
+              ownerAllowSearchCrawlers = redirectUrls.allowSearchCrawlers || "allow";
+              ownerBlockAiCrawlers = redirectUrls.blockAiCrawlers || "block";
+              ownerAllowSocialPreviews = redirectUrls.allowSocialPreviews || "allow";
             }
           }
         } catch (urlErr) {
@@ -4079,11 +3992,50 @@ Disallow: /*`);
         
         // TIER 1: MONPERRUS CRAWLER DATABASE & BAD BOT SIGNATURES (Pre-database check)
         const crawlerCheck = checkCrawlerUserAgent(userAgent);
+        let isAllowedCrawler = false;
         if (visitorType !== 'Bot' && crawlerCheck.isBot) {
-          visitorType = 'Bot';
-          detectionMethod = crawlerCheck.category || 'Monperrus Crawler Signature';
-          blockReason = `${crawlerCheck.name || 'Bot'} detected (${crawlerCheck.patternMatched || 'Signature'})`;
-          console.log(`🚫 BLOCKED (Tier 1 - Crawler Database): ${clientIp} - ${crawlerCheck.name} [${userAgent.substring(0, 40)}]`);
+          if (crawlerCheck.crawlerType === 'search_engine') {
+            if (ownerAllowSearchCrawlers === 'allow') {
+              visitorType = 'Human';
+              detectionMethod = 'Verified Search Indexer (SEO)';
+              isAllowedCrawler = true;
+              console.log(`✅ ALLOWED (Search Engine Indexer): ${clientIp} - ${crawlerCheck.name} allowed per owner SEO policy`);
+            } else {
+              visitorType = 'Bot';
+              detectionMethod = crawlerCheck.category || 'Search Engine Crawler';
+              blockReason = `${crawlerCheck.name || 'Search Crawler'} blocked by user SEO crawler policy`;
+              console.log(`🚫 BLOCKED (Tier 1 - Search Crawler Policy): ${clientIp} - ${crawlerCheck.name}`);
+            }
+          } else if (crawlerCheck.crawlerType === 'ai_crawler') {
+            if (ownerBlockAiCrawlers === 'allow') {
+              visitorType = 'Human';
+              detectionMethod = 'Authorized AI Crawler';
+              isAllowedCrawler = true;
+              console.log(`✅ ALLOWED (AI Crawler): ${clientIp} - ${crawlerCheck.name} permitted per owner policy`);
+            } else {
+              visitorType = 'Bot';
+              detectionMethod = crawlerCheck.category || 'AI Crawler';
+              blockReason = `${crawlerCheck.name || 'AI Crawler'} blocked by user AI scraping policy`;
+              console.log(`🚫 BLOCKED (Tier 1 - AI Scraper Policy): ${clientIp} - ${crawlerCheck.name}`);
+            }
+          } else if (crawlerCheck.crawlerType === 'social_preview') {
+            if (ownerAllowSocialPreviews === 'allow') {
+              visitorType = 'Human';
+              detectionMethod = 'Social Media Link Preview';
+              isAllowedCrawler = true;
+              console.log(`✅ ALLOWED (Social Preview): ${clientIp} - ${crawlerCheck.name} allowed for link preview`);
+            } else {
+              visitorType = 'Bot';
+              detectionMethod = crawlerCheck.category || 'Social Preview Bot';
+              blockReason = `${crawlerCheck.name || 'Social Preview Bot'} blocked by user social preview policy`;
+              console.log(`🚫 BLOCKED (Tier 1 - Social Preview Policy): ${clientIp} - ${crawlerCheck.name}`);
+            }
+          } else {
+            visitorType = 'Bot';
+            detectionMethod = crawlerCheck.category || 'Monperrus Crawler Signature';
+            blockReason = `${crawlerCheck.name || 'Bot'} detected (${crawlerCheck.patternMatched || 'Signature'})`;
+            console.log(`🚫 BLOCKED (Tier 1 - Crawler Database): ${clientIp} - ${crawlerCheck.name} [${userAgent.substring(0, 40)}]`);
+          }
         }
 
         // TIER 1B: HIGH-FREQUENCY REQUEST VELOCITY ANOMALY (Intercepts automated scrapers on clean residential IPs)
@@ -4143,7 +4095,8 @@ Disallow: /*`);
         }
 
         // TIER 2: USER DEVICE & OS ROUTING RULES (100% Local evaluation from User-Agent - ZERO external IP2 calls)
-        if (visitorType !== 'Bot' && ownerAllowedDevices && ownerAllowedDevices !== 'all') {
+        // Note: Allowed crawlers & search indexers bypass interactive device filters so indexing works reliably
+        if (visitorType !== 'Bot' && !isAllowedCrawler && ownerAllowedDevices && ownerAllowedDevices !== 'all') {
           const lowerDevice = (deviceType || '').toLowerCase();
           if (ownerAllowedDevices === 'desktop') {
             if (lowerDevice !== 'desktop') {
@@ -4228,7 +4181,8 @@ Disallow: /*`);
           const usageType = classificationData.usage_type || '';
 
           // TIER 3A: USER GEO-FENCING RULES (User-defined allowed countries evaluated first)
-          if (visitorType !== 'Bot' && ownerAllowedCountries.length > 0) {
+          // Note: Allowed search crawlers & social preview bots are exempted from localized geo-fencing so global SEO/sharing works
+          if (visitorType !== 'Bot' && !isAllowedCrawler && ownerAllowedCountries.length > 0) {
             if (countryCode && ownerAllowedCountries.includes(countryCode)) {
               // Country is explicitly permitted by user
               console.log(`✅ GEO-FENCING PASS: ${clientIp} country ${countryCode} is in user's allowed list [${ownerAllowedCountries.join(', ')}]`);
@@ -4239,7 +4193,7 @@ Disallow: /*`);
               blockReason = `Country ${countryCode || 'Unknown'} is not in your allowed countries (${ownerAllowedCountries.join(', ')})`;
               console.log(`🚫 BLOCKED (Tier 3A - User Geo-Fencing): ${clientIp} (${countryCode || 'Unknown'}) not in [${ownerAllowedCountries.join(', ')}]`);
             }
-          } else if (visitorType !== 'Bot') {
+          } else if (visitorType !== 'Bot' && !isAllowedCrawler) {
             // Fallback to system-wide country whitelist if configured
             const systemCountryWhitelist = await storage.getCountryWhitelist();
             const enabledCountries = systemCountryWhitelist.filter(c => c.enabled !== false);
@@ -4270,14 +4224,14 @@ Disallow: /*`);
             proxyDetailsForDch.is_consumer_privacy_network
           );
 
-          if (visitorType !== 'Bot' && ownerBlockDatacenter !== 'allow' && !(ownerAllowVpn && isKnownVpnCandidate) && datacenterAsnCheck.isDatacenter) {
+          if (visitorType !== 'Bot' && !isAllowedCrawler && ownerBlockDatacenter !== 'allow' && !(ownerAllowVpn && isKnownVpnCandidate) && datacenterAsnCheck.isDatacenter) {
             visitorType = 'Bot';
             detectionMethod = 'Datacenter Cloud ASN';
             blockReason = `Cloud/Datacenter provider detected: ${datacenterAsnCheck.provider}`;
             console.log(`🚫 BLOCKED (Tier 3B - Datacenter ASN): ${clientIp} - ${datacenterAsnCheck.provider}`);
           }
 
-          if (visitorType !== 'Bot' && ownerBlockDatacenter !== 'allow' && !(ownerAllowVpn && isKnownVpnCandidate) && (usageType === 'DCH' || classificationData.proxy_data?.is_data_center)) {
+          if (visitorType !== 'Bot' && !isAllowedCrawler && ownerBlockDatacenter !== 'allow' && !(ownerAllowVpn && isKnownVpnCandidate) && (usageType === 'DCH' || classificationData.proxy_data?.is_data_center)) {
             visitorType = 'Bot';
             detectionMethod = 'Datacenter Hosting (DCH)';
             blockReason = 'Datacenter hosting facility IP detected';
@@ -4286,14 +4240,20 @@ Disallow: /*`);
 
           // TIER 3C: SEARCH ENGINE SPIDER (SES) USAGE TYPE PRE-SCREENING
           if (visitorType !== 'Bot' && usageType === 'SES') {
-            visitorType = 'Bot';
-            detectionMethod = 'Search Engine Spider (SES)';
-            blockReason = 'Search engine spider network address identified by IP intelligence';
-            console.log(`🚫 BLOCKED (Tier 3C - SES Usage Type): ${clientIp}`);
+            if (ownerAllowSearchCrawlers === 'allow') {
+              visitorType = 'Human';
+              detectionMethod = 'Verified Search Indexer (SES)';
+              console.log(`✅ ALLOWED (Tier 3C - SES Allowed per SEO Policy): ${clientIp}`);
+            } else {
+              visitorType = 'Bot';
+              detectionMethod = 'Search Engine Spider (SES)';
+              blockReason = 'Search engine spider network address identified by IP intelligence';
+              console.log(`🚫 BLOCKED (Tier 3C - SES Usage Type): ${clientIp}`);
+            }
           }
 
           // TIER 3D: SYSTEM-WIDE ISP BLACKLIST
-          if (visitorType !== 'Bot' && ispName && ispName !== 'Unknown') {
+          if (visitorType !== 'Bot' && !isAllowedCrawler && ispName && ispName !== 'Unknown') {
             const isBlacklisted = await storage.isIspBlacklisted(ispName);
             if (isBlacklisted) {
               visitorType = 'Bot';
@@ -4348,6 +4308,9 @@ Disallow: /*`);
                 allowVpn: Boolean(ownerAllowVpn),
                 blockDatacenter: (ownerBlockDatacenter as any) || 'block',
                 blockTor: (ownerBlockTor as any) || 'block',
+                allowSearchCrawlers: (ownerAllowSearchCrawlers as any) || 'allow',
+                blockAiCrawlers: (ownerBlockAiCrawlers as any) || 'block',
+                allowSocialPreviews: (ownerAllowSocialPreviews as any) || 'allow',
               },
               datacenterAsnCheck.isDatacenter
             );

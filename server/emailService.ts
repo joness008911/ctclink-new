@@ -120,7 +120,7 @@ export async function getSmtpConfig(): Promise<SmtpConfig> {
   const user = (await storage.getSetting("smtp_user")) || process.env.SMTP_USER || "";
   const pass = (await storage.getSetting("smtp_pass")) || process.env.SMTP_PASS || "";
   const from = (await storage.getSetting("smtp_from")) || process.env.SMTP_FROM || "noreply@cleantraffic.io";
-  const fromName = (await storage.getSetting("smtp_from_name")) || process.env.SMTP_FROM_NAME || "CleanTraffic Cloak";
+  const fromName = (await storage.getSetting("smtp_from_name")) || process.env.SMTP_FROM_NAME || "CleanTraffic Security";
   const providerPreset = (await storage.getSetting("smtp_provider_preset")) || "custom";
 
   // Auto-detect Resend API key shortcut if no SMTP is explicitly configured
@@ -132,7 +132,7 @@ export async function getSmtpConfig(): Promise<SmtpConfig> {
       user: "resend",
       pass: process.env.RESEND_API_KEY,
       from: from || "onboarding@resend.dev",
-      fromName: fromName || "CleanTraffic Cloak",
+      fromName: fromName || "CleanTraffic Security",
       providerPreset: "resend",
     });
   }
@@ -342,12 +342,12 @@ export const defaultEmailTemplates = {
 <body>
   <div class="container">
     <div class="header">
-      <div class="logo">CleanTraffic <span>Cloak</span></div>
+      <div class="logo">CleanTraffic <span>Security</span></div>
     </div>
     <div class="content">
       <h1>Confirm Your Email Address</h1>
       <p>Hello <strong>{{name}}</strong>,</p>
-      <p>Thank you for signing up for CleanTraffic. To activate your 7-day trial and unlock cloaking protection, please confirm your email address using the confirmation button or the 6-digit code below.</p>
+      <p>Thank you for signing up for CleanTraffic. To activate your 7-day trial and unlock full traffic security & bot protection, please confirm your email address using the confirmation button or the 6-digit code below.</p>
       
       <div class="btn-container">
         <a href="{{verification_link}}" class="btn" target="_blank">Verify Email Address</a>
@@ -397,7 +397,7 @@ export const defaultEmailTemplates = {
 <body>
   <div class="container">
     <div class="header">
-      <div class="logo">CleanTraffic <span>Cloak</span></div>
+      <div class="logo">CleanTraffic <span>Security</span></div>
     </div>
     <div class="content">
       <h1>Password Reset Request</h1>
@@ -441,14 +441,14 @@ export const defaultEmailTemplates = {
 <body>
   <div class="container">
     <div class="header">
-      <h2 style="color: #34d399; margin: 0;">CleanTraffic Cloak Enterprise</h2>
+      <h2 style="color: #34d399; margin: 0;">CleanTraffic Enterprise Security</h2>
     </div>
     <div class="content">
       <h1>Welcome Aboard, {{name}}!</h1>
       <p>Your account is ready. Here is what you get during your 7-day free trial:</p>
       <div class="feature-card">
-        <strong style="color: #34d399;">✓ 5,000 Cloaked Requests</strong><br>
-        <span style="font-size: 13px; color: #94a3b8;">High-speed visitor classification, residential bot detection, and cloaking routing.</span>
+        <strong style="color: #34d399;">✓ 5,000 Protected Requests</strong><br>
+        <span style="font-size: 13px; color: #94a3b8;">High-speed visitor classification, automated bot detection, and threat mitigation routing.</span>
       </div>
       <div class="feature-card">
         <strong style="color: #38bdf8;">✓ Real-time Telemetry Dashboard</strong><br>
@@ -484,7 +484,7 @@ export const defaultEmailTemplates = {
 <body>
   <div class="container">
     <div class="header">
-      <div class="logo">CleanTraffic <span style="color: #38bdf8;">Cloak</span></div>
+      <div class="logo">CleanTraffic <span style="color: #38bdf8;">Security</span></div>
     </div>
     <div class="content">
       {{custom_message}}
@@ -559,7 +559,7 @@ export function renderTemplate(
 ): string {
   let rendered = templateHtml;
   const vars: Record<string, string> = {
-    app_name: "CleanTraffic Cloak",
+    app_name: "CleanTraffic Security",
     support_email: "support@cleantraffic.io",
     current_year: String(new Date().getFullYear()),
     login_link: "/signin",
@@ -635,7 +635,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<{
         text: plainText,
         headers: {
           "X-Entity-Ref-ID": randomUUID(),
-          "X-Mailer": "CleanTraffic-Cloak-Mailer",
+          "X-Mailer": "CleanTraffic-Security-Mailer",
         },
       });
     } catch (sendErr: any) {

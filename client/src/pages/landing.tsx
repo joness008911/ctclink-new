@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useLocation } from "wouter";
 import {
   ShieldCheck,
@@ -31,8 +31,9 @@ import {
   Code,
   Play,
   Check,
+  BookOpen,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { LandingDashboardPreview } from "@/components/landing/LandingDashboardPreview";
 
 const marqueeLogos = [
@@ -138,7 +139,7 @@ const resourceFeatures = [
   {
     icon: Ghost,
     title: "VPNs & Proxies",
-    desc: "Detect visitors attempting to conceal their identity or location through VPNs, proxies, Tor networks, and anonymous infrastructure.",
+    desc: "Detect and flag visitors masking their network identity or location through VPNs, proxies, Tor networks, and anonymous infrastructure.",
   },
   {
     icon: Bot,
@@ -193,9 +194,25 @@ const adFeatures = [
   },
 ];
 
+const heroHeadlines = [
+  "Know Every Visitor.",
+  "See Every Bot. Stop Every Threat.",
+  "Real-Time Bot Detection & Protection.",
+  "Know Who’s Human. Detect What Isn’t.",
+  "Smarter Bot Detection. Stronger Security.",
+];
+
 export default function Landing() {
   const [, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [currentHeadlineIdx, setCurrentHeadlineIdx] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentHeadlineIdx((prev) => (prev + 1) % heroHeadlines.length);
+    }, 3800);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div
@@ -244,6 +261,12 @@ export default function Landing() {
             >
               Pricing
             </a>
+            <button
+              onClick={() => navigate("/docs")}
+              className="hover:text-slate-900 transition-colors text-[13px] lg:text-[14px] font-medium text-slate-600"
+            >
+              Docs
+            </button>
           </nav>
 
           {/* Desktop CTA Action Buttons */}
@@ -303,6 +326,15 @@ export default function Landing() {
             >
               Pricing
             </a>
+            <button
+              onClick={() => {
+                setMobileMenuOpen(false);
+                navigate("/docs");
+              }}
+              className="text-[15px] font-medium text-slate-700 py-1 text-left"
+            >
+              Documentation
+            </button>
             <div className="h-px bg-slate-100 my-1" />
             <button
               onClick={() => {
@@ -343,27 +375,36 @@ export default function Landing() {
             transition={{ duration: 0.45 }}
             className="max-w-4xl mx-auto flex flex-col items-center"
           >
-            {/* Hero Headline (Positioned higher, punchy and compact on mobile) */}
-            <h1
-              className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl xl:text-[3.65rem] leading-[1.12] sm:leading-[1.08] font-black tracking-tight text-slate-900 mb-2 sm:mb-3 md:mb-3.5"
-              style={{
-                fontFamily: "'Space Grotesk', ui-sans-serif, system-ui, sans-serif",
-                WebkitFontSmoothing: "antialiased",
-              }}
-            >
-              Run your traffic campaigns like a pro
-            </h1>
+            {/* Rotating Hero Headline */}
+            <div className="min-h-[60px] sm:min-h-[72px] md:min-h-[84px] lg:min-h-[100px] xl:min-h-[110px] flex items-center justify-center w-full mb-2 sm:mb-3">
+              <AnimatePresence mode="wait">
+                <motion.h1
+                  key={currentHeadlineIdx}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.32, ease: "easeInOut" }}
+                  className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl xl:text-[3.65rem] leading-[1.12] sm:leading-[1.08] font-black tracking-tight text-slate-900"
+                  style={{
+                    fontFamily: "'Space Grotesk', ui-sans-serif, system-ui, sans-serif",
+                    WebkitFontSmoothing: "antialiased",
+                  }}
+                >
+                  {heroHeadlines[currentHeadlineIdx]}
+                </motion.h1>
+              </AnimatePresence>
+            </div>
 
-            {/* Subhead */}
-            <p className="text-xs sm:text-sm md:text-base lg:text-lg text-slate-600 max-w-xl mx-auto leading-relaxed mb-4 sm:mb-5 font-normal px-2">
-              All-in-one platform for real-time visitor classification, residential bot cloaking, and ad spend defense. Route genuine humans to your money page and deflect bots with zero latency.
+            {/* Static Supporting Description */}
+            <p className="text-xs sm:text-sm md:text-base lg:text-lg text-slate-600 max-w-2xl mx-auto leading-relaxed mb-4 sm:mb-5 font-normal px-2">
+              Detect bots, AI agents, and automated traffic in real time. Analyze visitor behavior, identify suspicious activity, and protect your applications from fraud, abuse, and unwanted automated traffic.
             </p>
 
             {/* CTA Action Group */}
             <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 sm:gap-4 w-full max-w-md mx-auto mb-1 sm:mb-2">
               <button
                 onClick={() => navigate("/user")}
-                className="w-full sm:w-auto min-h-[42px] px-6 sm:px-7 py-2.5 sm:py-3 bg-[#0F172A] hover:bg-black text-white rounded-full font-semibold text-[14px] sm:text-[15px] shadow-sm hover:shadow-md transition-all duration-200 flex items-center justify-center gap-2 group"
+                className="w-full sm:w-auto min-h-[42px] px-6 sm:px-7 py-2.5 sm:py-3 bg-[#0F172A] hover:bg-black text-white rounded-full font-semibold text-[14px] sm:text-[15px] shadow-sm hover:shadow-md transition-all duration-200 flex items-center justify-center gap-2 group cursor-pointer"
               >
                 <span>Try CleanTraffic free</span>
                 <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
@@ -454,7 +495,7 @@ export default function Landing() {
             >
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Next-Generation Cloaking</span>
+                <span>Next-Generation Bot Defense</span>
               </div>
               <h2
                 className="text-2xl sm:text-3xl md:text-4xl lg:text-[2.75rem] font-bold text-slate-900 tracking-tight leading-[1.15]"
@@ -470,7 +511,7 @@ export default function Landing() {
                   CleanTraffic takes a deterministic, multi-layer approach — analyzing every visitor across network intelligence, HTTP header anomalies, browser integrity, and behavioral signals in real time.
                 </p>
                 <p>
-                  Deflect automated scrapers and ad-fraud crawlers while letting genuine paying customers flow straight to your high-converting money pages without friction.
+                  Deflect automated scrapers and ad-fraud crawlers while letting genuine paying customers flow straight to your application and landing pages without friction.
                 </p>
               </div>
               <div className="pt-2">
@@ -504,8 +545,8 @@ export default function Landing() {
                   badge: "99.8% precision",
                 },
                 {
-                  title: "Safe Page Cloaking & Deflection",
-                  desc: "Serve safe, benign pages or HTTP 404/403 drops to crawlers while routing buyers to your real offer.",
+                  title: "Custom Fallback Routing & Mitigation",
+                  desc: "Serve safe fallback content or HTTP 404/403 blocks to automated crawlers while routing verified users to your real destination.",
                   badge: "Custom rules",
                 },
               ].map((item, idx) => (
@@ -742,6 +783,106 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* ── Full-Width Documentation Section ────────────────────────── */}
+      <section id="docs" className="w-full bg-[#F7FAF8] py-16 sm:py-20 md:py-24 border-b border-slate-200/80">
+        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="max-w-3xl mx-auto text-center mb-10 sm:mb-12">
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.55 }}
+            >
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold text-emerald-800 bg-emerald-100/70 border border-emerald-200 mb-3">
+                <BookOpen className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Developer & Security Guide</span>
+              </div>
+              <h2
+                className="text-2xl sm:text-3xl md:text-4xl lg:text-[2.75rem] font-bold text-slate-900 mb-3 tracking-tight"
+                style={{ fontFamily: "'Space Grotesk', ui-sans-serif, system-ui, sans-serif" }}
+              >
+                Comprehensive Documentation & Setup Guides
+              </h2>
+              <p className="text-sm sm:text-base md:text-lg text-slate-600 leading-relaxed max-w-2xl mx-auto">
+                Everything you need to integrate CleanTraffic, understand real-time bot detection signals, configure routing policies, and audit visitor traffic.
+              </p>
+            </motion.div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 mb-10">
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-2.5 hover:shadow-sm transition-shadow">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 font-bold text-xs">
+                01
+              </div>
+              <h3 className="text-base font-bold text-slate-900 tracking-tight">What the Platform Does</h3>
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Learn how CleanTraffic protects web applications, landing pages, and marketing campaigns from unwanted automated traffic, scrapers, and ad click fraud.
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-2.5 hover:shadow-sm transition-shadow">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 font-bold text-xs">
+                02
+              </div>
+              <h3 className="text-base font-bold text-slate-900 tracking-tight">How Bot Detection Works</h3>
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Understand the multi-tier inspection pipeline: crawler databases, request velocity tracking, synthetic header checks, datacenter ASN screening, and proxy detection.
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-2.5 hover:shadow-sm transition-shadow">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 font-bold text-xs">
+                03
+              </div>
+              <h3 className="text-base font-bold text-slate-900 tracking-tight">How to Install & Integrate</h3>
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Step-by-step instructions for deploying our zero-dependency PHP script on cPanel, aaPanel, WordPress, or custom Nginx/Apache servers.
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-2.5 hover:shadow-sm transition-shadow">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 font-bold text-xs">
+                04
+              </div>
+              <h3 className="text-base font-bold text-slate-900 tracking-tight">Configuring Routing Rules</h3>
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Configure your Human Target URL, Bot Mitigation Actions (HTTP 404, HTTP 403, or Fallback URL), country geo-fencing, and device filters.
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-2.5 hover:shadow-sm transition-shadow">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 font-bold text-xs">
+                05
+              </div>
+              <h3 className="text-base font-bold text-slate-900 tracking-tight">Understanding Telemetry & Results</h3>
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Interpret visitor classifications, risk scores, ASN network usage types, triggering conditions, and live dashboard analytics.
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-2.5 hover:shadow-sm transition-shadow">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 font-bold text-xs">
+                06
+              </div>
+              <h3 className="text-base font-bold text-slate-900 tracking-tight">Troubleshooting Integration</h3>
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Quick diagnostic procedures for verifying cURL settings, inspecting HTTP response headers, clearing session caches, and testing API connectivity.
+              </p>
+            </div>
+          </div>
+
+          <div className="text-center">
+            <button
+              onClick={() => navigate("/docs")}
+              className="inline-flex items-center gap-2 px-8 py-3.5 bg-[#0F172A] hover:bg-black text-white rounded-full font-semibold text-[15px] shadow-sm hover:shadow transition-all group"
+            >
+              <span>View Documentation</span>
+              <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            </button>
+          </div>
+        </div>
+      </section>
+
       {/* ── Full-Width Transparent Pricing Section ──────────────────── */}
       <section id="pricing" className="w-full bg-white py-16 sm:py-20 md:py-24 border-b border-slate-200/80">
         <div className="w-full max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
@@ -811,6 +952,7 @@ export default function Landing() {
             <a href="#how-it-works" className="hover:text-white transition-colors">Detection Engine</a>
             <a href="#click-fraud" className="hover:text-white transition-colors">Click Fraud</a>
             <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
+            <button onClick={() => navigate("/docs")} className="hover:text-white transition-colors">Documentation</button>
             <button onClick={() => navigate("/user")} className="hover:text-white transition-colors">Log In</button>
           </div>
 

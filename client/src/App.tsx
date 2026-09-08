@@ -10,6 +10,7 @@ import UserLogin from "@/pages/user-login";
 import ApiVerify from "@/pages/api-verify";
 import UserDashboard from "@/pages/user-dashboard";
 import Landing from "@/pages/landing";
+import Documentation from "@/pages/documentation";
 import VerificationRequired from "@/pages/verification-required";
 import { userAuthApi } from "@/lib/user-auth";
 import { authApi } from "@/lib/auth";
@@ -67,6 +68,12 @@ function MainRouter() {
     <Switch>
       {/* Public Landing Page */}
       <Route path="/" component={Landing} />
+
+      {/* Dedicated Documentation Portal */}
+      <Route path="/docs" component={Documentation} />
+      <Route path="/docs/:rest*" component={Documentation} />
+      <Route path="/documentation" component={Documentation} />
+      <Route path="/documentation/:rest*" component={Documentation} />
 
       {/* Client User Portal Endpoints */}
       <Route path="/verification-required" component={VerificationRequired} />

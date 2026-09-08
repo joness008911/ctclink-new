@@ -137,7 +137,7 @@ export default function EmailManagement() {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [from, setFrom] = useState("");
-  const [fromName, setFromName] = useState("CleanTraffic Cloak");
+  const [fromName, setFromName] = useState("CleanTraffic Security");
   const [providerPreset, setProviderPreset] = useState("custom");
   const [testRecipient, setTestRecipient] = useState("");
 
@@ -187,7 +187,7 @@ export default function EmailManagement() {
       setUser(smtpSettings.user || "");
       setPass(smtpSettings.passMasked ? "••••••••" : "");
       setFrom(smtpSettings.from || "");
-      setFromName(smtpSettings.fromName || "CleanTraffic Cloak");
+      setFromName(smtpSettings.fromName || "CleanTraffic Security");
       setProviderPreset(smtpSettings.providerPreset || "custom");
     }
   }, [smtpSettings]);
@@ -408,7 +408,7 @@ export default function EmailManagement() {
       setIsPreviewActive(false);
       toast({
         title: "Template Reset",
-        description: "Loaded standard CleanTraffic Cloak default template content.",
+        description: "Loaded standard CleanTraffic Security default template content.",
       });
     }
   };
@@ -635,7 +635,7 @@ export default function EmailManagement() {
                   <Label htmlFor="smtp-from-name">Sender Display Name</Label>
                   <Input
                     id="smtp-from-name"
-                    placeholder="CleanTraffic Cloak Enterprise"
+                    placeholder="CleanTraffic Security Enterprise"
                     value={fromName}
                     onChange={(e) => setFromName(e.target.value)}
                   />
@@ -771,13 +771,13 @@ export default function EmailManagement() {
 
               {/* Subject Line Input */}
               <div className="space-y-2">
-                <Label htmlFor="tpl-subject">Email Subject Line</Label>
-                <Input
-                  id="tpl-subject"
-                  value={templateSubject}
-                  onChange={(e) => setTemplateSubject(e.target.value)}
-                  placeholder="e.g. Verify your CleanTraffic Cloak account (Code: {{code}})"
-                />
+                  <Label htmlFor="tpl-subject">Email Subject Line</Label>
+                  <Input
+                    id="tpl-subject"
+                    value={templateSubject}
+                    onChange={(e) => setTemplateSubject(e.target.value)}
+                    placeholder="e.g. Verify your CleanTraffic account (Code: {{code}})"
+                  />
               </div>
 
               {/* Dynamic Placeholders Reference Chips */}
@@ -993,7 +993,7 @@ export default function EmailManagement() {
                 <Label htmlFor="broadcast-subject">Broadcast Subject Line *</Label>
                 <Input
                   id="broadcast-subject"
-                  placeholder="🚀 CleanTraffic Update: Enhanced Cloaking Algorithms Live"
+                  placeholder="🚀 CleanTraffic Security Update: Enhanced Bot Detection Live"
                   value={broadcastSubject}
                   onChange={(e) => setBroadcastSubject(e.target.value)}
                 />

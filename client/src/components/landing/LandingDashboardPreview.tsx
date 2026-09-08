@@ -68,7 +68,7 @@ const sampleLogs = [
     browser: "Chrome 124",
     type: "Human",
     status: "Allowed",
-    action: "Forwarded to Money Page",
+    action: "Forwarded to Target Destination",
     time: "4s ago",
     method: "Residential Verified",
   },
@@ -98,7 +98,7 @@ const sampleLogs = [
     browser: "Safari iOS",
     type: "Human",
     status: "Allowed",
-    action: "Forwarded to Money Page",
+    action: "Forwarded to Target Destination",
     time: "32s ago",
     method: "Mobile Carrier Clean",
   },
@@ -127,7 +127,7 @@ const sampleLogs = [
     device: "Server",
     browser: "Googlebot/2.1",
     type: "Challenged",
-    status: "Cloaked",
+    status: "Challenged",
     action: "Served Safe Page",
     time: "1m ago",
     method: "Search Crawler Policy",
@@ -370,7 +370,7 @@ export function LandingDashboardPreview() {
                 <div className="text-lg sm:text-2xl font-black text-emerald-900 tracking-tight">
                   {stats.human}
                 </div>
-                <p className="text-[10px] text-emerald-700/80 mt-0.5 truncate">Routed to money page</p>
+                <p className="text-[10px] text-emerald-700/80 mt-0.5 truncate">Routed to target destination</p>
               </div>
             </div>
 
@@ -395,14 +395,14 @@ export function LandingDashboardPreview() {
               </div>
             </div>
 
-            {/* Challenged & Cloaked */}
+            {/* Challenged & Mitigated */}
             <div className="bg-[#FFFBEB]/70 border border-amber-100 rounded-xl p-3 sm:p-4 transition-all hover:border-amber-200 shadow-2xs flex flex-col justify-between">
               <div className="flex items-center justify-between gap-1 mb-1">
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-900">
                   <div className="w-5 h-5 rounded bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
                     <ShieldAlert className="h-3 w-3" />
                   </div>
-                  <span className="truncate">Cloaked</span>
+                  <span className="truncate">Mitigated</span>
                 </div>
                 <span className="text-[10px] font-bold text-amber-800 bg-amber-100/80 px-1.5 py-0.5 rounded shrink-0">
                   {stats.changeProbes}
@@ -412,7 +412,7 @@ export function LandingDashboardPreview() {
                 <div className="text-lg sm:text-2xl font-black text-amber-900 tracking-tight">
                   {stats.probes}
                 </div>
-                <p className="text-[10px] text-amber-700/80 mt-0.5 truncate">Automated crawlers shielded</p>
+                <p className="text-[10px] text-amber-700/80 mt-0.5 truncate">Threats challenged & mitigated</p>
               </div>
             </div>
           </div>
@@ -444,7 +444,7 @@ export function LandingDashboardPreview() {
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-[#F59E0B]" />
-                  <span className="text-slate-700">Cloaked</span>
+                  <span className="text-slate-700">Mitigated</span>
                 </div>
               </div>
             </div>
@@ -564,7 +564,7 @@ export function LandingDashboardPreview() {
                       ) : (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
                           <ShieldAlert className="h-3 w-3 text-amber-600" />
-                          Cloaked
+                          Challenged
                         </span>
                       )}
                     </div>

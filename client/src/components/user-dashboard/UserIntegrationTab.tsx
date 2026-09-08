@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { 
@@ -12,7 +13,10 @@ import {
   Key,
   ShieldCheck,
   Zap,
-  Globe
+  Globe,
+  BookOpen,
+  ArrowRight,
+  ExternalLink
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +34,7 @@ export function UserIntegrationTab({
   customEndpoint,
   setCustomEndpoint,
 }: UserIntegrationTabProps) {
+  const [, navigate] = useLocation();
   const { toast } = useToast();
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
@@ -55,7 +60,7 @@ export function UserIntegrationTab({
 
   const phpIntegrationCode = `<?php
 /**
- * CleanTraffic Cloak - High-Performance Traffic Defense Integration Script
+ * CleanTraffic - High-Performance Bot Detection & Traffic Security Integration Script
  * Auto-generated for API Key: ${apiKeyValue || 'ctc_your_api_key_here'}
  * 
  * ARCHITECTURE:
@@ -83,37 +88,48 @@ if (strpos($visitorIp, ',') !== false) {
     $visitorIp = trim(explode(',', $visitorIp)[0]);
 }
 
-// 2. High-Frequency Visitor Velocity Rate Limiting (10 requests / 60 seconds per IP)
+// 2. High-Frequency Visitor Velocity Rate Limiting (5 requests / 10 seconds per IP)
 $now = time();
 $rlSessionKey = 'ctc_rl_' . md5($visitorIp);
 if (!isset($_SESSION[$rlSessionKey]) || !is_array($_SESSION[$rlSessionKey])) {
     $_SESSION[$rlSessionKey] = [];
 }
-// Clean timestamps older than 60 seconds
+// Clean timestamps older than 10 seconds
 $_SESSION[$rlSessionKey] = array_filter($_SESSION[$rlSessionKey], function($ts) use ($now) {
-    return ($now - $ts) < 60;
+    return ($now - $ts) < 10;
 });
 $_SESSION[$rlSessionKey][] = $now;
 $sessionHitCount = count($_SESSION[$rlSessionKey]);
 
-// Also track via transient file token in /tmp to enforce limits even if visitor or bot disables cookies
+// Also track via transient file in /tmp using a sliding 10-second window
 $fsHitCount = 0;
-$fsBucket = sys_get_temp_dir() . '/ctc_rl_' . md5($visitorIp . '_' . date('YmdHi'));
-if (file_exists($fsBucket)) {
-    $fsHitCount = (int)@file_get_contents($fsBucket);
+$fsFile = sys_get_temp_dir() . '/ctc_rl_' . md5($visitorIp);
+$fsHits = [];
+if (file_exists($fsFile)) {
+    $raw = @file_get_contents($fsFile);
+    if ($raw) {
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded)) {
+            $fsHits = $decoded;
+        }
+    }
 }
-$fsHitCount++;
-@file_put_contents($fsBucket, (string)$fsHitCount, LOCK_EX);
+$fsHits = array_filter($fsHits, function($ts) use ($now) {
+    return ($now - $ts) < 10;
+});
+$fsHits[] = $now;
+@file_put_contents($fsFile, json_encode($fsHits), LOCK_EX);
+$fsHitCount = count($fsHits);
 
 $totalRecentHits = max($sessionHitCount, $fsHitCount);
 
-if ($totalRecentHits > 10) {
+if ($totalRecentHits >= 5) {
     http_response_code(429);
-    header('Retry-After: 60');
+    header('Retry-After: 10');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
     header('Content-Type: text/html; charset=utf-8');
-    echo "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>429 Too Many Requests</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto 8px auto;}</style></head><body><h1>429 Too Many Requests</h1><p>You have made too many requests in a short period of time.</p><p>Please wait a moment and try again.</p></body></html>";
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>429 Too Many Requests</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto 8px auto;}</style></head><body><h1>429 Too Many Requests</h1><p>You have made too many requests in a short period of time.</p><p>Please wait a moment and try again.</p></body></html>';
     exit;
 }
 
@@ -126,8 +142,8 @@ if (!empty($_SERVER['QUERY_STRING'])) {
 
 // 3. Session Fast Cache (60-second TTL to ensure instantaneous dashboard sync)
 $cacheKey = 'ctc_decision_' . md5($visitorIp . '_' . $apiKey);
-$bypassCache = isset($_GET['nocache']) || isset($_GET['preview_test']);
-if (!$bypassCache && isset($_SESSION[$cacheKey]) && (time() - $_SESSION[$cacheKey]['time']) < 60) {
+$skipCache = isset($_GET['nocache']) || isset($_GET['preview_test']);
+if (!$skipCache && isset($_SESSION[$cacheKey]) && (time() - $_SESSION[$cacheKey]['time']) < 60) {
     $cached = $_SESSION[$cacheKey];
     $destination = $cached['target'];
     $cachedAction = $cached['action'] ?? 'redirect';
@@ -143,9 +159,9 @@ if (!$bypassCache && isset($_SESSION[$cacheKey]) && (time() - $_SESSION[$cacheKe
             $reasonMsg = $isAutomatedBot 
                 ? "This resource is not available to automated requests." 
                 : "Access to this resource is denied.";
-            echo "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>403 Forbidden</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>403 Forbidden</h1><p>" . htmlspecialchars($reasonMsg) . "</p></body></html>";
+            echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>403 Forbidden</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>403 Forbidden</h1><p>' . htmlspecialchars($reasonMsg) . '</p></body></html>';
         } else {
-            echo "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>404 Not Found</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>";
+            echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>404 Not Found</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>';
         }
         exit;
     }
@@ -223,7 +239,7 @@ if ($httpCode === 429) {
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
     header('Content-Type: text/html; charset=utf-8');
-    echo "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>429 Too Many Requests</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto 8px auto;}</style></head><body><h1>429 Too Many Requests</h1><p>You have made too many requests in a short period of time.</p><p>Please wait a moment and try again.</p></body></html>";
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>429 Too Many Requests</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto 8px auto;}</style></head><body><h1>429 Too Many Requests</h1><p>You have made too many requests in a short period of time.</p><p>Please wait a moment and try again.</p></body></html>';
     exit;
 }
 
@@ -275,13 +291,13 @@ if ($httpCode === 401 || $httpCode === 403) {
         $visitorInst = "Please contact the resource owner.";
     }
 
-    echo "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>" . htmlspecialchars($title) . "</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:540px;margin:0 auto 12px auto;}.guide{margin:28px auto 0 auto;max-width:520px;padding:18px 22px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;text-align:left;font-size:0.92rem;color:#334155;line-height:1.6;}.guide strong{display:block;color:#0f172a;margin-top:10px;font-size:0.9rem;}.guide strong:first-child{margin-top:0;}.guide span{display:block;color:#64748b;margin-top:2px;}</style></head><body><h1>" . htmlspecialchars($heading) . "</h1><p>" . htmlspecialchars($desc) . "</p>";
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' . htmlspecialchars($title) . '</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:540px;margin:0 auto 12px auto;}.guide{margin:28px auto 0 auto;max-width:520px;padding:18px 22px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;text-align:left;font-size:0.92rem;color:#334155;line-height:1.6;}.guide strong{display:block;color:#0f172a;margin-top:10px;font-size:0.9rem;}.guide strong:first-child{margin-top:0;}.guide span{display:block;color:#64748b;margin-top:2px;}</style></head><body><h1>' . htmlspecialchars($heading) . '</h1><p>' . htmlspecialchars($desc) . '</p>';
 
     if (!empty($ownerInst)) {
-        echo "<div class=\"guide\"><strong>If you are the resource owner:</strong><span>" . htmlspecialchars($ownerInst) . "</span><strong>If you are a visitor:</strong><span>" . htmlspecialchars($visitorInst) . "</span></div>";
+        echo '<div class="guide"><strong>If you are the resource owner:</strong><span>' . htmlspecialchars($ownerInst) . '</span><strong>If you are a visitor:</strong><span>' . htmlspecialchars($visitorInst) . '</span></div>';
     }
 
-    echo "</body></html>";
+    echo '</body></html>';
     exit;
 }
 
@@ -292,7 +308,7 @@ if ($httpCode >= 500 || $httpCode === 0 || empty($response)) {
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
     header('Content-Type: text/html; charset=utf-8');
-    echo "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>503 Service Temporarily Unavailable</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto 8px auto;}</style></head><body><h1>503 Service Temporarily Unavailable</h1><p>The service is temporarily unavailable. Please try again in a few moments.</p></body></html>";
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>503 Service Temporarily Unavailable</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto 8px auto;}</style></head><body><h1>503 Service Temporarily Unavailable</h1><p>The service is temporarily unavailable. Please try again in a few moments.</p></body></html>';
     exit;
 }
 
@@ -327,9 +343,9 @@ if ($destination === '404' || $destination === '403' || $statusAction === '404' 
         $reasonMsg = $isAutomatedBot 
             ? "This resource is not available to automated requests." 
             : "Access to this resource is denied.";
-        echo "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>403 Forbidden</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>403 Forbidden</h1><p>" . htmlspecialchars($reasonMsg) . "</p></body></html>";
+        echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>403 Forbidden</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>403 Forbidden</h1><p>' . htmlspecialchars($reasonMsg) . '</p></body></html>';
     } else {
-        echo "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>404 Not Found</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>";
+        echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>404 Not Found</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>';
     }
     exit;
 }
@@ -338,7 +354,7 @@ if ($destination === '404' || $destination === '403' || $statusAction === '404' 
 if (!$destination) {
     http_response_code(404);
     header('Content-Type: text/html; charset=utf-8');
-    echo "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>404 Not Found</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>";
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>404 Not Found</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:60px 20px;text-align:center;background:#fff;color:#1e293b;}h1{font-size:2rem;font-weight:700;margin-bottom:8px;color:#0f172a;}p{color:#64748b;font-size:1rem;line-height:1.6;max-width:500px;margin:0 auto;}</style></head><body><h1>404 Not Found</h1><p>The requested URL was not found on this server.</p></body></html>';
     exit;
 }
 
@@ -373,14 +389,14 @@ exit;
       zip.file("index.php", phpIntegrationCode);
       zip.file(
         "README.txt",
-        `CleanTraffic Cloak - Quick Deployment Guide\n\n1. Upload index.php to your campaign or tracking server webroot.\n2. Ensure PHP 7.4+ with cURL extension is enabled.\n3. Test the link from your browser.\n4. Change Human and Bot redirect targets from your CleanTraffic Dashboard at any time!\n`
+        `CleanTraffic - Quick Deployment Guide\n\n1. Upload index.php to your application or web server root.\n2. Ensure PHP 7.4+ with cURL extension is enabled.\n3. Test the link from your browser.\n4. Configure routing and mitigation policies from your CleanTraffic Dashboard at any time!\n`
       );
 
       const content = await zip.generateAsync({ type: "blob" });
       const url = window.URL.createObjectURL(content);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `cleantraffic-cloak-script.zip`;
+      a.download = `cleantraffic-security-script.zip`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -401,6 +417,44 @@ exit;
 
   return (
     <div className="space-y-6">
+      {/* Documentation Quick Access Banner */}
+      <div className="bg-gradient-to-r from-[#0A3E33] to-[#06241D] rounded-xl p-5 text-white shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border border-[#145343]">
+        <div className="flex items-start gap-3.5">
+          <div className="w-10 h-10 rounded-lg bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center shrink-0 text-emerald-300">
+            <BookOpen className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm sm:text-base font-bold text-white tracking-tight">
+                Need help integrating? View the complete step-by-step documentation
+              </h3>
+              <span className="hidden sm:inline-block text-[10px] uppercase tracking-wider font-extrabold px-2 py-0.5 rounded bg-emerald-400/20 text-emerald-300 border border-emerald-400/30">
+                Setup Guides
+              </span>
+            </div>
+            <p className="text-xs text-emerald-100/80 mt-1 max-w-2xl leading-relaxed">
+              Step-by-step setup guides for cPanel, aaPanel, WordPress, custom Nginx/Apache servers, Campaign & Endpoint routing modes, and live verification diagnostics.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 shrink-0 w-full md:w-auto">
+          <Button
+            onClick={() => navigate("/docs#installation")}
+            className="w-full md:w-auto bg-white hover:bg-emerald-50 text-[#06241D] font-bold text-xs h-9 px-4 rounded-lg gap-2 shadow-xs transition-all"
+          >
+            <span>View Integration Docs</span>
+            <ArrowRight className="h-3.5 w-3.5 text-[#0A5C48]" />
+          </Button>
+          <button
+            onClick={() => navigate("/docs")}
+            className="hidden sm:inline-flex text-xs font-semibold text-emerald-200 hover:text-white underline underline-offset-4 transition-colors whitespace-nowrap"
+          >
+            Read All Docs →
+          </button>
+        </div>
+      </div>
+
       {/* Top Banner */}
       <div className="bg-white border border-[#E5EAE7] rounded-xl p-6 shadow-xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -493,7 +547,7 @@ exit;
         <div className="bg-white border border-[#E5EAE7] rounded-xl p-5 space-y-1.5 shadow-xs">
           <div className="flex items-center gap-2 text-[#0A5C48] font-bold text-xs">
             <Zap className="h-4 w-4" />
-            4. Rate Limiting & Stealth Pages
+            4. Rate Limiting & Standard HTTP Responses
           </div>
           <p className="text-[11px] text-[#64748B] leading-relaxed">
             Built-in 10 req/60s velocity protection per IP with clean, standard 404, 403, and 429 response templates for visitors and bots.

@@ -29,7 +29,7 @@ export function UserLiveEventsTab() {
               Live Security Telemetry Feed
             </h2>
             <p className="text-xs text-[#64748B] mt-1">
-              Real-time stream of incoming visitor classifications and automated cloaking decisions
+              Real-time stream of incoming visitor classifications, threat evaluations, and automated mitigation actions
             </p>
           </div>
 

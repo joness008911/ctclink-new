@@ -147,6 +147,9 @@ export const userRedirectUrls = pgTable("user_redirect_urls", {
   fingerprintActivate: text("fingerprint_activate").default("enabled"), // "enabled" | "disabled"
   wildcardSubdomains: text("wildcard_subdomains").default("disabled"), // "disabled" | "enabled"
   allowVpn: boolean("allow_vpn").default(false).notNull(), // backwards-compatibility boolean
+  allowSearchCrawlers: text("allow_search_crawlers").default("allow"), // "allow" | "block" (default: allow so SEO and indexing are preserved)
+  blockAiCrawlers: text("block_ai_crawlers").default("block"), // "block" | "allow" (default: block AI training scrapers)
+  allowSocialPreviews: text("allow_social_previews").default("allow"), // "allow" | "block" (default: allow link preview crawlers)
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

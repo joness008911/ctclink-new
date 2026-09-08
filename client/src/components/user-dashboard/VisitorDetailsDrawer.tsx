@@ -237,7 +237,7 @@ export function VisitorDetailsDrawer({
         `Commercial VPN Provider (${visitor.isp || "VPN Network"})`,
         "Encrypted Tunnel Detected",
         "Masked Geo Coordinates",
-        "Cloak Protection Enforced",
+        "Automated Threat Mitigation Enforced",
         "Deflected to Safe Page"
       ];
     }
@@ -246,7 +246,7 @@ export function VisitorDetailsDrawer({
         "Proxy Protocol Active",
         "Multi-Hop Intermediate Node",
         "Anonymized Origin IP",
-        "Cloak Protection Enforced",
+        "Automated Threat Mitigation Enforced",
         "Deflected to Safe Page"
       ];
     }
@@ -303,16 +303,16 @@ export function VisitorDetailsDrawer({
       return "This request was routed through a known Tor exit node. Tor connections anonymize origins and represent high fraud risk, and are automatically deflected to your safe destination.";
     }
     if (isVpn) {
-      return `This request was routed through a commercial VPN network (${visitor.isp || "VPN Provider"}). Under your active campaign settings, VPN connections are restricted to prevent click fraud and cloaking evasion.`;
+      return `This request was routed through a commercial VPN network (${visitor.isp || "VPN Provider"}). Under your active campaign settings, VPN connections are restricted to prevent click fraud and anonymous threat vectors.`;
     }
     if (isProxy) {
-      return "This connection used an anonymizing proxy pool or forwarding server. The cloaking engine deflected the visitor to your safe destination.";
+      return "This connection used an anonymizing proxy pool or forwarding server. The threat detection engine mitigated the request and deflected the visitor to your safe destination.";
     }
     if (isDatacenter) {
       return `This request originated from a cloud hosting facility or datacenter ASN (${visitor.isp || "Cloud ASN"}). Datacenter IPs are commonly used by automated verification bots, spy tools, and crawlers, and are automatically deflected.`;
     }
     if (isBotCrawler) {
-      return `This request exhibited signatures of automated scrapers, headless browsers, or anomalous HTTP headers (${detectionMethod}). The cloaking engine deflected the visitor to your safe destination.`;
+      return `This request exhibited signatures of automated scrapers, headless browsers, or anomalous HTTP headers (${detectionMethod}). The bot detection engine mitigated the request and deflected the visitor to your safe destination.`;
     }
     if (isRateLimit) {
       return "This request exceeded the per-minute rate limit threshold or active account call quota. The connection was throttled and deflected to maintain system stability.";
@@ -505,7 +505,7 @@ export function VisitorDetailsDrawer({
                           ? "Forwarded to Offer" 
                           : isPolicyFilter 
                           ? "Deflected to Safe URL (Policy)" 
-                          : "Cloaked & Deflected (Safe URL)"}
+                          : "Mitigated & Deflected (Safe URL)"}
                       </span>
                     </div>
                   </div>
@@ -598,7 +598,7 @@ export function VisitorDetailsDrawer({
               <div className="bg-slate-900 text-slate-100 p-4 rounded-xl font-mono text-[11px] overflow-x-auto space-y-1 shadow-inner">
                 <div className="text-emerald-400 font-bold">HTTP/1.1 {isHuman ? "200 OK" : "404 Not Found"}</div>
                 <div className="text-slate-400">Content-Type: text/html; charset=UTF-8</div>
-                <div className="text-slate-400">X-Shield-Verdict: {isHuman ? "HUMAN_FORWARD" : "BOT_CLOAKED"}</div>
+                <div className="text-slate-400">X-Shield-Verdict: {isHuman ? "HUMAN_FORWARD" : "BOT_MITIGATED"}</div>
                 <div className="text-slate-400">X-Engine-Latency: 1.4ms</div>
                 <div className="text-slate-400">Location: {isHuman ? (humanUrl || "Target Offer") : (botUrl || "Safe 404 Page")}</div>
               </div>

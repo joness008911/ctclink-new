@@ -274,7 +274,7 @@ export function UserOverviewTab({
           </div>
         </div>
 
-        {/* Metric 4: Challenged / Cloaked */}
+        {/* Metric 4: Challenged / Mitigated */}
         <div className="bg-white border border-[#E2E8F0] rounded-xl p-4 sm:p-5 shadow-xs transition-all hover:border-[#CBD5E1] relative">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -596,7 +596,7 @@ export function UserOverviewTab({
                       <p className="text-sm font-bold text-slate-900">No visitors recorded matching criteria</p>
                       <p className="text-xs text-slate-500 max-w-sm">
                         {classifications.length === 0
-                          ? "Deploy your integration script to see live evaluations and cloaking telemetry."
+                          ? "Deploy your integration script to see live evaluations and threat detection telemetry."
                           : "Try resetting your search query or switching tabs."}
                       </p>
                     </div>
