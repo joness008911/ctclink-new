@@ -23,7 +23,9 @@ import {
   ShieldAlert,
   Search,
   Sparkles,
-  Share2
+  Share2,
+  AlertTriangle,
+  Clock
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,11 +35,18 @@ import { COUNTRIES_LIST, getCountryFlag } from "@/lib/countries";
 export function UserRoutingTab({
   isReadOnly = false,
   onUpgradeClick,
+  complianceStatus,
+  statusReason,
 }: {
   isReadOnly?: boolean;
   onUpgradeClick?: () => void;
+  complianceStatus?: string;
+  statusReason?: string | null;
 } = {}) {
   const { toast } = useToast();
+
+  const isRestrictedByCompliance = complianceStatus === "flagged" || complianceStatus === "pending";
+  const effectiveReadOnly = isReadOnly || isRestrictedByCompliance;
 
   // Routing and Threat Mitigation Policy States
   const [blockVpn, setBlockVpn] = useState<"block" | "allow">("block");
@@ -162,10 +171,21 @@ export function UserRoutingTab({
       });
       queryClient.invalidateQueries({ queryKey: ["/api/user/redirect-urls"] });
     },
-    onError: (error: Error) => {
+    onError: (error: any) => {
+      let title = "Save Failed";
+      let description = error.message || "Failed to update routing configuration";
+      
+      if (error.code === "ACCOUNT_SUSPENDED" || (error.status === 403 && description.toLowerCase().includes("suspended"))) {
+        title = "Account Suspended";
+      } else if (error.code === "ACCOUNT_FLAGGED" || description.toLowerCase().includes("review")) {
+        title = "Action Restricted";
+      } else if (error.code === "ACCOUNT_PENDING" || description.toLowerCase().includes("pending")) {
+        title = "Action Restricted";
+      }
+
       toast({
-        title: "Save Failed",
-        description: error.message || "Failed to update routing configuration",
+        title,
+        description,
         variant: "destructive",
       });
     },
@@ -262,8 +282,37 @@ export function UserRoutingTab({
 
   return (
     <div className="space-y-6 w-full">
+      {/* Account Flagged Compliance Banner */}
+      {complianceStatus === "flagged" && (
+        <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl flex items-start gap-3 text-xs text-amber-900 shadow-xs" data-testid="routing-flagged-banner">
+          <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <span className="font-bold text-amber-950">Account Under Compliance Review (Flagged):</span>
+            <p className="text-amber-800">
+              Modifying link routing rules is temporarily restricted while your account undergoes security and compliance review.
+              {statusReason ? ` Note: "${statusReason}". ` : " "}
+              Your existing traffic filters and redirection settings remain active and protected. Contact support if you have questions.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Account Pending Compliance Banner */}
+      {complianceStatus === "pending" && (
+        <div className="p-4 bg-blue-50 border border-blue-300 rounded-xl flex items-start gap-3 text-xs text-blue-900 shadow-xs" data-testid="routing-pending-banner">
+          <Clock className="h-4 w-4 text-blue-700 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <span className="font-bold text-blue-950">Account Verification Pending:</span>
+            <p className="text-blue-800">
+              Your account is awaiting compliance approval. Link routing updates will become available once your account status is cleared.
+              {statusReason ? ` Reason: "${statusReason}".` : ""}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Read-Only Notice for Expired Trials */}
-      {isReadOnly && (
+      {isReadOnly && !isRestrictedByCompliance && (
         <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-900 shadow-xs" data-testid="routing-readonly-banner">
           <div className="flex items-center gap-2.5">
             <ShieldAlert className="h-4 w-4 text-amber-700 shrink-0" />
@@ -1025,21 +1074,34 @@ export function UserRoutingTab({
         <div className="text-xs text-[#64748B] flex items-center gap-2">
           <ShieldCheck className="h-4 w-4 text-[#0A5C48] shrink-0" />
           <span>
-            {isReadOnly
+            {isRestrictedByCompliance
+              ? "Routing rule changes are restricted while your account status is under review."
+              : isReadOnly
               ? "All rules remain safely saved and viewable in read-only mode."
               : "Rules take effect in real time across all integrated tracking links."}
           </span>
         </div>
         <Button
-          onClick={isReadOnly ? onUpgradeClick : handleSave}
-          disabled={!isReadOnly && (updateUrlsMutation.isPending || isLoadingUrls)}
+          onClick={isRestrictedByCompliance ? undefined : isReadOnly ? onUpgradeClick : handleSave}
+          disabled={isRestrictedByCompliance || (!isReadOnly && (updateUrlsMutation.isPending || isLoadingUrls))}
           className={`w-full sm:w-auto text-xs font-bold px-6 h-10 rounded-lg shadow-xs transition-all flex items-center justify-center gap-2 ${
-            isReadOnly
+            isRestrictedByCompliance
+              ? "bg-slate-300 text-slate-600 cursor-not-allowed border-slate-300"
+              : isReadOnly
               ? "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
               : "bg-[#0A5C48] hover:bg-[#07382D] text-white"
           }`}
         >
-          {isReadOnly ? (
+          {isRestrictedByCompliance ? (
+            <>
+              <Lock className="h-4 w-4" />
+              <span>
+                {complianceStatus === "flagged"
+                  ? "Restricted (Account Under Review)"
+                  : "Restricted (Verification Pending)"}
+              </span>
+            </>
+          ) : isReadOnly ? (
             <>
               <Lock className="h-4 w-4" />
               <span>Read-Only (Upgrade to Edit)</span>

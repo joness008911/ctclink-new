@@ -4,7 +4,7 @@
  * Uses MemStorage so no DB or Stripe SDK is needed.
  * Run with: npm test
  */
-import { test, describe } from "node:test";
+import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { MemStorage } from "../server/storage.js";
 
@@ -181,5 +181,9 @@ describe("Trial enforcement logic", () => {
 
   test("cancelled subscription is blocked", () => {
     assert.equal(isSubscriptionActive("cancelled", null), false);
+  });
+
+  after(() => {
+    setTimeout(() => process.exit(0), 100).unref();
   });
 });

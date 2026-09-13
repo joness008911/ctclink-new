@@ -29,12 +29,21 @@ import {
 } from "lucide-react";
 
 export default function UserLogin() {
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   // Mode: "signup" (default for new trial), "signin", or "forgot"
   const [authMode, setAuthMode] = useState<"signup" | "signin" | "forgot">("signup");
+
+  // Sync mode with route if navigating directly to /signin or /signup
+  useEffect(() => {
+    if (location === "/signin") {
+      setAuthMode("signin");
+    } else if (location === "/signup") {
+      setAuthMode("signup");
+    }
+  }, [location]);
 
   // Form states
   const [fullName, setFullName] = useState("");
@@ -53,6 +62,12 @@ export default function UserLogin() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [simulatedDevCode, setSimulatedDevCode] = useState<string | null>(null);
+  const [accountStatusError, setAccountStatusError] = useState<{
+    status: "suspended" | "deactivated" | "restricted" | "error";
+    title: string;
+    message: string;
+    reason?: string;
+  } | null>(null);
 
   // Load saved credentials
   useEffect(() => {
@@ -122,18 +137,74 @@ export default function UserLogin() {
       }
     },
     onError: (error: any) => {
-      let msg = "Invalid email/username or password.";
-      try {
-        if (error.message) {
-          const parsed = JSON.parse(error.message.replace(/^\d+:\s*/, ""));
-          msg = parsed.message || msg;
-        }
-      } catch {
-        msg = error.message || msg;
+      let rawMsg = error.message || "";
+      // Strip any leading HTTP status prefix e.g. "403: "
+      let cleanMsg = rawMsg.replace(/^\d+:\s*/, "");
+      if (cleanMsg.includes("<html") || cleanMsg.includes("<!DOCTYPE")) {
+        cleanMsg = "Your account has been suspended. Please contact us if you believe this was done in error.";
       }
+
+      const isSuspended =
+        error.code === "ACCOUNT_SUSPENDED" ||
+        error.accountStatus === "suspended" ||
+        error.complianceStatus === "suspended" ||
+        cleanMsg.toLowerCase().includes("suspended") ||
+        error.status === 403;
+
+      const isDeactivated =
+        error.code === "ACCOUNT_DEACTIVATED" ||
+        error.accountStatus === "deactivated" ||
+        cleanMsg.toLowerCase().includes("deactivated");
+
+      if (isSuspended) {
+        const title = "Account Suspended";
+        const message = "Your account has been suspended. Please contact us if you believe this was done in error.";
+        setAccountStatusError({
+          status: "suspended",
+          title,
+          message,
+          reason: error.statusReason,
+        });
+        toast({
+          title,
+          description: message,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (isDeactivated) {
+        const title = "Account Deactivated";
+        const message = "Your account has been deactivated. Please contact us if you believe this was done in error.";
+        setAccountStatusError({
+          status: "deactivated",
+          title,
+          message,
+          reason: error.statusReason,
+        });
+        toast({
+          title,
+          description: message,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const title = "Sign In Failed";
+      let displayMsg = cleanMsg;
+      if (!displayMsg || displayMsg.toLowerCase().includes("unauthorized") || error.status === 401) {
+        displayMsg = "Invalid email/username or password. Please check your credentials and try again.";
+      }
+
+      setAccountStatusError({
+        status: "error",
+        title,
+        message: displayMsg,
+      });
+
       toast({
-        title: "Sign In Failed",
-        description: msg,
+        title,
+        description: displayMsg,
         variant: "destructive",
       });
     },
@@ -210,6 +281,7 @@ export default function UserLogin() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setFormSubmittedAttempt(true);
+    setAccountStatusError(null);
 
     if (registerMutation.isPending || loginMutation.isPending) {
       return;
@@ -325,46 +397,52 @@ export default function UserLogin() {
   const isPending = registerMutation.isPending || loginMutation.isPending;
 
   return (
-    <div className="min-h-screen bg-[#111111] text-white flex flex-col font-sans selection:bg-emerald-500 selection:text-black">
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col font-sans selection:bg-emerald-100 selection:text-emerald-900 relative">
+      {/* Background ambient accents */}
+      <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:24px_24px] pointer-events-none opacity-40" />
+      <div className="absolute top-0 right-1/4 w-96 h-96 bg-emerald-100/40 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-10 left-10 w-96 h-96 bg-teal-100/30 rounded-full blur-3xl pointer-events-none" />
+
       {/* ── Top Header Navigation ────────────────────────────────────────── */}
-      <header className="border-b border-white/10 bg-[#161616]/80 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-slate-200/80 bg-white/95 backdrop-blur-md sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div
             onClick={() => navigate("/")}
-            className="flex items-center gap-2.5 cursor-pointer group"
+            className="flex items-center gap-2.5 cursor-pointer group select-none"
           >
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 group-hover:bg-emerald-500 group-hover:text-black transition-all">
-              <ShieldCheck className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-[#064E3B] border border-[#047857] flex items-center justify-center text-white shadow-xs group-hover:scale-105 transition-transform">
+              <ShieldCheck className="w-5 h-5 text-emerald-300" />
             </div>
-            <span className="text-lg font-bold tracking-tight text-white flex items-center gap-1.5">
+            <span className="text-lg font-bold tracking-tight text-slate-900 flex items-center gap-2">
               CleanTraffic
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             </span>
           </div>
 
           <div className="flex items-center gap-3 sm:gap-4">
             <button
               onClick={() => navigate("/")}
-              className="text-sm text-neutral-400 hover:text-white transition-colors hidden sm:block"
+              className="text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors hidden sm:flex items-center gap-1.5 cursor-pointer"
             >
-              Back to Home
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back to Home</span>
             </button>
-            <div className="h-4 w-px bg-white/10 hidden sm:block" />
-            <div className="flex items-center bg-black/40 p-1 rounded-lg border border-white/10">
+            <div className="h-4 w-px bg-slate-200 hidden sm:block" />
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/80">
               <button
                 type="button"
                 onClick={() => {
                   setAuthMode("signup");
                   setFormSubmittedAttempt(false);
                 }}
-                className={`text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-md transition-all flex items-center gap-1.5 ${
+                className={`text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
                   authMode === "signup"
-                    ? "bg-white text-black shadow-sm"
-                    : "text-neutral-400 hover:text-white"
+                    ? "bg-white text-slate-900 shadow-xs font-semibold"
+                    : "text-slate-600 hover:text-slate-900"
                 }`}
               >
-                <UserPlus className="w-3.5 h-3.5" />
-                Sign Up Trial
+                <UserPlus className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Sign Up Trial</span>
               </button>
               <button
                 type="button"
@@ -372,14 +450,14 @@ export default function UserLogin() {
                   setAuthMode("signin");
                   setFormSubmittedAttempt(false);
                 }}
-                className={`text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-md transition-all flex items-center gap-1.5 ${
+                className={`text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
                   authMode === "signin"
-                    ? "bg-white text-black shadow-sm"
-                    : "text-neutral-400 hover:text-white"
+                    ? "bg-white text-slate-900 shadow-xs font-semibold"
+                    : "text-slate-600 hover:text-slate-900"
                 }`}
               >
-                <LogIn className="w-3.5 h-3.5" />
-                Sign In
+                <LogIn className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Sign In</span>
               </button>
             </div>
           </div>
@@ -387,114 +465,114 @@ export default function UserLogin() {
       </header>
 
       {/* ── Main Auth Card Section ────────────────────────────────────────── */}
-      <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12 md:py-16">
+      <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12 md:py-16 relative z-10">
         <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
           
           {/* Left Column: Product Value & Platform Highlights */}
-          <div className="lg:col-span-5 bg-gradient-to-br from-[#1a1a1a] via-[#161616] to-[#121212] border border-white/10 rounded-2xl p-6 sm:p-8 flex flex-col justify-between relative overflow-hidden shadow-2xl">
-            <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+          <div className="lg:col-span-5 bg-white border border-slate-200/90 rounded-2xl p-6 sm:p-8 flex flex-col justify-between shadow-sm relative overflow-hidden">
+            <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-[#064E3B] via-emerald-600 to-teal-500" />
 
             <div>
               {authMode === "forgot" ? (
                 <>
-                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold uppercase tracking-wider mb-6">
-                    <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold uppercase tracking-wider mb-5">
+                    <KeyRound className="w-3.5 h-3.5 text-amber-600" />
                     Account Security
                   </div>
 
-                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-4 leading-snug">
-                    Secure Password Recovery Flow
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mb-3 leading-snug">
+                    Secure Password Recovery
                   </h2>
 
-                  <p className="text-neutral-400 text-sm sm:text-[15px] leading-relaxed mb-8">
+                  <p className="text-slate-600 text-sm sm:text-[15px] leading-relaxed mb-8">
                     Reset your credentials safely using our cryptographic one-time verification mechanism.
                   </p>
 
                   <div className="space-y-4">
                     <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <div className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 mt-0.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-700" />
                       </div>
                       <div>
-                        <h4 className="text-sm font-semibold text-white">Encrypted Verification Code</h4>
-                        <p className="text-xs text-neutral-400 mt-0.5">A secure 6-digit recovery code is delivered to your registered email.</p>
+                        <h4 className="text-sm font-semibold text-slate-900">Encrypted Verification Code</h4>
+                        <p className="text-xs text-slate-600 mt-0.5">A secure 6-digit recovery code is delivered to your registered email.</p>
                       </div>
                     </div>
 
                     <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                        <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                      <div className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 mt-0.5">
+                        <Lock className="w-4 h-4 text-emerald-700" />
                       </div>
                       <div>
-                        <h4 className="text-sm font-semibold text-white">15-Minute Expiry Safety</h4>
-                        <p className="text-xs text-neutral-400 mt-0.5">Recovery sessions expire automatically to protect your account against hijacking.</p>
+                        <h4 className="text-sm font-semibold text-slate-900">5-Minute Expiry Window</h4>
+                        <p className="text-xs text-slate-600 mt-0.5">Recovery sessions expire automatically to protect your account against hijacking.</p>
                       </div>
                     </div>
 
                     <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                        <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                      <div className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 mt-0.5">
+                        <Zap className="w-4 h-4 text-emerald-700" />
                       </div>
                       <div>
-                        <h4 className="text-sm font-semibold text-white">Instant API Key Preservation</h4>
-                        <p className="text-xs text-neutral-400 mt-0.5">All active API keys and traffic whitelist rules remain fully preserved.</p>
+                        <h4 className="text-sm font-semibold text-slate-900">Instant API Key Preservation</h4>
+                        <p className="text-xs text-slate-600 mt-0.5">All active API keys, endpoints, and traffic whitelist rules remain fully preserved.</p>
                       </div>
                     </div>
                   </div>
                 </>
               ) : (
                 <>
-                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-6">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold uppercase tracking-wider mb-5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                     7-Day Free Trial
                   </div>
 
-                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-4 leading-snug">
-                    Stop click fraud & malicious bots in real-time.
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mb-3 leading-snug">
+                    Stop click fraud & malicious bots in real time.
                   </h2>
 
-                  <p className="text-neutral-400 text-sm sm:text-[15px] leading-relaxed mb-8">
+                  <p className="text-slate-600 text-sm sm:text-[15px] leading-relaxed mb-8">
                     Join performance marketers and webmasters protecting ad budgets and infrastructure with CleanTraffic's 4-layer inspection engine.
                   </p>
 
                   <div className="space-y-4">
                     <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <div className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 mt-0.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-700" />
                       </div>
                       <div>
-                        <h4 className="text-sm font-semibold text-white">5,000 Free Inspection Quota</h4>
-                        <p className="text-xs text-neutral-400 mt-0.5">Full access to live bot heuristics and IP datacenter feeds.</p>
+                        <h4 className="text-sm font-semibold text-slate-900">5,000 Free Inspection Quota</h4>
+                        <p className="text-xs text-slate-600 mt-0.5">Full access to live bot heuristics, scraper defense, and IP datacenter feeds.</p>
                       </div>
                     </div>
 
                     <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                        <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                      <div className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 mt-0.5">
+                        <Zap className="w-4 h-4 text-emerald-700" />
                       </div>
                       <div>
-                        <h4 className="text-sm font-semibold text-white">Instant API Key Provisioning</h4>
-                        <p className="text-xs text-neutral-400 mt-0.5">Ready-to-use PHP snippet and REST API endpoint upon signup.</p>
+                        <h4 className="text-sm font-semibold text-slate-900">Instant API Key Provisioning</h4>
+                        <p className="text-xs text-slate-600 mt-0.5">Ready-to-use PHP snippet, Cloudflare Worker, and REST API endpoint upon signup.</p>
                       </div>
                     </div>
 
                     <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                        <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                      <div className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 mt-0.5">
+                        <Globe className="w-4 h-4 text-emerald-700" />
                       </div>
                       <div>
-                        <h4 className="text-sm font-semibold text-white">Geofencing & ISP Controls</h4>
-                        <p className="text-xs text-neutral-400 mt-0.5">Custom whitelist/blacklist rules for countries, ASN, and cloud hosts.</p>
+                        <h4 className="text-sm font-semibold text-slate-900">Geofencing & ISP Controls</h4>
+                        <p className="text-xs text-slate-600 mt-0.5">Custom whitelist/blacklist rules for countries, ASN, and cloud hosting ranges.</p>
                       </div>
                     </div>
 
                     <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                        <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                      <div className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 mt-0.5">
+                        <Lock className="w-4 h-4 text-emerald-700" />
                       </div>
                       <div>
-                        <h4 className="text-sm font-semibold text-white">No Credit Card Required</h4>
-                        <p className="text-xs text-neutral-400 mt-0.5">Start testing immediately. Upgrade or cancel whenever you choose.</p>
+                        <h4 className="text-sm font-semibold text-slate-900">No Credit Card Required</h4>
+                        <p className="text-xs text-slate-600 mt-0.5">Start testing immediately. Upgrade or cancel whenever you choose.</p>
                       </div>
                     </div>
                   </div>
@@ -502,13 +580,14 @@ export default function UserLogin() {
               )}
             </div>
 
-            <div className="pt-6 border-t border-white/10 text-xs text-neutral-500">
-              Active protection across Google Ads, Meta, TikTok, and direct affiliate networks.
+            <div className="pt-6 border-t border-slate-100 flex items-center gap-2.5 text-xs text-slate-500 mt-8">
+              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>Active protection across Google Ads, Meta, TikTok, and direct affiliate campaigns.</span>
             </div>
           </div>
 
           {/* Right Column: Interactive Forms (Sign Up / Sign In / Forgot Password) */}
-          <div className="lg:col-span-7 bg-[#181818] border border-white/10 rounded-2xl p-6 sm:p-8 lg:p-10 shadow-2xl flex flex-col justify-center">
+          <div className="lg:col-span-7 bg-white border border-slate-200/90 rounded-2xl p-6 sm:p-8 lg:p-10 shadow-sm flex flex-col justify-center">
             
             {/* ── FORGOT PASSWORD RECOVERY VIEW ────────────────────────────── */}
             {authMode === "forgot" ? (
@@ -521,16 +600,16 @@ export default function UserLogin() {
                       setRecoveryStep(1);
                       setSimulatedDevCode(null);
                     }}
-                    className="inline-flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 font-medium mb-3 transition-colors"
+                    className="inline-flex items-center gap-1.5 text-xs text-emerald-700 hover:text-emerald-800 font-semibold mb-3 transition-colors cursor-pointer"
                   >
                     <ArrowLeft className="w-3.5 h-3.5" />
                     Back to Sign In
                   </button>
-                  <h3 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-                    <KeyRound className="w-6 h-6 text-emerald-400" />
+                  <h3 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+                    <KeyRound className="w-6 h-6 text-emerald-600" />
                     Reset Your Password
                   </h3>
-                  <p className="text-sm text-neutral-400 mt-1">
+                  <p className="text-sm text-slate-600 mt-1.5">
                     {recoveryStep === 1
                       ? "Enter your registered email address to receive a secure 6-digit recovery code."
                       : `Enter the 6-digit recovery code sent to ${recoveryEmail} and choose a new password.`}
@@ -541,12 +620,12 @@ export default function UserLogin() {
                 <div className="flex items-center gap-2 py-1">
                   <div
                     className={`flex-1 h-1.5 rounded-full transition-colors ${
-                      recoveryStep >= 1 ? "bg-emerald-500" : "bg-white/10"
+                      recoveryStep >= 1 ? "bg-emerald-600" : "bg-slate-200"
                     }`}
                   />
                   <div
                     className={`flex-1 h-1.5 rounded-full transition-colors ${
-                      recoveryStep >= 2 ? "bg-emerald-500" : "bg-white/10"
+                      recoveryStep >= 2 ? "bg-emerald-600" : "bg-slate-200"
                     }`}
                   />
                 </div>
@@ -555,7 +634,7 @@ export default function UserLogin() {
                 {recoveryStep === 1 && (
                   <form onSubmit={handleForgotPasswordSubmit} className="space-y-4">
                     <div className="space-y-1.5">
-                      <Label htmlFor="recoveryEmail" className="text-xs font-semibold text-neutral-300">
+                      <Label htmlFor="recoveryEmail" className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
                         Registered Email Address
                       </Label>
                       <div className="relative">
@@ -568,20 +647,20 @@ export default function UserLogin() {
                           disabled={forgotPasswordMutation.isPending}
                           required
                           autoComplete="email"
-                          className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm pl-10"
+                          className="bg-white border-slate-300 text-slate-900 placeholder:text-slate-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20 h-11 rounded-xl text-sm pl-10 shadow-xs"
                         />
-                        <Mail className="w-4 h-4 text-neutral-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                        <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                       </div>
                     </div>
 
                     <Button
                       type="submit"
                       disabled={forgotPasswordMutation.isPending || !recoveryEmail.trim()}
-                      className="w-full h-12 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50"
+                      className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-semibold rounded-xl text-sm transition-all duration-150 flex items-center justify-center gap-2 shadow-xs hover:shadow disabled:opacity-50 cursor-pointer"
                     >
                       {forgotPasswordMutation.isPending ? (
                         <>
-                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
                           <span>Sending Recovery Code...</span>
                         </>
                       ) : (
@@ -597,20 +676,20 @@ export default function UserLogin() {
                 {/* Step 2: Enter Code and New Strong Password */}
                 {recoveryStep === 2 && (
                   <form onSubmit={handleResetPasswordSubmit} className="space-y-4">
-                    <div className="p-3 bg-white/[0.03] border border-white/10 rounded-xl text-xs text-neutral-300">
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
                       Enter the 6-digit recovery code sent to your inbox. For your security, codes are single-use and expire after <strong>5 minutes</strong>.
                     </div>
                     {/* Simulated code banner for instant preview usability */}
                     {simulatedDevCode && (
-                      <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex items-center justify-between text-xs text-emerald-400">
+                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between text-xs text-emerald-800">
                         <div className="flex items-center gap-2">
-                          <Sparkles className="w-4 h-4 shrink-0" />
+                          <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
                           <span>Simulated Email Code: <strong>{simulatedDevCode}</strong></span>
                         </div>
                         <button
                           type="button"
                           onClick={() => setRecoveryCode(simulatedDevCode)}
-                          className="text-[11px] underline underline-offset-2 hover:text-white"
+                          className="text-[11px] underline underline-offset-2 text-emerald-700 hover:text-emerald-900 font-medium cursor-pointer"
                         >
                           Auto-fill
                         </button>
@@ -619,13 +698,13 @@ export default function UserLogin() {
 
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between">
-                        <Label htmlFor="recoveryCode" className="text-xs font-semibold text-neutral-300">
+                        <Label htmlFor="recoveryCode" className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
                           6-Digit Recovery Code
                         </Label>
                         <button
                           type="button"
                           onClick={() => setRecoveryStep(1)}
-                          className="text-[11px] text-neutral-400 hover:text-white underline"
+                          className="text-[11px] text-slate-500 hover:text-emerald-700 underline cursor-pointer"
                         >
                           Resend Code
                         </button>
@@ -639,16 +718,16 @@ export default function UserLogin() {
                         onChange={(e) => setRecoveryCode(e.target.value.replace(/\D/g, ""))}
                         disabled={resetPasswordMutation.isPending}
                         required
-                        className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm font-mono tracking-widest text-center"
+                        className="bg-white border-slate-300 text-slate-900 placeholder:text-slate-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20 h-11 rounded-xl text-sm font-mono tracking-widest text-center shadow-xs"
                       />
                     </div>
 
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between">
-                        <Label htmlFor="newPassword" className="text-xs font-semibold text-neutral-300">
+                        <Label htmlFor="newPassword" className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
                           New Password
                         </Label>
-                        <span className="text-[11px] text-neutral-400">
+                        <span className="text-[11px] text-slate-500">
                           Min 8 chars, mixed types
                         </span>
                       </div>
@@ -662,12 +741,13 @@ export default function UserLogin() {
                           disabled={resetPasswordMutation.isPending}
                           required
                           autoComplete="new-password"
-                          className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm pr-10"
+                          className="bg-white border-slate-300 text-slate-900 placeholder:text-slate-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20 h-11 rounded-xl text-sm pr-10 shadow-xs"
                         />
                         <button
                           type="button"
+                          aria-label="Toggle new password visibility"
                           onClick={() => setShowNewPassword(!showNewPassword)}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
                         >
                           {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
@@ -678,7 +758,7 @@ export default function UserLogin() {
                     </div>
 
                     <div className="space-y-1.5">
-                      <Label htmlFor="confirmPassword" className="text-xs font-semibold text-neutral-300">
+                      <Label htmlFor="confirmPassword" className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
                         Confirm New Password
                       </Label>
                       <Input
@@ -690,10 +770,10 @@ export default function UserLogin() {
                         disabled={resetPasswordMutation.isPending}
                         required
                         autoComplete="new-password"
-                        className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm"
+                        className="bg-white border-slate-300 text-slate-900 placeholder:text-slate-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20 h-11 rounded-xl text-sm shadow-xs"
                       />
                       {confirmPassword && newPassword !== confirmPassword && (
-                        <p className="text-[11px] text-rose-400 flex items-center gap-1 mt-1">
+                        <p className="text-[11px] text-rose-600 flex items-center gap-1 mt-1 font-medium">
                           <AlertCircle className="w-3 h-3" />
                           Passwords do not match
                         </p>
@@ -708,11 +788,11 @@ export default function UserLogin() {
                         !newPasswordEvaluation.isSatisfied ||
                         newPassword !== confirmPassword
                       }
-                      className="w-full h-12 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50"
+                      className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-semibold rounded-xl text-sm transition-all duration-150 flex items-center justify-center gap-2 shadow-xs hover:shadow disabled:opacity-50 cursor-pointer"
                     >
                       {resetPasswordMutation.isPending ? (
                         <>
-                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
                           <span>Updating Password...</span>
                         </>
                       ) : (
@@ -725,7 +805,7 @@ export default function UserLogin() {
                   </form>
                 )}
 
-                <div className="pt-2 text-center text-xs text-neutral-400">
+                <div className="pt-2 text-center text-xs text-slate-600">
                   Remember your password?{" "}
                   <button
                     type="button"
@@ -733,7 +813,7 @@ export default function UserLogin() {
                       setAuthMode("signin");
                       setRecoveryStep(1);
                     }}
-                    className="text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 ml-1"
+                    className="text-emerald-700 hover:text-emerald-800 font-semibold underline underline-offset-2 ml-1 cursor-pointer"
                   >
                     Sign In
                   </button>
@@ -742,24 +822,110 @@ export default function UserLogin() {
             ) : (
               /* ── SIGN UP & SIGN IN FORMS ──────────────────────────────────── */
               <>
-                {/* Header */}
+                {/* Header with quick in-card switcher */}
                 <div className="mb-6">
-                  <h3 className="text-2xl font-bold tracking-tight text-white">
-                    {authMode === "signup" ? "Create Your Trial Account" : "Sign In to CleanTraffic"}
+                  {/* Mode switcher tabs */}
+                  <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl mb-5 border border-slate-200/80">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode("signup");
+                        setFormSubmittedAttempt(false);
+                      }}
+                      className={`text-xs sm:text-sm font-semibold py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                        authMode === "signup"
+                          ? "bg-white text-slate-900 shadow-xs"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      <UserPlus className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Create Account (Trial)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode("signin");
+                        setFormSubmittedAttempt(false);
+                      }}
+                      className={`text-xs sm:text-sm font-semibold py-2 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                        authMode === "signin"
+                          ? "bg-white text-slate-900 shadow-xs"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      <LogIn className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Sign In</span>
+                    </button>
+                  </div>
+
+                  <h3 className="text-2xl font-bold tracking-tight text-slate-900">
+                    {authMode === "signup" ? "Create Your Free Trial Account" : "Welcome Back to CleanTraffic"}
                   </h3>
-                  <p className="text-sm text-neutral-400 mt-1">
+                  <p className="text-sm text-slate-600 mt-1">
                     {authMode === "signup"
-                      ? "Enter your details to activate your 7-day free trial and API key."
-                      : "Enter your registered email and password to access your dashboard."}
+                      ? "Get started with 5,000 free traffic inspections. No credit card required."
+                      : "Enter your registered credentials to access your dashboard and traffic rules."}
                   </p>
                 </div>
+
+                {/* Account Status / Restriction Error Alert */}
+                {accountStatusError && (
+                  <div
+                    role="alert"
+                    data-testid="account-status-alert"
+                    className={`mb-5 p-4 rounded-xl border text-xs flex items-start gap-3 transition-all ${
+                      accountStatusError.status === "suspended"
+                        ? "bg-rose-50 border-rose-200 text-rose-800"
+                        : accountStatusError.status === "deactivated"
+                        ? "bg-amber-50 border-amber-200 text-amber-800"
+                        : "bg-rose-50 border-rose-200 text-rose-800"
+                    }`}
+                  >
+                    <AlertCircle
+                      className={`w-5 h-5 shrink-0 mt-0.5 ${
+                        accountStatusError.status === "suspended"
+                          ? "text-rose-600"
+                          : accountStatusError.status === "deactivated"
+                          ? "text-amber-600"
+                          : "text-rose-600"
+                      }`}
+                    />
+                    <div className="space-y-1.5 flex-1">
+                      <div className="font-bold text-sm text-slate-900">
+                        {accountStatusError.title}
+                      </div>
+                      <p className="leading-relaxed text-slate-700">
+                        {accountStatusError.message}
+                      </p>
+                      {accountStatusError.reason && (
+                        <p className="italic text-slate-500 text-[11px]">
+                          Note: "{accountStatusError.reason}"
+                        </p>
+                      )}
+                      {(accountStatusError.status === "suspended" || accountStatusError.status === "deactivated") && (
+                        <div className="pt-1.5 flex items-center gap-3">
+                          <a
+                            href="mailto:support@cleantraffic.io?subject=Account%20Review%20Request"
+                            className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-800 underline font-semibold text-xs transition-colors"
+                          >
+                            Contact Support
+                          </a>
+                          <span className="text-slate-400 text-[11px]">•</span>
+                          <span className="text-slate-500 text-[11px]">
+                            Compliance & Security Team
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Form */}
                 <form onSubmit={handleSubmit} className="space-y-4">
                   {authMode === "signup" && (
                     <div className="space-y-1.5">
-                      <Label htmlFor="fullName" className="text-xs font-semibold text-neutral-300">
-                        Full Name <span className="text-neutral-500">(Optional)</span>
+                      <Label htmlFor="fullName" className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
+                        Full Name <span className="text-slate-400 lowercase font-normal">(optional)</span>
                       </Label>
                       <Input
                         id="fullName"
@@ -768,36 +934,36 @@ export default function UserLogin() {
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
                         disabled={isPending}
-                        className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm"
+                        className="bg-white border-slate-300 text-slate-900 placeholder:text-slate-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20 h-11 rounded-xl text-sm shadow-xs"
                       />
                     </div>
                   )}
 
                   <div className="space-y-1.5">
-                    <Label htmlFor="email" className="text-xs font-semibold text-neutral-300">
-                      {authMode === "signup" ? "Email Address" : "Email or Username"}
+                    <Label htmlFor="email" className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
+                      {authMode === "signup" ? "Work Email Address" : "Email or Username"}
                     </Label>
                     <Input
                       id="email"
                       type={authMode === "signup" ? "email" : "text"}
-                      placeholder="you@domain.com"
+                      placeholder="you@company.com"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       disabled={isPending}
                       required
                       autoComplete="email"
-                      className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm"
+                      className="bg-white border-slate-300 text-slate-900 placeholder:text-slate-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20 h-11 rounded-xl text-sm shadow-xs"
                     />
                   </div>
 
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="password" className="text-xs font-semibold text-neutral-300">
+                      <Label htmlFor="password" className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
                         Password
                       </Label>
                       {authMode === "signup" ? (
-                        <span className="text-[11px] text-neutral-400">
-                          Min 8 chars, mixed letters & numbers/symbols
+                        <span className="text-[11px] text-slate-500">
+                          Min 8 chars, mixed letters & numbers
                         </span>
                       ) : (
                         <button
@@ -807,7 +973,7 @@ export default function UserLogin() {
                             setAuthMode("forgot");
                             setRecoveryStep(1);
                           }}
-                          className="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 transition-colors"
+                          className="text-[11px] text-emerald-700 hover:text-emerald-800 font-semibold underline underline-offset-2 transition-colors cursor-pointer"
                         >
                           Forgot Password?
                         </button>
@@ -817,18 +983,19 @@ export default function UserLogin() {
                       <Input
                         id="password"
                         type={showPassword ? "text" : "password"}
-                        placeholder={authMode === "signup" ? "Enter a strong password" : "Enter your password"}
+                        placeholder={authMode === "signup" ? "Choose a strong password" : "Enter your password"}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         disabled={isPending}
                         required
                         autoComplete={authMode === "signup" ? "new-password" : "current-password"}
-                        className="bg-[#222222] border-white/10 text-white placeholder:text-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 h-11 rounded-xl text-sm pr-10"
+                        className="bg-white border-slate-300 text-slate-900 placeholder:text-slate-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20 h-11 rounded-xl text-sm pr-10 shadow-xs"
                       />
                       <button
                         type="button"
+                        aria-label="Toggle password visibility"
                         onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
                       >
                         {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </button>
@@ -849,9 +1016,9 @@ export default function UserLogin() {
                           checked={newsletter}
                           onCheckedChange={(checked) => setNewsletter(!!checked)}
                           disabled={isPending}
-                          className="mt-0.5 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500 border-white/20"
+                          className="mt-0.5 data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600 border-slate-300"
                         />
-                        <Label htmlFor="newsletter" className="text-xs text-neutral-400 font-normal leading-relaxed cursor-pointer">
+                        <Label htmlFor="newsletter" className="text-xs text-slate-600 font-normal leading-relaxed cursor-pointer select-none">
                           Send me email updates on newly detected bot ranges, traffic anomalies, and feature releases.
                         </Label>
                       </div>
@@ -860,7 +1027,7 @@ export default function UserLogin() {
                       <div
                         className={`flex items-start gap-2.5 p-2 rounded-lg transition-colors ${
                           formSubmittedAttempt && !tosAccepted
-                            ? "bg-rose-500/10 border border-rose-500/30"
+                            ? "bg-rose-50 border border-rose-200"
                             : "border border-transparent"
                         }`}
                       >
@@ -869,22 +1036,22 @@ export default function UserLogin() {
                           checked={tosAccepted}
                           onCheckedChange={(checked) => setTosAccepted(!!checked)}
                           disabled={isPending}
-                          className={`mt-0.5 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500 ${
+                          className={`mt-0.5 data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600 ${
                             formSubmittedAttempt && !tosAccepted
-                              ? "border-rose-400 ring-1 ring-rose-400"
-                              : "border-white/30"
+                              ? "border-rose-500 ring-1 ring-rose-500"
+                              : "border-slate-300"
                           }`}
                         />
-                        <div className="space-y-1">
-                          <Label htmlFor="tos" className="text-xs text-neutral-300 font-normal leading-relaxed cursor-pointer block">
+                        <div className="space-y-1 select-none">
+                          <Label htmlFor="tos" className="text-xs text-slate-700 font-normal leading-relaxed cursor-pointer block">
                             I agree to the{" "}
-                            <span className="text-emerald-400 underline underline-offset-2 font-medium">Terms of Service</span>{" "}
+                            <span className="text-emerald-700 underline underline-offset-2 font-semibold">Terms of Service</span>{" "}
                             and{" "}
-                            <span className="text-emerald-400 underline underline-offset-2 font-medium">Privacy Policy</span>.
-                            <span className="text-rose-400 ml-1 font-semibold">*</span>
+                            <span className="text-emerald-700 underline underline-offset-2 font-semibold">Privacy Policy</span>.
+                            <span className="text-rose-500 ml-1 font-semibold">*</span>
                           </Label>
                           {formSubmittedAttempt && !tosAccepted && (
-                            <p className="text-[11px] text-rose-400 flex items-center gap-1 font-medium">
+                            <p className="text-[11px] text-rose-600 flex items-center gap-1 font-medium">
                               <AlertCircle className="w-3 h-3" />
                               You must accept the Terms of Service & Privacy Policy to sign up.
                             </p>
@@ -894,7 +1061,7 @@ export default function UserLogin() {
                     </div>
                   )}
 
-                  {/* Submit Button with Loading Spinner to prevent multiple submissions */}
+                  {/* Submit Button with Loading Spinner */}
                   <Button
                     type="submit"
                     disabled={
@@ -902,24 +1069,24 @@ export default function UserLogin() {
                       (authMode === "signup" &&
                         (!passwordEvaluation.isSatisfied || !email.trim() || !tosAccepted))
                     }
-                    className="w-full h-12 mt-2 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-black font-semibold rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full h-12 mt-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-semibold rounded-xl text-sm transition-all duration-150 flex items-center justify-center gap-2 shadow-xs hover:shadow disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
                     {isPending ? (
                       <div className="flex items-center gap-2">
-                        <Loader2 className="w-4 h-4 animate-spin text-black" />
+                        <Loader2 className="w-4 h-4 animate-spin text-white" />
                         <span>{authMode === "signup" ? "Creating Your Account..." : "Signing In..."}</span>
                       </div>
                     ) : (
                       <>
-                        <span>{authMode === "signup" ? "Sign Up & Start Trial" : "Sign In to Dashboard"}</span>
+                        <span>{authMode === "signup" ? "Sign Up & Start Free Trial" : "Sign In to Dashboard"}</span>
                         <ArrowRight className="w-4 h-4" />
                       </>
                     )}
                   </Button>
                 </form>
 
-                {/* Bottom Mode Switcher & Forgot Password link */}
-                <div className="mt-6 text-center text-xs text-neutral-400 space-y-2">
+                {/* Bottom Mode Switcher & Admin link */}
+                <div className="mt-6 pt-5 border-t border-slate-100 text-center text-xs text-slate-600 space-y-2">
                   {authMode === "signup" ? (
                     <p>
                       Already have an account?{" "}
@@ -929,7 +1096,7 @@ export default function UserLogin() {
                           setAuthMode("signin");
                           setFormSubmittedAttempt(false);
                         }}
-                        className="text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 ml-1"
+                        className="text-emerald-700 hover:text-emerald-800 font-semibold underline underline-offset-2 ml-1 cursor-pointer"
                       >
                         Sign In
                       </button>
@@ -941,7 +1108,7 @@ export default function UserLogin() {
                           setAuthMode("forgot");
                           setRecoveryStep(1);
                         }}
-                        className="text-neutral-400 hover:text-emerald-400 font-medium transition-colors"
+                        className="text-slate-500 hover:text-emerald-700 font-medium transition-colors cursor-pointer"
                       >
                         Forgot Password?
                       </button>
@@ -956,7 +1123,7 @@ export default function UserLogin() {
                             setAuthMode("signup");
                             setFormSubmittedAttempt(false);
                           }}
-                          className="text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 ml-1"
+                          className="text-emerald-700 hover:text-emerald-800 font-semibold underline underline-offset-2 ml-1 cursor-pointer"
                         >
                           Start 7-Day Free Trial
                         </button>
@@ -969,7 +1136,7 @@ export default function UserLogin() {
                             setAuthMode("forgot");
                             setRecoveryStep(1);
                           }}
-                          className="text-xs text-neutral-400 hover:text-emerald-400 transition-colors underline underline-offset-2"
+                          className="text-xs text-slate-500 hover:text-emerald-700 transition-colors underline underline-offset-2 cursor-pointer"
                         >
                           Forgot your password? Reset it here
                         </button>
@@ -985,7 +1152,7 @@ export default function UserLogin() {
       </main>
 
       {/* ── Footer ──────────────────────────────────────────────────────── */}
-      <footer className="border-t border-white/5 py-6 px-4 text-center text-xs text-neutral-500">
+      <footer className="border-t border-slate-200/80 py-6 px-4 text-center text-xs text-slate-500 bg-white/50 relative z-10">
         <p>© {new Date().getFullYear()} CleanTraffic Inc. All rights reserved. Enterprise Bot Mitigation & Geofencing Platform.</p>
       </footer>
     </div>

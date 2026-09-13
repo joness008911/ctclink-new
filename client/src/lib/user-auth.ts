@@ -8,6 +8,12 @@ export interface ClientUser {
   emailVerified?: boolean;
   emailVerifiedAt?: string | Date | null;
   status: string;
+  complianceStatus?: string;
+  statusReason?: string | null;
+  statusUpdatedAt?: string | Date | null;
+  statusUpdatedBy?: string | null;
+  statusHistory?: any[];
+  deactivatedAt?: string | Date | null;
   subscriptionStatus?: string;
   trialEndsAt?: string | Date | null;
   trialDaysRemaining?: number | null;
@@ -59,6 +65,12 @@ export interface ResetPasswordPayload {
   code?: string;
   token?: string;
   newPassword: string;
+}
+
+export interface ChangePasswordPayload {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
 }
 
 export interface VerifyEmailPayload {
@@ -177,6 +189,15 @@ export const userAuthApi = {
 
   acceptTos: async (): Promise<any> => {
     const response = await apiRequest("POST", "/api/user/accept-tos");
+    const data = await response.json();
+    if (data.token) {
+      localStorage.setItem('client_auth_token', data.token);
+    }
+    return data;
+  },
+
+  changePassword: async (payload: ChangePasswordPayload): Promise<{ success: boolean; message: string; token?: string }> => {
+    const response = await apiRequest("POST", "/api/user/change-password", payload);
     const data = await response.json();
     if (data.token) {
       localStorage.setItem('client_auth_token', data.token);

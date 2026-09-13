@@ -11,6 +11,8 @@ export type AuthDenialCode =
   | "SUBSCRIPTION_EXPIRED"
   | "ACCOUNT_SUSPENDED"
   | "ACCOUNT_DEACTIVATED"
+  | "ACCOUNT_FLAGGED"
+  | "ACCOUNT_PENDING"
   | "QUOTA_EXCEEDED"
   | "INTERNAL_ERROR";
 
@@ -332,7 +334,9 @@ export async function authorizeApiKey(rawApiKey: string | null | undefined): Pro
       authorized: false,
       statusCode: 403,
       code: "ACCOUNT_SUSPENDED",
-      message: "Account has been suspended. Please contact support.",
+      message: keyOwner.statusReason 
+        ? `Account suspended: ${keyOwner.statusReason}. Please contact support.` 
+        : "Account has been suspended. Please contact support.",
       apiKeyId: apiKeyRecord.id,
       keyOwnerId: keyOwner.id,
       entitlementType: "none",
@@ -348,7 +352,45 @@ export async function authorizeApiKey(rawApiKey: string | null | undefined): Pro
       authorized: false,
       statusCode: 403,
       code: "ACCOUNT_DEACTIVATED",
-      message: "Account has been deactivated. Please contact support.",
+      message: keyOwner.statusReason 
+        ? `Account deactivated: ${keyOwner.statusReason}. Please contact support.` 
+        : "Account has been deactivated. Please contact support.",
+      apiKeyId: apiKeyRecord.id,
+      keyOwnerId: keyOwner.id,
+      entitlementType: "none",
+      effectiveTier: normalizeTier(keyOwner.subscriptionTier),
+      limitReached: true,
+      user: keyOwner,
+      apiKey: apiKeyRecord,
+    };
+  }
+
+  if (keyOwner.complianceStatus === "flagged") {
+    return {
+      authorized: false,
+      statusCode: 403,
+      code: "ACCOUNT_FLAGGED",
+      message: keyOwner.statusReason
+        ? `Account flagged for security review: ${keyOwner.statusReason}. API access is restricted.`
+        : "Account is flagged for security review. API access is restricted.",
+      apiKeyId: apiKeyRecord.id,
+      keyOwnerId: keyOwner.id,
+      entitlementType: "none",
+      effectiveTier: normalizeTier(keyOwner.subscriptionTier),
+      limitReached: true,
+      user: keyOwner,
+      apiKey: apiKeyRecord,
+    };
+  }
+
+  if (keyOwner.complianceStatus === "pending") {
+    return {
+      authorized: false,
+      statusCode: 403,
+      code: "ACCOUNT_PENDING",
+      message: keyOwner.statusReason
+        ? `Account pending approval: ${keyOwner.statusReason}. API access is restricted until cleared.`
+        : "Account is pending administrative approval. API access is restricted until cleared.",
       apiKeyId: apiKeyRecord.id,
       keyOwnerId: keyOwner.id,
       entitlementType: "none",

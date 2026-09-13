@@ -139,6 +139,11 @@ export default function UserDashboard() {
   });
 
   const statusSummary = computeEffectiveAccountStatus({
+    status: user?.status,
+    complianceStatus: (user as any)?.complianceStatus,
+    statusReason: (user as any)?.statusReason,
+    statusUpdatedAt: (user as any)?.statusUpdatedAt,
+    statusUpdatedBy: (user as any)?.statusUpdatedBy,
     subscriptionStatus: billing?.subscriptionStatus ?? user?.subscriptionStatus,
     subscriptionTier: (billing as any)?.subscriptionTier ?? (user as any)?.subscriptionTier,
     trialEndsAt: billing?.trialEndsAt ?? user?.trialEndsAt,
@@ -377,6 +382,46 @@ export default function UserDashboard() {
 
         {/* Dashboard Canvas Container */}
         <main className="flex-1 p-4 md:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
+          {/* Account Flagged for Review Banner */}
+          {(user?.complianceStatus === "flagged" || statusSummary.isFlagged) && (
+            <Alert className="bg-amber-500/10 border-amber-500/30 text-amber-900 dark:text-amber-200 rounded-xl shadow-xs" data-testid="alert-account-flagged">
+              <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+              <AlertDescription className="text-xs space-y-1">
+                <div className="font-semibold text-amber-950 dark:text-amber-100">
+                  Account Flagged for Compliance Review
+                </div>
+                <div className="text-amber-800 dark:text-amber-300">
+                  Your account is currently flagged for security review. Link routing updates and new API key generations are temporarily locked. Existing traffic protection filters remain operational.
+                  {user?.statusReason && (
+                    <span className="block mt-1 font-medium italic text-amber-900 dark:text-amber-200">
+                      Reason: "{user.statusReason}"
+                    </span>
+                  )}
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* Account Pending Verification Banner */}
+          {(user?.complianceStatus === "pending" || statusSummary.isPending) && (
+            <Alert className="bg-blue-50 border-blue-200 text-blue-900 rounded-xl shadow-xs" data-testid="alert-account-pending">
+              <Clock className="h-4 w-4 text-blue-600 shrink-0" />
+              <AlertDescription className="text-xs space-y-1">
+                <div className="font-semibold text-blue-950">
+                  Account Verification Pending
+                </div>
+                <div className="text-blue-800">
+                  Your account is awaiting administrative clearance. Routing updates and link deployment will unlock as soon as your account is approved.
+                  {user?.statusReason && (
+                    <span className="block mt-1 font-medium italic text-blue-900">
+                      Note: "{user.statusReason}"
+                    </span>
+                  )}
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Trial Expired Alert Banner */}
           {statusSummary.isTrialExpired && (
             <Alert className="bg-rose-50/95 border-rose-200 text-rose-900 rounded-xl shadow-xs" data-testid="alert-trial-expired">
@@ -468,6 +513,8 @@ export default function UserDashboard() {
           {activeTab === "routing" && (
             <UserRoutingTab
               isReadOnly={!statusSummary.isActive}
+              complianceStatus={user?.complianceStatus || statusSummary.complianceStatus}
+              statusReason={user?.statusReason || statusSummary.statusReason}
               onUpgradeClick={() => setActiveTab("settings")}
             />
           )}

@@ -108,6 +108,17 @@ export const clientIpWhitelist = pgTable("client_ip_whitelist", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export interface StatusHistoryEntry {
+  fromStatus?: string;
+  toStatus?: string;
+  fromCompliance?: string;
+  toCompliance?: string;
+  reason: string;
+  changedBy: string;
+  changedAt?: string;
+  timestamp?: string;
+}
+
 // Client Users (End-user customers who use the CleanTraffic service)
 export const clientUsers = pgTable("client_users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -118,9 +129,14 @@ export const clientUsers = pgTable("client_users", {
   emailVerified: boolean("email_verified").default(false).notNull(),
   emailVerifiedAt: timestamp("email_verified_at"),
   apiKeyId: varchar("api_key_id").references(() => apiKeys.id, { onDelete: 'set null' }),
-  status: text("status").default("active").notNull(), // active, suspended, expired
+  status: text("status").default("active").notNull(), // active, suspended, deactivated, deleted
   tosAccepted: timestamp("tos_accepted"), // Terms of service acceptance timestamp
   complianceStatus: text("compliance_status").default("pending").notNull(), // pending, cleared, flagged, suspended
+  statusReason: text("status_reason"),
+  statusUpdatedAt: timestamp("status_updated_at"),
+  statusUpdatedBy: text("status_updated_by"),
+  statusHistory: jsonb("status_history").$type<StatusHistoryEntry[]>(),
+  deactivatedAt: timestamp("deactivated_at"),
   newsletter: boolean("newsletter").default(false),
   // Billing fields
   subscriptionStatus: text("subscription_status").default("trialing").notNull(), // trialing, trial_expired, active, past_due, cancelled

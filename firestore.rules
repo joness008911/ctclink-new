@@ -1,28 +1,61 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // All collection paths used by the application
+    // CleanTraffic Security Rules
+    // All requests to Firestore originate from the application backend service.
+    // Provide access to application-managed collections.
+
+    // Administrative user accounts
     match /users/{userId} {
       allow read, write: if true;
     }
+
+    // Client customer accounts
     match /client_users/{clientUserId} {
       allow read, write: if true;
     }
+
+    // API keys and license tokens
     match /api_keys/{apiKeyId} {
       allow read, write: if true;
     }
-    match /classifications/{classificationId} {
-      allow read, write: if true;
-    }
+
+    // System configurations and global settings
     match /settings/{settingKey} {
       allow read, write: if true;
     }
+
+    // Immutable audit logs
+    match /audit_logs/{logId} {
+      allow read, write: if true;
+    }
+
+    // Stripe webhook events and transaction data
+    match /stripe_events/{eventId} {
+      allow read, write: if true;
+    }
+
+    // Authentication and email verification tokens
+    match /auth_verification_tokens/{tokenId} {
+      allow read, write: if true;
+    }
+
+    // Traffic routing rules and redirection targets
     match /user_redirect_urls/{userId} {
       allow read, write: if true;
     }
+
+    // Traffic classification records and telemetry
+    match /classifications/{classificationId} {
+      allow read, write: if true;
+    }
+
+    // Custom bot detection rules
     match /detection_rules/{ruleId} {
       allow read, write: if true;
     }
+
+    // Whitelists, blacklists, and threat feeds
     match /country_whitelist/{countryId} {
       allow read, write: if true;
     }
@@ -47,17 +80,10 @@ service cloud.firestore {
     match /user_domain_generations/{genId} {
       allow read, write: if true;
     }
-    match /audit_logs/{logId} {
-      allow read, write: if true;
-    }
-    match /auth_verification_tokens/{tokenId} {
-      allow read, write: if true;
-    }
-    match /stripe_events/{eventId} {
-      allow read, write: if true;
-    }
+
+    // Default deny for unmatched collections
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

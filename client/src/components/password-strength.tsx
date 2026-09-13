@@ -61,39 +61,39 @@ export function evaluatePassword(password: string) {
 
   let level: "empty" | "weak" | "fair" | "good" | "strong" = "empty";
   let label = "Enter password";
-  let color = "bg-neutral-700";
-  let textColor = "text-neutral-400";
+  let color = "bg-slate-300";
+  let textColor = "text-slate-500";
   let percent = 0;
 
   if (password.length === 0) {
     level = "empty";
     label = "Password strength";
-    color = "bg-neutral-800";
-    textColor = "text-neutral-500";
+    color = "bg-slate-200";
+    textColor = "text-slate-400";
     percent = 0;
   } else if (passedCount <= 2 || !lengthValid) {
     level = "weak";
     label = "Weak password";
     color = "bg-rose-500";
-    textColor = "text-rose-400";
+    textColor = "text-rose-600";
     percent = 25;
   } else if (passedCount <= 3) {
     level = "fair";
     label = "Fair password";
     color = "bg-amber-500";
-    textColor = "text-amber-400";
+    textColor = "text-amber-700";
     percent = 50;
   } else if (passedCount <= 5) {
     level = "good";
     label = "Good password";
     color = "bg-emerald-500";
-    textColor = "text-emerald-400";
+    textColor = "text-emerald-700";
     percent = 75;
   } else {
     level = "strong";
     label = "Strong password";
-    color = "bg-emerald-400";
-    textColor = "text-emerald-300";
+    color = "bg-emerald-600";
+    textColor = "text-emerald-800";
     percent = 100;
   }
 
@@ -138,66 +138,66 @@ export function PasswordStrengthIndicator({
   ];
 
   return (
-    <div className="mt-2 space-y-2.5 rounded-lg bg-black/40 border border-white/5 p-3 text-xs">
+    <div className="mt-2.5 space-y-2.5 rounded-xl bg-slate-50 border border-slate-200/90 p-3.5 text-xs">
       {/* Header bar with visual indicator */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5 font-medium">
           {isSatisfied ? (
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <ShieldCheck className="w-4 h-4 text-emerald-600" />
           ) : (
-            <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+            <ShieldAlert className="w-4 h-4 text-amber-600" />
           )}
           <span className={textColor}>{label}</span>
         </div>
-        <span className="text-[11px] text-neutral-500 font-mono">{percent}% strength</span>
+        <span className="text-[11px] text-slate-500 font-medium">{percent}% strong</span>
       </div>
 
       {/* Multi-segment strength bar */}
-      <div className="grid grid-cols-4 gap-1.5 h-1.5 w-full bg-white/5 rounded-full overflow-hidden p-0.5">
+      <div className="grid grid-cols-4 gap-1.5 h-1.5 w-full bg-slate-200 rounded-full overflow-hidden p-0.5">
         <div
           className={`h-full rounded-full transition-all duration-300 ${
-            percent >= 25 ? color : "bg-white/10"
+            percent >= 25 ? color : "bg-slate-200"
           }`}
         />
         <div
           className={`h-full rounded-full transition-all duration-300 ${
-            percent >= 50 ? color : "bg-white/10"
+            percent >= 50 ? color : "bg-slate-200"
           }`}
         />
         <div
           className={`h-full rounded-full transition-all duration-300 ${
-            percent >= 75 ? color : "bg-white/10"
+            percent >= 75 ? color : "bg-slate-200"
           }`}
         />
         <div
           className={`h-full rounded-full transition-all duration-300 ${
-            percent >= 100 ? color : "bg-white/10"
+            percent >= 100 ? color : "bg-slate-200"
           }`}
         />
       </div>
 
       {/* Detailed checklist */}
       {showRequirements && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1 border-t border-white/5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-2 border-t border-slate-200/80">
           {checks.map((check, idx) => (
             <div
               key={idx}
               className={`flex items-center gap-1.5 text-[11px] transition-colors ${
-                check.passed ? "text-emerald-400 font-medium" : "text-neutral-500"
+                check.passed ? "text-emerald-800 font-medium" : "text-slate-500"
               }`}
             >
               <div
                 className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 text-[10px] ${
                   check.passed
-                    ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
-                    : "bg-white/5 text-neutral-600 border border-white/10"
+                    ? "bg-emerald-100 text-emerald-700 border border-emerald-300"
+                    : "bg-slate-100 text-slate-400 border border-slate-200"
                 }`}
               >
                 {check.passed ? <Check className="w-2.5 h-2.5" /> : <X className="w-2.5 h-2.5" />}
               </div>
               <span>
                 {check.label}
-                {check.required && <span className="text-neutral-500 ml-0.5">*</span>}
+                {check.required && <span className="text-slate-400 ml-0.5">*</span>}
               </span>
             </div>
           ))}

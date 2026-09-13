@@ -527,6 +527,169 @@ export const defaultEmailTemplates = {
 </body>
 </html>`,
   },
+  account_status: {
+    subject: "Important Account Notice: Status updated to {{status_label}} - {{app_name}}",
+    html: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Account Status Update</title>
+  <style>
+    body { margin: 0; padding: 0; background-color: #0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #e2e8f0; }
+    .container { max-width: 580px; margin: 40px auto; background: #111827; border: 1px solid #1f2937; border-radius: 16px; overflow: hidden; }
+    .header { background: linear-gradient(135deg, #1e293b, #0f172a); padding: 28px 32px; border-bottom: 1px solid #1f2937; }
+    .logo { font-size: 20px; font-weight: 800; color: #ffffff; }
+    .content { padding: 32px; }
+    h1 { font-size: 20px; font-weight: 700; color: #f8fafc; margin-top: 0; margin-bottom: 16px; }
+    p { font-size: 15px; line-height: 1.6; color: #cbd5e1; margin: 0 0 16px 0; }
+    .status-badge { display: inline-block; padding: 6px 14px; border-radius: 9999px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 20px; background: #334155; color: #f1f5f9; }
+    .status-suspended { background: #7f1d1d; color: #fecaca; }
+    .status-flagged { background: #78350f; color: #fef08a; }
+    .status-pending { background: #1e3a8a; color: #bfdbfe; }
+    .status-cleared { background: #064e3b; color: #a7f3d0; }
+    .status-deactivated { background: #334155; color: #e2e8f0; }
+    .details-box { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 18px; margin: 20px 0; }
+    .detail-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1e293b; font-size: 14px; }
+    .detail-row:last-child { border-bottom: none; }
+    .detail-label { color: #94a3b8; font-weight: 500; }
+    .detail-value { color: #f8fafc; font-weight: 600; text-align: right; }
+    .reason-box { background: rgba(239, 68, 68, 0.08); border-left: 4px solid #ef4444; padding: 14px 16px; margin: 20px 0; border-radius: 4px; font-size: 14px; color: #fca5a5; }
+    .btn { display: inline-block; background: #2563eb; color: #ffffff !important; text-decoration: none; padding: 12px 28px; font-size: 14px; font-weight: 600; border-radius: 8px; margin-top: 12px; }
+    .footer { background: #0b0f19; padding: 20px 32px; text-align: center; font-size: 12px; color: #64748b; border-top: 1px solid #1e293b; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">CleanTraffic <span>Security System</span></div>
+    </div>
+    <div class="content">
+      <h1>Account Status Notification</h1>
+      <p>Hello <strong>{{name}}</strong>,</p>
+      <p>This automated message is to inform you that your account status on {{app_name}} has been updated:</p>
+      
+      <div style="margin: 12px 0;">
+        <span class="status-badge status-{{status_class}}">{{status_label}}</span>
+      </div>
+
+      <div class="details-box">
+        <div class="detail-row">
+          <span class="detail-label">Account Username:</span>
+          <span class="detail-value">{{username}}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Previous Status:</span>
+          <span class="detail-value">{{previous_status}}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">New Status:</span>
+          <span class="detail-value">{{status_label}}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Effective Date:</span>
+          <span class="detail-value">{{timestamp}}</span>
+        </div>
+      </div>
+
+      <div class="reason-box">
+        <strong>Reason / Remarks:</strong><br>
+        {{reason}}
+      </div>
+
+      <p>{{impact_message}}</p>
+
+      <div style="text-align: center; margin: 24px 0;">
+        <a href="{{login_link}}" class="btn">Access User Portal</a>
+      </div>
+    </div>
+    <div class="footer">
+      &copy; {{current_year}} {{app_name}} Security Operations.<br>
+      For questions or appeals, please contact <a href="mailto:{{support_email}}" style="color: #38bdf8;">{{support_email}}</a>.
+    </div>
+  </div>
+</body>
+</html>`,
+  },
+  password_changed: {
+    subject: "Security Alert: Password Changed for {{app_name}}",
+    html: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Security Alert - Password Changed</title>
+  <style>
+    body { margin: 0; padding: 0; background-color: #0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #e2e8f0; }
+    .container { max-width: 580px; margin: 40px auto; background: #111827; border: 1px solid #1f2937; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); }
+    .header { background: linear-gradient(135deg, #0f2b23, #0f172a); padding: 28px 32px; border-bottom: 1px solid #1f2937; }
+    .logo { font-size: 20px; font-weight: 800; color: #ffffff; }
+    .logo span { color: #10b981; }
+    .content { padding: 32px; }
+    h1 { font-size: 20px; font-weight: 700; color: #f8fafc; margin-top: 0; margin-bottom: 16px; }
+    p { font-size: 15px; line-height: 1.6; color: #cbd5e1; margin: 0 0 16px 0; }
+    .badge { display: inline-block; padding: 6px 14px; border-radius: 9999px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 20px; background: #064e3b; color: #a7f3d0; border: 1px solid #047857; }
+    .details-box { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 18px; margin: 20px 0; }
+    .detail-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1e293b; font-size: 14px; }
+    .detail-row:last-child { border-bottom: none; }
+    .detail-label { color: #94a3b8; font-weight: 500; }
+    .detail-value { color: #f8fafc; font-weight: 600; text-align: right; }
+    .warning-box { background: rgba(239, 68, 68, 0.08); border-left: 4px solid #ef4444; padding: 14px 16px; margin: 20px 0; border-radius: 4px; font-size: 14px; color: #fca5a5; line-height: 1.5; }
+    .btn { display: inline-block; background: #0A5C48; color: #ffffff !important; text-decoration: none; padding: 12px 28px; font-size: 14px; font-weight: 600; border-radius: 8px; margin-top: 12px; }
+    .footer { background: #0b0f19; padding: 20px 32px; text-align: center; font-size: 12px; color: #64748b; border-top: 1px solid #1e293b; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">CleanTraffic <span>Security System</span></div>
+    </div>
+    <div class="content">
+      <div class="badge">Security Notice</div>
+      <h1>Your Password Has Been Changed</h1>
+      <p>Hello <strong>{{name}}</strong>,</p>
+      <p>The password for your {{app_name}} account (<strong>{{email}}</strong>) was successfully updated.</p>
+
+      <div class="details-box">
+        <div class="detail-row">
+          <span class="detail-label">Account:</span>
+          <span class="detail-value">{{email}}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Event:</span>
+          <span class="detail-value">Password Change</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Date & Time:</span>
+          <span class="detail-value">{{timestamp}}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">IP Address:</span>
+          <span class="detail-value">{{ip_address}}</span>
+        </div>
+      </div>
+
+      <p style="font-size: 14px; color: #94a3b8;">
+        For your security, all active sessions and existing tokens on other devices have been invalidated.
+      </p>
+
+      <div class="warning-box">
+        <strong>Did not make this change?</strong><br>
+        Your password was recently changed. If you did not make this change, please contact support/security immediately at <a href="mailto:{{support_email}}" style="color: #f87171; text-decoration: underline;">{{support_email}}</a> or request an immediate password reset.
+      </div>
+
+      <div style="text-align: center; margin: 24px 0;">
+        <a href="{{login_link}}" class="btn">Go to User Portal</a>
+      </div>
+    </div>
+    <div class="footer">
+      &copy; {{current_year}} {{app_name}} Enterprise Security. All rights reserved.<br>
+      Automated security alert &bull; Do not reply directly to this message.
+    </div>
+  </div>
+</body>
+</html>`,
+  },
 };
 
 // ── Get Stored or Default Template ──────────────────────────────────────────
@@ -787,3 +950,92 @@ export async function sendWelcomeEmail(params: {
     },
   });
 }
+
+export async function sendAccountStatusEmail(params: {
+  to: string;
+  name?: string;
+  username: string;
+  newStatus: string;
+  previousStatus?: string;
+  reason?: string;
+  changedBy?: string;
+}): Promise<{ success: boolean; message: string; simulated?: boolean; messageId?: string }> {
+  const { to, name, username, newStatus, previousStatus, reason, changedBy } = params;
+  const tpl = await getEmailTemplate("account_status");
+
+  const normalizedStatus = newStatus.toLowerCase().trim();
+  let statusLabel = newStatus.toUpperCase();
+  let statusClass = "pending";
+  let impactMessage = "Your account status has been updated by system administration.";
+
+  if (normalizedStatus === "suspended") {
+    statusLabel = "Suspended";
+    statusClass = "suspended";
+    impactMessage = "Your account access, dashboard logins, and all associated API keys have been suspended. API requests utilizing your keys will return HTTP 403 Forbidden. If you believe this is an error, please contact our support team immediately.";
+  } else if (normalizedStatus === "flagged") {
+    statusLabel = "Flagged / Under Review";
+    statusClass = "flagged";
+    impactMessage = "Your account has been flagged for security and compliance review. While basic dashboard access remains available, high-risk actions such as generating new routing links and creating or modifying API keys are temporarily restricted.";
+  } else if (normalizedStatus === "pending") {
+    statusLabel = "Pending Approval";
+    statusClass = "pending";
+    impactMessage = "Your account is awaiting administrative review. Live traffic link generation and active routing features will activate as soon as your account is cleared.";
+  } else if (normalizedStatus === "cleared" || normalizedStatus === "active") {
+    statusLabel = "Active / Cleared";
+    statusClass = "cleared";
+    impactMessage = "Your account is in good standing. All protection modules, link routing features, telemetry analytics, and API keys are fully operational.";
+  } else if (normalizedStatus === "deactivated") {
+    statusLabel = "Deactivated";
+    statusClass = "deactivated";
+    impactMessage = "Your account has been deactivated. All active sessions have been invalidated and API keys paused.";
+  } else if (normalizedStatus === "deleted") {
+    statusLabel = "Deleted";
+    statusClass = "suspended";
+    impactMessage = "Your account and associated configuration data have been permanently removed from our active database.";
+  }
+
+  return await sendEmail({
+    to,
+    subject: `Account Status Notice: ${statusLabel} - CleanTraffic Security`,
+    html: tpl.html,
+    templateType: "account_status",
+    variables: {
+      name: name || username || to.split("@")[0],
+      username,
+      status_label: statusLabel,
+      status_class: statusClass,
+      previous_status: previousStatus || "Active",
+      reason: reason || "Administrative account review and status update.",
+      changed_by: changedBy || "System Administrator",
+      timestamp: new Date().toUTCString(),
+      impact_message: impactMessage,
+      login_link: "/signin",
+    },
+  });
+}
+
+// ── Send Password Changed Security Email ─────────────────────────────────────
+export async function sendPasswordChangedEmail(params: {
+  to: string;
+  name?: string;
+  ipAddress?: string;
+  timestamp?: string;
+}): Promise<{ success: boolean; message: string; simulated?: boolean; messageId?: string }> {
+  const { to, name, ipAddress, timestamp } = params;
+  const tpl = await getEmailTemplate("password_changed");
+
+  return await sendEmail({
+    to,
+    subject: tpl.subject,
+    html: tpl.html,
+    templateType: "password_changed",
+    variables: {
+      name: name || to.split("@")[0],
+      email: to,
+      timestamp: timestamp || new Date().toUTCString(),
+      ip_address: ipAddress || "Unknown",
+      login_link: "/user",
+    },
+  });
+}
+

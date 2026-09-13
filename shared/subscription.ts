@@ -24,6 +24,14 @@ export interface AccountStatusSummary {
   isCancelled: boolean;
   isSuspended: boolean;
   isDeactivated: boolean;
+  complianceStatus?: 'cleared' | 'flagged' | 'pending' | 'suspended';
+  isFlagged?: boolean;
+  isPending?: boolean;
+  isCleared?: boolean;
+  isRestricted?: boolean;
+  statusReason?: string;
+  statusUpdatedAt?: string;
+  statusUpdatedBy?: string;
   trialEndsAt: string | null;
   trialDaysRemaining: number | null;
   subscriptionEndsAt: string | null;
@@ -69,6 +77,9 @@ export function normalizeTier(tier?: string | null): SubscriptionTier {
 export function computeEffectiveAccountStatus(user: {
   status?: string | null;
   complianceStatus?: string | null;
+  statusReason?: string | null;
+  statusUpdatedAt?: Date | string | null;
+  statusUpdatedBy?: string | null;
   subscriptionStatus?: string | null;
   subscriptionTier?: string | null;
   trialEndsAt?: Date | string | null;
@@ -79,13 +90,42 @@ export function computeEffectiveAccountStatus(user: {
   const now = new Date();
   const rawStatus = (user.subscriptionStatus || 'trialing').toLowerCase().trim();
   const userStatus = (user.status || 'active').toLowerCase().trim();
-  const complianceStatus = (user.complianceStatus || 'cleared').toLowerCase().trim();
+  const rawCompliance = (user.complianceStatus || 'cleared').toLowerCase().trim();
+  const complianceStatus = (['cleared', 'flagged', 'pending', 'suspended'].includes(rawCompliance)
+    ? rawCompliance
+    : 'cleared') as 'cleared' | 'flagged' | 'pending' | 'suspended';
+  const isFlagged = complianceStatus === 'flagged';
+  const isPending = complianceStatus === 'pending';
+  const isCleared = complianceStatus === 'cleared';
+  const isRestricted = isFlagged || isPending;
+  const statusReason = user.statusReason || undefined;
+  const statusUpdatedAt = user.statusUpdatedAt ? (user.statusUpdatedAt instanceof Date ? user.statusUpdatedAt.toISOString() : String(user.statusUpdatedAt)) : undefined;
+  const statusUpdatedBy = user.statusUpdatedBy || undefined;
   const tier = normalizeTier(user.subscriptionTier);
   const tierCallLimit = getTierCallLimit(tier);
 
+  const attachCompliance = (summary: AccountStatusSummary): AccountStatusSummary => ({
+    ...summary,
+    complianceStatus,
+    isFlagged,
+    isPending,
+    isCleared,
+    isRestricted,
+    statusReason,
+    statusUpdatedAt,
+    statusUpdatedBy,
+    statusLabel: summary.isSuspended || summary.isDeactivated
+      ? summary.statusLabel
+      : isFlagged
+      ? `${summary.statusLabel} (Flagged)`
+      : isPending
+      ? `${summary.statusLabel} (Pending Review)`
+      : summary.statusLabel,
+  });
+
   // 1. ACCOUNT SUSPENDED (Account level or Compliance level)
   if (userStatus === 'suspended' || complianceStatus === 'suspended') {
-    return {
+    return attachCompliance({
       status: 'suspended',
       statusLabel: 'Suspended',
       tier,
@@ -104,13 +144,13 @@ export function computeEffectiveAccountStatus(user: {
       subscriptionEndsAt: null,
       callLimit: 0,
       notification: null,
-      rejectionReason: 'Account has been suspended. Please contact support.',
-    };
+      rejectionReason: statusReason || 'Account has been suspended. Please contact support.',
+    });
   }
 
   // 2. ACCOUNT DEACTIVATED / DELETED / INACTIVE
   if (userStatus === 'inactive' || userStatus === 'deactivated' || userStatus === 'deleted') {
-    return {
+    return attachCompliance({
       status: 'deactivated',
       statusLabel: 'Deactivated',
       tier,
@@ -129,8 +169,8 @@ export function computeEffectiveAccountStatus(user: {
       subscriptionEndsAt: null,
       callLimit: 0,
       notification: null,
-      rejectionReason: 'Account has been deactivated. Please contact support.',
-    };
+      rejectionReason: statusReason || 'Account has been deactivated. Please contact support.',
+    });
   }
 
   // Parse potential subscription end date (for paid subscriptions)
@@ -171,7 +211,7 @@ export function computeEffectiveAccountStatus(user: {
   if (rawStatus === 'active') {
     // Check if paid subscription had an explicit period end that has already passed
     if (subEndDate && subEndDate.getTime() <= now.getTime()) {
-      return {
+      return attachCompliance({
         status: 'past_due',
         statusLabel: 'Subscription Expired',
         tier,
@@ -195,10 +235,10 @@ export function computeEffectiveAccountStatus(user: {
           message: 'Your paid subscription has expired. Please renew your subscription in the dashboard to resume API calls.',
         },
         rejectionReason: 'Paid subscription has expired. Please renew your subscription in the dashboard to resume API calls.',
-      };
+      });
     }
 
-    return {
+    return attachCompliance({
       status: 'active',
       statusLabel: 'Active',
       tier,
@@ -217,7 +257,7 @@ export function computeEffectiveAccountStatus(user: {
       subscriptionEndsAt: subEndDate ? subEndDate.toISOString() : null,
       callLimit: tierCallLimit,
       notification: null, // No trial notification once upgraded
-    };
+    });
   }
 
   // 4. CANCELLED SUBSCRIPTION
@@ -225,7 +265,7 @@ export function computeEffectiveAccountStatus(user: {
     // Determine whether access remains active until the end of the paid billing period
     const hasRemainingPaidPeriod = subEndDate !== null && subEndDate.getTime() > now.getTime();
     if (hasRemainingPaidPeriod && subEndDate) {
-      return {
+      return attachCompliance({
         status: 'cancelled',
         statusLabel: `Cancelled (Active until ${subEndDate.toLocaleDateString()})`,
         tier,
@@ -244,10 +284,10 @@ export function computeEffectiveAccountStatus(user: {
         subscriptionEndsAt: subEndDate.toISOString(),
         callLimit: tierCallLimit,
         notification: null,
-      };
+      });
     }
 
-    return {
+    return attachCompliance({
       status: 'cancelled',
       statusLabel: 'Subscription Cancelled',
       tier,
@@ -271,12 +311,12 @@ export function computeEffectiveAccountStatus(user: {
         message: 'Your subscription has been cancelled. Please reactivate your subscription in the dashboard to resume API calls.',
       },
       rejectionReason: 'Subscription has been cancelled. Please reactivate your subscription in the dashboard to resume API calls.',
-    };
+    });
   }
 
   // 5. PAST DUE / UNPAID / EXPIRED PAID SUBSCRIPTION
   if (rawStatus === 'past_due' || rawStatus === 'unpaid' || rawStatus === 'expired') {
-    return {
+    return attachCompliance({
       status: 'past_due',
       statusLabel: 'Subscription Expired',
       tier,
@@ -300,12 +340,12 @@ export function computeEffectiveAccountStatus(user: {
         message: 'Your paid subscription has expired. Please renew your subscription in the dashboard to resume API calls.',
       },
       rejectionReason: 'Paid subscription has expired. Please renew your subscription in the dashboard to resume API calls.',
-    };
+    });
   }
 
   // 6. TRIAL EXPIRED (Explicit status or trial end date has passed)
   if (rawStatus === 'trial_expired' || (rawStatus === 'trialing' && hasTrialExpiredByDate)) {
-    return {
+    return attachCompliance({
       status: 'trial_expired',
       statusLabel: 'Trial Expired',
       tier,
@@ -329,7 +369,7 @@ export function computeEffectiveAccountStatus(user: {
         message: 'Your trial period has ended. Upgrade to continue classifying traffic without interruption.',
       },
       rejectionReason: 'API key has expired. Please renew your subscription in the dashboard.',
-    };
+    });
   }
 
   // 7. ACTIVE TRIAL (Trialing with future end date)
@@ -337,7 +377,7 @@ export function computeEffectiveAccountStatus(user: {
     const daysLeft = trialDaysRemaining ?? 0;
     const isExpiringSoon = daysLeft <= 3 && daysLeft > 0;
 
-    return {
+    return attachCompliance({
       status: 'trialing',
       statusLabel: 'Trialing',
       tier,
@@ -362,11 +402,11 @@ export function computeEffectiveAccountStatus(user: {
             message: `You have ${daysLeft} day${daysLeft === 1 ? '' : 's'} remaining on your trial. Upgrade now to avoid service interruption.`,
           }
         : null,
-    };
+    });
   }
 
   // Fallback default (inactive)
-  return {
+  return attachCompliance({
     status: 'trial_expired',
     statusLabel: 'Inactive',
     tier,
@@ -386,5 +426,5 @@ export function computeEffectiveAccountStatus(user: {
     callLimit: 0,
     notification: null,
     rejectionReason: 'Account subscription is inactive. Please upgrade or renew your subscription in the dashboard to resume API calls.',
-  };
+  });
 }

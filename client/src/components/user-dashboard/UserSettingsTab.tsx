@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { userAuthApi } from "@/lib/user-auth";
 import { useToast } from "@/hooks/use-toast";
 import { computeEffectiveAccountStatus, SubscriptionTier } from "@shared/subscription";
 import { 
@@ -15,12 +16,18 @@ import {
   Sparkles,
   ArrowRight,
   AlertTriangle,
-  Key
+  Key,
+  Eye,
+  EyeOff,
+  Check,
+  X,
+  AlertCircle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { evaluatePassword } from "@/components/password-strength";
 
 interface UserSettingsTabProps {
   user: any;
@@ -34,6 +41,10 @@ export function UserSettingsTab({ user, billing }: UserSettingsTabProps) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
 
   const checkoutMutation = useMutation({
     mutationFn: async () => {
@@ -52,56 +63,103 @@ export function UserSettingsTab({ user, billing }: UserSettingsTabProps) {
     },
   });
 
+  // Real-time password evaluation
+  const newPasswordEvaluation = evaluatePassword(newPassword);
+  const isSameAsCurrent = currentPassword.length > 0 && newPassword.length > 0 && currentPassword === newPassword;
+  const hasConfirm = confirmPassword.length > 0;
+  const isConfirmMatch = hasConfirm && newPassword === confirmPassword;
+  const isConfirmMismatch = hasConfirm && newPassword !== confirmPassword;
+  const isFormValid =
+    currentPassword.length > 0 &&
+    newPasswordEvaluation.isSatisfied &&
+    !isSameAsCurrent &&
+    isConfirmMatch;
+
   const changePasswordMutation = useMutation({
-    mutationFn: async (data: { currentPassword: string; newPassword: string }) => {
-      const response = await apiRequest("POST", "/api/user/change-password", data);
-      return response.json();
+    mutationFn: async (data: { currentPassword: string; newPassword: string; confirmPassword: string }) => {
+      return await userAuthApi.changePassword(data);
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast({
         title: "Password Changed",
-        description: "Your account password has been updated securely.",
+        description: data.message || "Your account password has been updated securely. A security notification was sent to your email.",
       });
       setIsPasswordDialogOpen(false);
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
+      setShowCurrentPassword(false);
+      setShowNewPassword(false);
+      setShowConfirmPassword(false);
+      setServerError(null);
     },
-    onError: (error: Error) => {
+    onError: (error: any) => {
+      let msg = "Failed to update password. Please check your credentials.";
+      try {
+        if (error.message) {
+          const parsed = JSON.parse(error.message.replace(/^\d+:\s*/, ""));
+          msg = parsed.message || msg;
+        }
+      } catch {
+        msg = error.message || msg;
+      }
+      setServerError(msg);
       toast({
         title: "Password Change Failed",
-        description: error.message || "Failed to change password",
+        description: msg,
         variant: "destructive",
       });
     },
   });
 
   const handleChangePassword = () => {
+    setServerError(null);
     if (!currentPassword || !newPassword || !confirmPassword) {
+      setServerError("Please fill out all required password fields.");
       toast({
         title: "Incomplete Fields",
-        description: "Please fill out all password fields",
+        description: "Please fill out all password fields.",
         variant: "destructive",
       });
       return;
     }
-    if (newPassword !== confirmPassword) {
+    if (isSameAsCurrent) {
+      setServerError("Your new password must be different from your current password.");
       toast({
-        title: "Passwords Mismatch",
-        description: "New password and confirmation must match",
+        title: "Password Reused",
+        description: "Your new password must be different from your current password.",
         variant: "destructive",
       });
       return;
     }
     if (newPassword.length < 8) {
+      setServerError("Password must be at least 8 characters long.");
       toast({
         title: "Password Too Short",
-        description: "Password must be at least 8 characters long",
+        description: "Password must be at least 8 characters long.",
         variant: "destructive",
       });
       return;
     }
-    changePasswordMutation.mutate({ currentPassword, newPassword });
+    if (!newPasswordEvaluation.isSatisfied) {
+      setServerError("Password must include uppercase, lowercase, and a number or symbol.");
+      toast({
+        title: "Complexity Requirements",
+        description: "Password must include uppercase, lowercase, and a number or symbol.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setServerError("New password and confirmation password do not match.");
+      toast({
+        title: "Passwords Mismatch",
+        description: "New password and confirmation must match.",
+        variant: "destructive",
+      });
+      return;
+    }
+    changePasswordMutation.mutate({ currentPassword, newPassword, confirmPassword });
   };
 
   const upgradeMutation = useMutation({
@@ -199,49 +257,214 @@ export function UserSettingsTab({ user, billing }: UserSettingsTabProps) {
                 Change Password
               </Button>
             </DialogTrigger>
-            <DialogContent className="bg-white border-[#E5EAE7] text-[#0F172A] shadow-xl">
+            <DialogContent className="bg-white border-[#E5EAE7] text-[#0F172A] shadow-xl sm:max-w-md">
               <DialogHeader>
-                <DialogTitle className="text-[#0F172A] font-bold">Update Password</DialogTitle>
+                <DialogTitle className="text-[#0F172A] font-bold text-base flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-[#0A5C48]" />
+                  Update Password
+                </DialogTitle>
                 <DialogDescription className="text-[#64748B] text-xs">
-                  Enter your current password and a new secure password (min 8 characters).
+                  Enter your current password and create a new secure password. All existing sessions on other devices will be invalidated for your security.
                 </DialogDescription>
               </DialogHeader>
-              <div className="space-y-3 py-3">
-                <div className="space-y-1">
-                  <Label className="text-xs font-bold text-[#2D3B35]">Current Password</Label>
-                  <Input
-                    type="password"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    className="bg-white border-[#D5DFD9] text-[#0F172A] text-xs focus:border-[#0A5C48] focus:ring-1 focus:ring-[#0A5C48]"
-                  />
+
+              {serverError && (
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
+                  <div className="flex-1 font-medium">{serverError}</div>
                 </div>
+              )}
+
+              <div className="space-y-3.5 py-2">
+                {/* Current Password */}
                 <div className="space-y-1">
-                  <Label className="text-xs font-bold text-[#2D3B35]">New Password</Label>
-                  <Input
-                    type="password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    className="bg-white border-[#D5DFD9] text-[#0F172A] text-xs focus:border-[#0A5C48] focus:ring-1 focus:ring-[#0A5C48]"
-                  />
+                  <Label htmlFor="currentPassword" className="text-xs font-bold text-[#2D3B35]">
+                    Current Password <span className="text-rose-500">*</span>
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="currentPassword"
+                      type={showCurrentPassword ? "text" : "password"}
+                      value={currentPassword}
+                      onChange={(e) => {
+                        setCurrentPassword(e.target.value);
+                        if (serverError) setServerError(null);
+                      }}
+                      placeholder="Enter your existing password"
+                      autoComplete="current-password"
+                      className="bg-white border-[#D5DFD9] text-[#0F172A] text-xs focus:border-[#0A5C48] focus:ring-1 focus:ring-[#0A5C48] pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                      aria-label={showCurrentPassword ? "Hide current password" : "Show current password"}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 focus:outline-none"
+                    >
+                      {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
+
+                {/* New Password */}
                 <div className="space-y-1">
-                  <Label className="text-xs font-bold text-[#2D3B35]">Confirm New Password</Label>
-                  <Input
-                    type="password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="bg-white border-[#D5DFD9] text-[#0F172A] text-xs focus:border-[#0A5C48] focus:ring-1 focus:ring-[#0A5C48]"
-                  />
+                  <Label htmlFor="newPassword" className="text-xs font-bold text-[#2D3B35]">
+                    New Password <span className="text-rose-500">*</span>
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="newPassword"
+                      type={showNewPassword ? "text" : "password"}
+                      value={newPassword}
+                      onChange={(e) => {
+                        setNewPassword(e.target.value);
+                        if (serverError) setServerError(null);
+                      }}
+                      placeholder="Enter a new secure password"
+                      autoComplete="new-password"
+                      className={`bg-white border-[#D5DFD9] text-[#0F172A] text-xs focus:border-[#0A5C48] focus:ring-1 focus:ring-[#0A5C48] pr-10 ${
+                        isSameAsCurrent ? "border-rose-300 focus:border-rose-500 focus:ring-rose-500" : ""
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword(!showNewPassword)}
+                      aria-label={showNewPassword ? "Hide new password" : "Show new password"}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 focus:outline-none"
+                    >
+                      {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+
+                  {/* Immediate password reuse feedback */}
+                  {isSameAsCurrent && (
+                    <div className="flex items-center gap-1.5 p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium mt-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-600" />
+                      <span>Your new password must be different from your current password.</span>
+                    </div>
+                  )}
+
+                  {/* Too short warning */}
+                  {newPassword.length > 0 && newPassword.length < 8 && !isSameAsCurrent && (
+                    <div className="flex items-center gap-1.5 p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium mt-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
+                      <span>Password must be at least 8 characters long ({newPassword.length}/8).</span>
+                    </div>
+                  )}
+
+                  {/* Real-time Requirements Checklist */}
+                  {newPassword.length > 0 && (
+                    <div className="p-3 bg-[#F8FAFC] border border-slate-200/90 rounded-lg space-y-1.5 text-xs mt-2">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 flex items-center justify-between">
+                        <span>Password Requirements</span>
+                        {newPasswordEvaluation.isSatisfied && !isSameAsCurrent && (
+                          <span className="text-emerald-700 font-bold flex items-center gap-1">
+                            <Check className="w-3 h-3 text-emerald-600" /> Satisfied
+                          </span>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
+                        <div className={`flex items-center gap-1.5 text-[11px] ${newPasswordEvaluation.lengthValid ? "text-emerald-700 font-medium" : "text-slate-500"}`}>
+                          {newPasswordEvaluation.lengthValid ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                          <span>At least 8 characters</span>
+                        </div>
+                        <div className={`flex items-center gap-1.5 text-[11px] ${newPasswordEvaluation.hasLower ? "text-emerald-700 font-medium" : "text-slate-500"}`}>
+                          {newPasswordEvaluation.hasLower ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                          <span>One lowercase (a-z)</span>
+                        </div>
+                        <div className={`flex items-center gap-1.5 text-[11px] ${newPasswordEvaluation.hasUpper ? "text-emerald-700 font-medium" : "text-slate-500"}`}>
+                          {newPasswordEvaluation.hasUpper ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                          <span>One uppercase (A-Z)</span>
+                        </div>
+                        <div className={`flex items-center gap-1.5 text-[11px] ${(newPasswordEvaluation.hasNumber || newPasswordEvaluation.hasSpecial) ? "text-emerald-700 font-medium" : "text-slate-500"}`}>
+                          {(newPasswordEvaluation.hasNumber || newPasswordEvaluation.hasSpecial) ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <X className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                          <span>Number or special symbol</span>
+                        </div>
+                        {currentPassword.length > 0 && (
+                          <div className={`flex items-center gap-1.5 text-[11px] sm:col-span-2 ${!isSameAsCurrent ? "text-emerald-700 font-medium" : "text-rose-600 font-semibold"}`}>
+                            {!isSameAsCurrent ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <X className="w-3.5 h-3.5 text-rose-600 shrink-0" />}
+                            <span>Different from current password</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Confirm New Password */}
+                <div className="space-y-1">
+                  <Label htmlFor="confirmPassword" className="text-xs font-bold text-[#2D3B35]">
+                    Confirm New Password <span className="text-rose-500">*</span>
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="confirmPassword"
+                      type={showConfirmPassword ? "text" : "password"}
+                      value={confirmPassword}
+                      onChange={(e) => {
+                        setConfirmPassword(e.target.value);
+                        if (serverError) setServerError(null);
+                      }}
+                      placeholder="Re-enter your new password"
+                      autoComplete="new-password"
+                      className={`bg-white border-[#D5DFD9] text-[#0F172A] text-xs focus:border-[#0A5C48] focus:ring-1 focus:ring-[#0A5C48] pr-10 ${
+                        isConfirmMismatch ? "border-rose-300 focus:border-rose-500 focus:ring-rose-500" : ""
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                      aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 focus:outline-none"
+                    >
+                      {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+
+                  {isConfirmMismatch && (
+                    <div className="flex items-center gap-1.5 p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium mt-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-600" />
+                      <span>New password and confirmation password do not match.</span>
+                    </div>
+                  )}
+
+                  {isConfirmMatch && (
+                    <div className="flex items-center gap-1.5 p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-medium mt-1">
+                      <Check className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
+                      <span>Passwords match.</span>
+                    </div>
+                  )}
                 </div>
               </div>
-              <DialogFooter>
+
+              <DialogFooter className="gap-2 sm:gap-0 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setIsPasswordDialogOpen(false);
+                    setCurrentPassword("");
+                    setNewPassword("");
+                    setConfirmPassword("");
+                    setServerError(null);
+                  }}
+                  className="text-xs border-[#D5DFD9] text-[#2D3B35] hover:bg-[#F2F6F4]"
+                >
+                  Cancel
+                </Button>
                 <Button
                   onClick={handleChangePassword}
-                  disabled={changePasswordMutation.isPending}
+                  disabled={
+                    changePasswordMutation.isPending ||
+                    !currentPassword ||
+                    !newPassword ||
+                    !confirmPassword ||
+                    isSameAsCurrent ||
+                    isConfirmMismatch ||
+                    !newPasswordEvaluation.isSatisfied
+                  }
                   className="bg-[#0A5C48] hover:bg-[#07382D] text-white font-bold text-xs rounded-lg shadow-xs"
                 >
-                  {changePasswordMutation.isPending ? "Updating..." : "Save Password"}
+                  {changePasswordMutation.isPending ? "Updating..." : "Save New Password"}
                 </Button>
               </DialogFooter>
             </DialogContent>

@@ -942,6 +942,11 @@ export class FirestoreStorage implements IStorage {
       status: user.status || "active",
       tosAccepted: user.tosAccepted ? new Date(user.tosAccepted) : null,
       complianceStatus: user.complianceStatus || "cleared",
+      statusReason: user.statusReason || null,
+      statusUpdatedAt: user.statusUpdatedAt ? new Date(user.statusUpdatedAt) : null,
+      statusUpdatedBy: user.statusUpdatedBy || null,
+      statusHistory: (user.statusHistory as any) || [],
+      deactivatedAt: user.deactivatedAt ? new Date(user.deactivatedAt) : null,
       newsletter: user.newsletter ?? false,
       subscriptionStatus: user.subscriptionStatus || "trialing",
       subscriptionTier: user.subscriptionTier || "Pro",
@@ -1105,6 +1110,16 @@ export class FirestoreStorage implements IStorage {
     }
   }
 
+  async deleteClientUser(id: string): Promise<boolean> {
+    try {
+      await deleteDoc(doc(this.db, "client_users", id));
+      return true;
+    } catch (e) {
+      console.error("Firestore deleteClientUser error:", e);
+      return false;
+    }
+  }
+
   async getClientUserByStripeCustomerId(stripeCustomerId: string): Promise<ClientUser | undefined> {
     try {
       const q = query(
@@ -1165,6 +1180,16 @@ export class FirestoreStorage implements IStorage {
       } as UserRedirectUrls;
     } catch (e) {
       return undefined;
+    }
+  }
+
+  async deleteUserRedirectUrls(userId: string): Promise<boolean> {
+    try {
+      await deleteDoc(doc(this.db, "user_redirect_urls", userId));
+      return true;
+    } catch (e) {
+      console.error("Firestore deleteUserRedirectUrls error:", e);
+      return false;
     }
   }
 

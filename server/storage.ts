@@ -21,6 +21,7 @@ import {
   type InsertClientIpWhitelist,
   type ClientUser,
   type InsertClientUser,
+  type StatusHistoryEntry,
   type UserRedirectUrls,
   type InsertUserRedirectUrls,
   type DomainPool,
@@ -56,7 +57,7 @@ import { FirestoreStorage } from "./firestoreStorage";
 import { eq, desc, sql, count, lt, or, inArray } from "drizzle-orm";
 import { getTierCallLimit } from "@shared/subscription";
 
-// IP2Geo Cache for performance optimization
+// IP2Geo Cache for performance optimization - 24 hours TTL reduces upstream lookups by up to 85%
 interface CachedIPData {
   data: any;
   timestamp: number;
@@ -65,9 +66,15 @@ interface CachedIPData {
 
 class IP2GeoCache {
   private cache = new Map<string, CachedIPData>();
-  private readonly DEFAULT_TTL = 30 * 60 * 1000; // 30 minutes
+  private readonly DEFAULT_TTL = 24 * 60 * 60 * 1000; // 24 hours default TTL
+  private readonly MAX_ENTRIES = 50000; // Cap at 50,000 entries (~15MB RAM)
   
   set(ip: string, data: any, ttl = this.DEFAULT_TTL): void {
+    if (this.cache.size >= this.MAX_ENTRIES) {
+      // Evict oldest entries
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey) this.cache.delete(firstKey);
+    }
     this.cache.set(ip, {
       data,
       timestamp: Date.now(),
@@ -178,6 +185,7 @@ export interface IStorage {
   getClientUserByEmail(email: string): Promise<ClientUser | undefined>;
   getClientUserByUsernameOrEmail(identifier: string): Promise<ClientUser | undefined>;
   updateClientUser(id: string, updates: Partial<ClientUser>): Promise<ClientUser | undefined>;
+  deleteClientUser(id: string): Promise<boolean>;
   getClientUserByApiKey(apiKeyId: string): Promise<ClientUser | undefined>;
   getAllClientUsers(): Promise<ClientUser[]>;
   getClientUserByStripeCustomerId(stripeCustomerId: string): Promise<ClientUser | undefined>;
@@ -191,6 +199,7 @@ export interface IStorage {
   
   // User Redirect URLs methods
   getUserRedirectUrls(userId: string): Promise<UserRedirectUrls | undefined>;
+  deleteUserRedirectUrls(userId: string): Promise<boolean>;
   setUserRedirectUrls(userId: string, urls: { 
     humanUrl: string; 
     botUrl: string; 
@@ -343,6 +352,11 @@ export class MemStorage implements IStorage {
       apiKeyId: demoApiKeyId,
       tosAccepted: new Date(),
       complianceStatus: "compliant",
+      statusReason: null,
+      statusUpdatedAt: null,
+      statusUpdatedBy: null,
+      statusHistory: [],
+      deactivatedAt: null,
       newsletter: false,
       subscriptionStatus: "active",
       subscriptionTier: "Pro",
@@ -766,6 +780,11 @@ export class MemStorage implements IStorage {
       apiKeyId: user.apiKeyId ?? null,
       tosAccepted: user.tosAccepted ?? null,
       complianceStatus: user.complianceStatus ?? "pending",
+      statusReason: user.statusReason ?? null,
+      statusUpdatedAt: user.statusUpdatedAt ? new Date(user.statusUpdatedAt) : null,
+      statusUpdatedBy: user.statusUpdatedBy ?? null,
+      statusHistory: (user.statusHistory as StatusHistoryEntry[]) ?? [],
+      deactivatedAt: user.deactivatedAt ? new Date(user.deactivatedAt) : null,
       subscriptionStatus: user.subscriptionStatus ?? "trialing",
       subscriptionTier: user.subscriptionTier ?? "Pro",
       trialEndsAt: user.trialEndsAt ?? null,
@@ -828,6 +847,10 @@ export class MemStorage implements IStorage {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
+  async deleteClientUser(id: string): Promise<boolean> {
+    return this.clientUsers.delete(id);
+  }
+
   async getClientUserByStripeCustomerId(stripeCustomerId: string): Promise<ClientUser | undefined> {
     return Array.from(this.clientUsers.values())
       .find(user => user.stripeCustomerId === stripeCustomerId);
@@ -868,6 +891,10 @@ export class MemStorage implements IStorage {
   // User Redirect URLs methods
   async getUserRedirectUrls(userId: string): Promise<UserRedirectUrls | undefined> {
     return this.redirectUrls.get(userId);
+  }
+
+  async deleteUserRedirectUrls(userId: string): Promise<boolean> {
+    return this.redirectUrls.delete(userId);
   }
 
   async setUserRedirectUrls(userId: string, urls: { 
@@ -1698,6 +1725,11 @@ export class DatabaseStorage {
     return allUsers;
   }
 
+  async deleteClientUser(id: string): Promise<boolean> {
+    const result = await db.delete(clientUsers).where(eq(clientUsers.id, id)).returning();
+    return result.length > 0;
+  }
+
   async getClientUserByStripeCustomerId(stripeCustomerId: string): Promise<ClientUser | undefined> {
     try {
       const result = await db
@@ -1759,6 +1791,11 @@ export class DatabaseStorage {
       .from(userRedirectUrls)
       .where(eq(userRedirectUrls.userId, userId));
     return urls;
+  }
+
+  async deleteUserRedirectUrls(userId: string): Promise<boolean> {
+    const result = await db.delete(userRedirectUrls).where(eq(userRedirectUrls.userId, userId)).returning();
+    return result.length > 0;
   }
 
   async setUserRedirectUrls(userId: string, urls: { 

@@ -9,36 +9,30 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { Key, ArrowLeft, FileText } from "lucide-react";
+import { Key, ArrowLeft, FileText, Eye, EyeOff } from "lucide-react";
 
 export default function ApiVerify() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [showTos, setShowTos] = useState(false);
   const [tosText, setTosText] = useState("");
 
   useEffect(() => {
     const savedCreds = localStorage.getItem('app_remember_me');
-    console.log("[API Verify] Loading saved credentials:", savedCreds);
     if (savedCreds) {
       try {
         const parsedCreds = JSON.parse(savedCreds);
-        console.log("[API Verify] Parsed credentials:", parsedCreds);
         const { apiKey: savedApiKey } = parsedCreds;
         if (savedApiKey) {
-          console.log("[API Verify] Setting API key:", savedApiKey);
           setApiKey(savedApiKey);
           setRememberMe(true);
-        } else {
-          console.log("[API Verify] No saved API key found");
         }
-      } catch (e) {
-        console.error("[API Verify] Failed to load saved API key:", e);
+      } catch {
+        // Silently ignore corrupted credentials
       }
-    } else {
-      console.log("[API Verify] No saved credentials found in localStorage");
     }
   }, []);
 
@@ -182,17 +176,37 @@ export default function ApiVerify() {
             <>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="apiKey">API Key</Label>
-                  <Input
-                    id="apiKey"
-                    data-testid="input-api-key"
-                    type="text"
-                    placeholder="Enter your API key"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    disabled={verifyMutation.isPending}
-                    autoComplete="off"
-                  />
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="apiKey">API Key</Label>
+                    <button
+                      type="button"
+                      onClick={() => setShowKey(!showKey)}
+                      className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 focus:outline-none"
+                    >
+                      {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      <span>{showKey ? "Hide key" : "Show key"}</span>
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <Input
+                      id="apiKey"
+                      data-testid="input-api-key"
+                      type={showKey ? "text" : "password"}
+                      placeholder="Enter your API key"
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      disabled={verifyMutation.isPending}
+                      autoComplete="off"
+                      className="font-mono pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKey(!showKey)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                   <p className="text-xs text-muted-foreground">
                     Your API key was provided by your administrator
                   </p>

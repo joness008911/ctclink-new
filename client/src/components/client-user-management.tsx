@@ -9,8 +9,28 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { UserPlus, Trash2, Shield, AlertTriangle, CheckCircle, Clock, CreditCard, Edit, Sparkles, XCircle, Key } from "lucide-react";
+import { 
+  UserPlus, 
+  Trash2, 
+  Shield, 
+  AlertTriangle, 
+  CheckCircle, 
+  Clock, 
+  CreditCard, 
+  Edit, 
+  Sparkles, 
+  XCircle, 
+  Key, 
+  UserCog, 
+  History, 
+  Mail, 
+  AlertCircle,
+  UserCheck,
+  UserX
+} from "lucide-react";
 import { computeEffectiveAccountStatus, SubscriptionTier, SubscriptionStatus } from "@shared/subscription";
 
 export default function ClientUserManagement() {
@@ -29,6 +49,19 @@ export default function ClientUserManagement() {
   const [editStatus, setEditStatus] = useState<string>("trialing");
   const [editTier, setEditTier] = useState<string>("Pro");
   const [editTrialDays, setEditTrialDays] = useState<number>(7);
+
+  // Status & Compliance Management Modal State
+  const [statusModalUser, setStatusModalUser] = useState<any | null>(null);
+  const [statusFormStatus, setStatusFormStatus] = useState<string>("active");
+  const [statusFormCompliance, setStatusFormCompliance] = useState<string>("cleared");
+  const [statusFormReason, setStatusFormReason] = useState<string>("");
+  const [statusFormNotify, setStatusFormNotify] = useState<boolean>(true);
+
+  // Delete / Deactivate User Modal State
+  const [deleteModalUser, setDeleteModalUser] = useState<any | null>(null);
+  const [deleteMode, setDeleteMode] = useState<"soft" | "permanent">("soft");
+  const [deleteReason, setDeleteReason] = useState<string>("");
+  const [deleteNotify, setDeleteNotify] = useState<boolean>(true);
 
   const { data: clientUsers = [], isLoading } = useQuery<any[]>({
     queryKey: ["/api/interface/client-users"],
@@ -125,22 +158,78 @@ export default function ClientUserManagement() {
     },
   });
 
-  const deleteUserMutation = useMutation({
-    mutationFn: async (userId: string) => {
-      const response = await apiRequest("DELETE", `/api/interface/client-users/${userId}`);
+  const updateAccountStatusMutation = useMutation({
+    mutationFn: async ({
+      userId,
+      status,
+      complianceStatus,
+      reason,
+      notifyUser,
+    }: {
+      userId: string;
+      status?: string;
+      complianceStatus?: string;
+      reason?: string;
+      notifyUser?: boolean;
+    }) => {
+      const response = await apiRequest("PATCH", `/api/interface/client-users/${userId}/status`, {
+        status,
+        complianceStatus,
+        reason,
+        notifyUser,
+      });
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       toast({
-        title: "User Deleted",
-        description: "Client user has been removed",
+        title: "Account Status Updated",
+        description: data.message || "User account and compliance status have been updated",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/interface/client-users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/interface/compliance/stats"] });
+      setStatusModalUser(null);
     },
     onError: (error: Error) => {
       toast({
-        title: "Deletion Failed",
-        description: error.message || "Failed to delete user",
+        title: "Status Update Failed",
+        description: error.message || "Failed to update account status",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteOrDeactivateMutation = useMutation({
+    mutationFn: async ({
+      userId,
+      permanent,
+      reason,
+      notifyUser,
+    }: {
+      userId: string;
+      permanent: boolean;
+      reason?: string;
+      notifyUser?: boolean;
+    }) => {
+      const response = await apiRequest("DELETE", `/api/interface/client-users/${userId}?permanent=${permanent}`, {
+        permanent,
+        reason,
+        notifyUser,
+      });
+      return response.json();
+    },
+    onSuccess: (data: any) => {
+      toast({
+        title: data.permanent ? "User Permanently Deleted" : "Account Suspended/Deactivated",
+        description: data.message || "User account state has been updated",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/interface/client-users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/interface/compliance/stats"] });
+      setDeleteModalUser(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Operation Failed",
+        description: error.message || "Failed to process user account deletion",
         variant: "destructive",
       });
     },
@@ -203,6 +292,42 @@ export default function ClientUserManagement() {
       subscriptionStatus: editStatus,
       subscriptionTier: editTier,
       trialDays: editStatus === "trialing" ? editTrialDays : undefined,
+    });
+  };
+
+  const handleOpenStatusModal = (user: any) => {
+    setStatusModalUser(user);
+    setStatusFormStatus(user.status || "active");
+    setStatusFormCompliance(user.complianceStatus || "cleared");
+    setStatusFormReason(user.statusReason || "");
+    setStatusFormNotify(true);
+  };
+
+  const handleSaveAccountStatus = () => {
+    if (!statusModalUser) return;
+    updateAccountStatusMutation.mutate({
+      userId: statusModalUser.id,
+      status: statusFormStatus,
+      complianceStatus: statusFormCompliance,
+      reason: statusFormReason.trim() || undefined,
+      notifyUser: statusFormNotify,
+    });
+  };
+
+  const handleOpenDeleteModal = (user: any) => {
+    setDeleteModalUser(user);
+    setDeleteMode("soft");
+    setDeleteReason("");
+    setDeleteNotify(true);
+  };
+
+  const handleExecuteDelete = () => {
+    if (!deleteModalUser) return;
+    deleteOrDeactivateMutation.mutate({
+      userId: deleteModalUser.id,
+      permanent: deleteMode === "permanent",
+      reason: deleteReason.trim() || undefined,
+      notifyUser: deleteNotify,
     });
   };
 
@@ -454,13 +579,32 @@ export default function ClientUserManagement() {
 
                     <TableCell>
                       <div className="flex flex-col gap-1 items-start">
-                        <Badge variant={user.status === 'suspended' ? 'destructive' : user.status === 'inactive' ? 'outline' : 'default'} className="text-[11px] py-0">
-                          {user.status === 'suspended' ? 'Suspended' : user.status === 'inactive' ? 'Inactive' : 'Active'}
-                        </Badge>
-                        <Badge variant={complianceVariant} className="gap-1 text-[10px] py-0">
-                          {complianceIcon}
-                          {complianceStatus}
-                        </Badge>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <Badge 
+                            variant="outline"
+                            className={`text-[11px] py-0 font-semibold ${
+                              user.status === 'suspended'
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : user.status === 'deactivated'
+                                ? 'bg-slate-100 text-slate-700 border-slate-300'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            }`}
+                          >
+                            {user.status === 'suspended' ? 'Suspended' : user.status === 'deactivated' ? 'Deactivated' : 'Active'}
+                          </Badge>
+                          <Badge variant={complianceVariant} className="gap-1 text-[10px] py-0">
+                            {complianceIcon}
+                            {complianceStatus}
+                          </Badge>
+                        </div>
+                        {user.statusReason && (
+                          <div 
+                            className="text-[10px] text-slate-500 italic max-w-[170px] truncate"
+                            title={`Reason: "${user.statusReason}" (updated by ${user.statusUpdatedBy || 'admin'})`}
+                          >
+                            "{user.statusReason}"
+                          </div>
+                        )}
                       </div>
                     </TableCell>
 
@@ -526,6 +670,11 @@ export default function ClientUserManagement() {
                           <div className="flex items-center gap-1 text-xs font-mono text-slate-800">
                             <Key className="w-3 h-3 text-slate-500" />
                             <span>{assignedKey.keyName}</span>
+                            {assignedKey.keyValue && (
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                ({assignedKey.keyValue})
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
                             <span className={`px-1.5 py-0.2 rounded font-semibold uppercase text-[9px] ${
@@ -587,6 +736,17 @@ export default function ClientUserManagement() {
                           Plan
                         </Button>
 
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 px-2.5 text-xs font-semibold gap-1 text-indigo-700 border-indigo-200 hover:bg-indigo-50"
+                          onClick={() => handleOpenStatusModal(user)}
+                          title="Manage Account Lifecycle & Compliance Status"
+                        >
+                          <UserCog className="w-3.5 h-3.5 text-indigo-600" />
+                          Status
+                        </Button>
+
                         {!assignedKey && (
                           <Button
                             variant="outline"
@@ -600,31 +760,13 @@ export default function ClientUserManagement() {
                           </Button>
                         )}
 
-                        <Select
-                          value={user.complianceStatus || 'pending'}
-                          onValueChange={(status) => updateComplianceMutation.mutate({ userId: user.id, status })}
-                        >
-                          <SelectTrigger className="w-24 h-8 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="pending">Pending</SelectItem>
-                            <SelectItem value="cleared">Cleared</SelectItem>
-                            <SelectItem value="flagged">Flagged</SelectItem>
-                            <SelectItem value="suspended">Suspended</SelectItem>
-                          </SelectContent>
-                        </Select>
-
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-8 w-8 p-0"
+                          className="h-8 w-8 p-0 text-slate-400 hover:text-destructive hover:bg-rose-50"
                           data-testid={`button-delete-user-${user.id}`}
-                          onClick={() => {
-                            if (confirm(`Delete user ${user.username}?`)) {
-                              deleteUserMutation.mutate(user.id);
-                            }
-                          }}
+                          onClick={() => handleOpenDeleteModal(user)}
+                          title="Delete or Deactivate User"
                         >
                           <Trash2 className="w-4 h-4 text-destructive" />
                         </Button>
@@ -710,6 +852,225 @@ export default function ClientUserManagement() {
               disabled={updateSubscriptionMutation.isPending}
             >
               {updateSubscriptionMutation.isPending ? "Saving..." : "Save Changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Manage Status & Compliance Dialog */}
+      <Dialog open={!!statusModalUser} onOpenChange={(open) => !open && setStatusModalUser(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base font-bold text-[#0F172A]">
+              <Shield className="h-4 w-4 text-indigo-600" />
+              Account Status & Compliance — {statusModalUser?.username}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-[#64748B]">
+              Update user account access state, compliance review standing, and track reasons in audit history.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold">Account State</Label>
+                <Select value={statusFormStatus} onValueChange={setStatusFormStatus}>
+                  <SelectTrigger className="text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">Active (Full Access)</SelectItem>
+                    <SelectItem value="suspended">Suspended (Blocked & Revoked)</SelectItem>
+                    <SelectItem value="deactivated">Deactivated (Archived)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold">Compliance Review</Label>
+                <Select value={statusFormCompliance} onValueChange={setStatusFormCompliance}>
+                  <SelectTrigger className="text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cleared">Cleared (Full Link Editing)</SelectItem>
+                    <SelectItem value="pending">Pending Verification</SelectItem>
+                    <SelectItem value="flagged">Flagged (Locked from Rule Edits)</SelectItem>
+                    <SelectItem value="suspended">Suspended (Violations)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Reason for Status Change</Label>
+              <Textarea
+                placeholder="E.g., Suspicious bot traffic patterns detected, manual verification required, account reinstated upon review..."
+                value={statusFormReason}
+                onChange={(e) => setStatusFormReason(e.target.value)}
+                className="text-xs h-20 resize-none"
+              />
+              <p className="text-[11px] text-slate-500">
+                This note will be logged in the immutable audit history and optionally included in user notifications.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between p-3 rounded-lg border border-slate-200 bg-slate-50">
+              <div className="space-y-0.5">
+                <div className="text-xs font-medium text-slate-800 flex items-center gap-1.5">
+                  <Mail className="h-3.5 w-3.5 text-indigo-600" />
+                  <span>Send Notification Email</span>
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Notify user at {statusModalUser?.email || "registered email"} of their status change
+                </div>
+              </div>
+              <Switch
+                checked={statusFormNotify}
+                onCheckedChange={setStatusFormNotify}
+                disabled={!statusModalUser?.email}
+              />
+            </div>
+
+            {/* Audit History Timeline */}
+            {statusModalUser?.statusHistory && statusModalUser.statusHistory.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-slate-200">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                  <History className="h-3.5 w-3.5 text-slate-500" />
+                  <span>Status Audit History</span>
+                </div>
+                <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                  {statusModalUser.statusHistory.slice(-5).reverse().map((entry: any, i: number) => (
+                    <div key={i} className="p-2 bg-white border border-slate-200 rounded-md text-[11px] space-y-0.5">
+                      <div className="flex items-center justify-between text-slate-500">
+                        <span className="font-medium text-slate-700">
+                          {entry.fromStatus} → <strong className="text-indigo-700">{entry.toStatus}</strong>
+                        </span>
+                        <span>{new Date(entry.timestamp).toLocaleDateString()} {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                      {entry.reason && (
+                        <p className="text-slate-600 italic">"{entry.reason}"</p>
+                      )}
+                      <div className="text-[10px] text-slate-400">By: {entry.changedBy}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStatusModalUser(null)}>
+              Cancel
+            </Button>
+            <Button
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold"
+              onClick={handleSaveAccountStatus}
+              disabled={updateAccountStatusMutation.isPending}
+            >
+              {updateAccountStatusMutation.isPending ? "Updating..." : "Save Status Changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete / Deactivate User Dialog */}
+      <Dialog open={!!deleteModalUser} onOpenChange={(open) => !open && setDeleteModalUser(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base font-bold text-rose-700">
+              <Trash2 className="h-4 w-4 text-rose-600" />
+              Delete / Suspend Account — {deleteModalUser?.username}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-[#64748B]">
+              Choose whether to soft-deactivate this account or permanently purge all associated records.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label className="text-xs font-semibold">Action Mode</Label>
+              <div className="grid grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDeleteMode("soft")}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    deleteMode === "soft"
+                      ? "border-amber-400 bg-amber-50/70"
+                      : "border-slate-200 bg-white hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="text-xs font-bold text-slate-800 flex items-center justify-between">
+                    <span>Deactivate Account (Recommended)</span>
+                    {deleteMode === "soft" && <CheckCircle className="h-3.5 w-3.5 text-amber-600" />}
+                  </div>
+                  <div className="text-[11px] text-slate-600 mt-1">
+                    Revokes all user sessions, blocks login and API traffic authorization, while preserving classification analytics and audit trails.
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDeleteMode("permanent")}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    deleteMode === "permanent"
+                      ? "border-rose-400 bg-rose-50/70"
+                      : "border-slate-200 bg-white hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="text-xs font-bold text-rose-800 flex items-center justify-between">
+                    <span>Permanent Hard-Delete (Irreversible)</span>
+                    {deleteMode === "permanent" && <AlertTriangle className="h-3.5 w-3.5 text-rose-600" />}
+                  </div>
+                  <div className="text-[11px] text-rose-700/80 mt-1">
+                    Permanently purges the user profile, associated API licenses, and link routing configuration from database storage.
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Reason for Action</Label>
+              <Input
+                placeholder="E.g., User requested deletion, severe terms of service violation..."
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                className="text-xs"
+              />
+            </div>
+
+            <div className="flex items-center justify-between p-3 rounded-lg border border-slate-200 bg-slate-50">
+              <div className="space-y-0.5">
+                <div className="text-xs font-medium text-slate-800 flex items-center gap-1.5">
+                  <Mail className="h-3.5 w-3.5 text-indigo-600" />
+                  <span>Send Notification Email</span>
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Send departure/deactivation notice to {deleteModalUser?.email || "user email"}
+                </div>
+              </div>
+              <Switch
+                checked={deleteNotify}
+                onCheckedChange={setDeleteNotify}
+                disabled={!deleteModalUser?.email}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteModalUser(null)}>
+              Cancel
+            </Button>
+            <Button
+              className={deleteMode === "permanent" ? "bg-rose-600 hover:bg-rose-700 text-white font-semibold" : "bg-amber-600 hover:bg-amber-700 text-white font-semibold"}
+              onClick={handleExecuteDelete}
+              disabled={deleteOrDeactivateMutation.isPending}
+            >
+              {deleteOrDeactivateMutation.isPending
+                ? "Processing..."
+                : deleteMode === "permanent"
+                ? "Permanently Delete"
+                : "Deactivate Account"}
             </Button>
           </DialogFooter>
         </DialogContent>

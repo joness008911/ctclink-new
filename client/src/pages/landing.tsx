@@ -32,9 +32,15 @@ import {
   Play,
   Check,
   BookOpen,
+  Sparkles,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { LandingDashboardPreview } from "@/components/landing/LandingDashboardPreview";
+import { HeroSkyAtmosphere } from "@/components/landing/HeroSkyAtmosphere";
+import { TrafficInspectorJsonDashboard } from "@/components/landing/TrafficInspectorJsonDashboard";
+import { AgentGovernanceMonitor } from "@/components/landing/AgentGovernanceMonitor";
+import { SiteNavbar } from "@/components/layout/SiteNavbar";
+import { SiteFooter } from "@/components/layout/SiteFooter";
 
 const marqueeLogos = [
   { icon: Cloud, name: "CloudScale" },
@@ -122,44 +128,67 @@ const detectionLayers = [
 
 const resourceFeatures = [
   {
+    slug: "ai-agents",
+    icon: Sparkles,
+    title: "Autonomous AI Agents",
+    desc: "Verify authorized autonomous agents, enforce granular route policies, and isolate stealth scrapers impersonating AI assistants.",
+    badge: "Agent Governance",
+  },
+  {
+    slug: "automation-tools",
     icon: Settings,
     title: "Automation Tools",
     desc: "Detect and block automated browsers, scraping tools, and bots used for form submissions, data harvesting, and large-scale automation.",
+    badge: "Headless & Frameworks",
   },
   {
+    slug: "botnets",
     icon: Network,
     title: "Botnets",
     desc: "Identify coordinated networks of malicious bots before they can launch attacks, abuse resources, or overwhelm your infrastructure.",
+    badge: "Distributed Networks",
   },
   {
+    slug: "fraud-prevention",
     icon: ShieldAlert,
     title: "Fraud Prevention",
     desc: "Stop suspicious traffic linked to payment fraud, account takeovers, fake signups, credential stuffing, and other forms of online abuse.",
+    badge: "Ad & Click Fraud",
   },
   {
+    slug: "vpns-and-proxies",
     icon: Ghost,
     title: "VPNs & Proxies",
     desc: "Detect and flag visitors masking their network identity or location through VPNs, proxies, Tor networks, and anonymous infrastructure.",
+    badge: "Proxy Classification",
   },
   {
+    slug: "ai-and-web-crawlers",
     icon: Bot,
     title: "AI & Web Crawlers",
     desc: "Control automated crawlers that collect, index, or scrape your content without permission, protecting your data and server capacity.",
+    badge: "AI Scrapers & Spiders",
   },
   {
+    slug: "ip-intelligence",
     icon: MapPin,
     title: "IP Intelligence",
     desc: "Leverage rich IP data — reputation, geolocation, ASN, hosting provider, usage type, and risk signals — to make smarter real-time decisions.",
+    badge: "Deep Network Profiling",
   },
   {
+    slug: "cybersecurity",
     icon: Lock,
     title: "Cybersecurity",
     desc: "Strengthen your security posture by identifying high-risk traffic early, reducing attack surfaces, and stopping malicious requests at the edge.",
+    badge: "Edge Hardening",
   },
   {
+    slug: "performance-and-cost",
     icon: LineChart,
     title: "Performance & Cost",
     desc: "Reduce unnecessary server load, bandwidth, API calls, and database queries so your infrastructure stays dedicated to real users.",
+    badge: "Compute Optimization",
   },
 ];
 
@@ -204,7 +233,6 @@ const heroHeadlines = [
 
 export default function Landing() {
   const [, navigate] = useLocation();
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [currentHeadlineIdx, setCurrentHeadlineIdx] = useState(0);
 
   useEffect(() => {
@@ -219,156 +247,16 @@ export default function Landing() {
       className="min-h-screen w-full flex flex-col bg-white text-slate-900 selection:bg-emerald-500 selection:text-white overflow-x-hidden"
       style={{ fontFamily: "'Inter', ui-sans-serif, system-ui, sans-serif" }}
     >
-      {/* ── Top Navigation Bar (Full Width, Sticky) ─────────────────── */}
-      <header className="sticky top-0 z-50 w-full bg-white/90 backdrop-blur-md border-b border-slate-200/80 transition-all">
-        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between">
-          {/* Brand Logo */}
-          <div
-            onClick={() => navigate("/")}
-            className="flex items-center gap-2.5 cursor-pointer group select-none"
-          >
-            <div className="w-8 h-8 rounded-xl bg-[#064E3B] border border-[#047857] flex items-center justify-center text-white shadow-xs group-hover:scale-105 transition-transform">
-              <ShieldCheck className="w-4 h-4 text-emerald-300" />
-            </div>
-            <span className="font-bold text-base sm:text-lg text-slate-900 tracking-tight">
-              CleanTraffic
-            </span>
-          </div>
+      {/* ── Global Unified Floating Navbar (Shared Across Site) ── */}
+      <SiteNavbar activePage="home" />
 
-          {/* Desktop Navigation Links */}
-          <nav className="hidden md:flex items-center gap-6 lg:gap-8 text-[13px] lg:text-[14px] font-medium text-slate-600">
-            <a
-              href="#features"
-              className="hover:text-slate-900 transition-colors"
-            >
-              Features
-            </a>
-            <a
-              href="#how-it-works"
-              className="hover:text-slate-900 transition-colors"
-            >
-              Detection Engine
-            </a>
-            <a
-              href="#click-fraud"
-              className="hover:text-slate-900 transition-colors"
-            >
-              Fraud Prevention
-            </a>
-            <a
-              href="#pricing"
-              className="hover:text-slate-900 transition-colors"
-            >
-              Pricing
-            </a>
-            <button
-              onClick={() => navigate("/docs")}
-              className="hover:text-slate-900 transition-colors text-[13px] lg:text-[14px] font-medium text-slate-600"
-            >
-              Docs
-            </button>
-          </nav>
+      {/* ── Full-Width Hero Section with Sky & Cloud Atmosphere (Reference Style) ── */}
+      <section className="relative w-full -mt-[68px] sm:-mt-[76px] pt-[88px] sm:pt-[106px] md:pt-[118px] pb-12 sm:pb-16 md:pb-24 overflow-hidden border-b border-slate-200/60">
+        {/* Soft Blue Cloud & Gradient Atmosphere Component */}
+        <HeroSkyAtmosphere />
 
-          {/* Desktop CTA Action Buttons */}
-          <div className="hidden md:flex items-center gap-3">
-            <button
-              onClick={() => navigate("/user")}
-              className="text-[13px] lg:text-[14px] font-medium text-slate-600 hover:text-slate-900 transition-colors px-2 py-1"
-            >
-              Log in
-            </button>
-            <button
-              onClick={() => navigate("/user")}
-              className="text-[13px] lg:text-[14px] font-semibold bg-[#0F172A] hover:bg-black text-white px-4 py-2 rounded-full shadow-xs hover:shadow transition-all duration-200"
-            >
-              Try CleanTraffic free
-            </button>
-          </div>
-
-          {/* Mobile Menu Button */}
-          <button
-            className="md:hidden text-slate-700 p-2 rounded-lg hover:bg-slate-100 min-h-[44px] min-w-[44px] flex items-center justify-center"
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            aria-label="Toggle navigation menu"
-          >
-            {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-          </button>
-        </div>
-
-        {/* Mobile Dropdown Menu */}
-        {mobileMenuOpen && (
-          <div className="md:hidden w-full bg-white border-b border-slate-200 px-5 py-4 flex flex-col gap-3.5 shadow-lg">
-            <a
-              href="#features"
-              onClick={() => setMobileMenuOpen(false)}
-              className="text-[15px] font-medium text-slate-700 py-1"
-            >
-              Features
-            </a>
-            <a
-              href="#how-it-works"
-              onClick={() => setMobileMenuOpen(false)}
-              className="text-[15px] font-medium text-slate-700 py-1"
-            >
-              Detection Engine
-            </a>
-            <a
-              href="#click-fraud"
-              onClick={() => setMobileMenuOpen(false)}
-              className="text-[15px] font-medium text-slate-700 py-1"
-            >
-              Fraud Prevention
-            </a>
-            <a
-              href="#pricing"
-              onClick={() => setMobileMenuOpen(false)}
-              className="text-[15px] font-medium text-slate-700 py-1"
-            >
-              Pricing
-            </a>
-            <button
-              onClick={() => {
-                setMobileMenuOpen(false);
-                navigate("/docs");
-              }}
-              className="text-[15px] font-medium text-slate-700 py-1 text-left"
-            >
-              Documentation
-            </button>
-            <div className="h-px bg-slate-100 my-1" />
-            <button
-              onClick={() => {
-                setMobileMenuOpen(false);
-                navigate("/user");
-              }}
-              className="text-[15px] font-medium text-slate-700 py-1 text-left"
-            >
-              Log in
-            </button>
-            <button
-              onClick={() => {
-                setMobileMenuOpen(false);
-                navigate("/user");
-              }}
-              className="text-[14px] font-semibold bg-[#0F172A] text-white px-5 py-3 rounded-full w-full text-center shadow-sm"
-            >
-              Try CleanTraffic free
-            </button>
-          </div>
-        )}
-      </header>
-
-      {/* ── Full-Width Hero Section (Edge-to-Edge with Atmospheric Gradient) ── */}
-      <section className="w-full bg-gradient-to-b from-[#E7F2FA] via-[#F3F8FC] to-white border-b border-slate-200/60 relative overflow-hidden pt-4 sm:pt-6 md:pt-8 pb-8 sm:pb-12 md:pb-16">
-        {/* Subtle Ambient Cloud Accents */}
-        <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
-          <div className="absolute -top-24 left-1/2 -translate-x-1/2 w-[90vw] max-w-[1200px] h-[450px] rounded-full bg-gradient-to-b from-white/70 via-white/40 to-transparent blur-3xl" />
-          <div className="absolute top-1/4 -left-20 w-80 h-80 rounded-full bg-sky-200/30 blur-3xl" />
-          <div className="absolute top-1/3 -right-20 w-80 h-80 rounded-full bg-emerald-100/40 blur-3xl" />
-        </div>
-
-        {/* Content Container (Comfortable Max Width for Typography) */}
-        <div className="w-full max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 relative z-10 flex flex-col items-center text-center">
+        {/* Content Container (Center Aligned, Matching Typography & Staging) */}
+        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10 flex flex-col items-center text-center">
           <motion.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
@@ -376,7 +264,7 @@ export default function Landing() {
             className="max-w-4xl mx-auto flex flex-col items-center"
           >
             {/* Rotating Hero Headline */}
-            <div className="min-h-[60px] sm:min-h-[72px] md:min-h-[84px] lg:min-h-[100px] xl:min-h-[110px] flex items-center justify-center w-full mb-2 sm:mb-3">
+            <div className="min-h-[58px] sm:min-h-[70px] md:min-h-[82px] lg:min-h-[96px] flex items-center justify-center w-full mb-3 sm:mb-3.5">
               <AnimatePresence mode="wait">
                 <motion.h1
                   key={currentHeadlineIdx}
@@ -384,7 +272,7 @@ export default function Landing() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
                   transition={{ duration: 0.32, ease: "easeInOut" }}
-                  className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl xl:text-[3.65rem] leading-[1.12] sm:leading-[1.08] font-black tracking-tight text-slate-900"
+                  className="text-2xl sm:text-3xl md:text-[2.5rem] lg:text-[2.85rem] xl:text-[3.2rem] leading-[1.16] sm:leading-[1.12] font-bold tracking-tight text-slate-900"
                   style={{
                     fontFamily: "'Space Grotesk', ui-sans-serif, system-ui, sans-serif",
                     WebkitFontSmoothing: "antialiased",
@@ -395,46 +283,48 @@ export default function Landing() {
               </AnimatePresence>
             </div>
 
-            {/* Static Supporting Description */}
-            <p className="text-xs sm:text-sm md:text-base lg:text-lg text-slate-600 max-w-2xl mx-auto leading-relaxed mb-4 sm:mb-5 font-normal px-2">
-              Detect bots, AI agents, and automated traffic in real time. Analyze visitor behavior, identify suspicious activity, and protect your applications from fraud, abuse, and unwanted automated traffic.
+            {/* Supporting Description */}
+            <p className="text-[13px] sm:text-[15px] md:text-base text-slate-600/90 max-w-xl sm:max-w-2xl mx-auto leading-relaxed mb-5 sm:mb-6 font-normal px-2">
+              Know who’s real and who’s not. Detect bad bots, AI agents, and fraudulent traffic with industry-leading accuracy.
             </p>
 
-            {/* CTA Action Group */}
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 sm:gap-4 w-full max-w-md mx-auto mb-1 sm:mb-2">
+            {/* CTA Action Group (Refined proportions and balanced footprint) */}
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 sm:gap-3.5 w-full max-w-sm sm:max-w-md mx-auto">
               <button
                 onClick={() => navigate("/user")}
-                className="w-full sm:w-auto min-h-[42px] px-6 sm:px-7 py-2.5 sm:py-3 bg-[#0F172A] hover:bg-black text-white rounded-full font-semibold text-[14px] sm:text-[15px] shadow-sm hover:shadow-md transition-all duration-200 flex items-center justify-center gap-2 group cursor-pointer"
+                className="w-full sm:w-auto min-h-[40px] px-6 sm:px-6.5 py-2.5 bg-[#0F172A] hover:bg-black text-white rounded-full font-medium sm:font-semibold text-[13.5px] sm:text-[14px] shadow-xs hover:shadow-sm transition-all duration-200 flex items-center justify-center gap-2 group cursor-pointer"
               >
                 <span>Try CleanTraffic free</span>
-                <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
               </button>
               <a
                 href="#dashboard-preview"
-                className="w-full sm:w-auto min-h-[42px] inline-flex items-center justify-center gap-2 text-slate-700 hover:text-slate-900 font-semibold text-[14px] sm:text-[15px] px-4 py-2 rounded-full hover:bg-white/80 transition-colors"
+                className="w-full sm:w-auto min-h-[40px] inline-flex items-center justify-center gap-2 text-slate-700 hover:text-slate-950 font-medium text-[13.5px] sm:text-[14px] px-4 sm:px-4.5 py-2 rounded-full hover:bg-white/70 transition-all duration-200"
               >
-                <div className="w-6 h-6 rounded-full border border-slate-300 bg-white flex items-center justify-center text-slate-700 shadow-2xs shrink-0">
-                  <Play className="w-2.5 h-2.5 fill-slate-700 ml-0.5" />
+                <div className="w-5 h-5 rounded-full border border-slate-300/80 bg-white flex items-center justify-center text-slate-700 shadow-2xs shrink-0">
+                  <Play className="w-2 h-2 fill-slate-700 ml-0.5" />
                 </div>
                 <span>See how it works</span>
               </a>
             </div>
           </motion.div>
 
-          {/* ── Responsive Dashboard Analytics Showcase (Immediately Peeking into Viewport) ── */}
+          {/* ── Responsive Dashboard Analytics Showcase (Subtly lowered for composition balance) ── */}
           <motion.div
             id="dashboard-preview"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.55, delay: 0.08 }}
-            className="w-full max-w-6xl mx-auto mt-3 sm:mt-5 md:mt-6 relative scroll-mt-20"
+            className="w-full max-w-6xl mx-auto mt-8 sm:mt-11 md:mt-14 relative scroll-mt-24"
           >
-            {/* Real Application Preview Component */}
-            <LandingDashboardPreview />
+            {/* Real Application Preview Component with floating 3D elevation */}
+            <div className="relative rounded-2xl sm:rounded-3xl shadow-[0_25px_60px_-15px_rgba(15,23,42,0.14),0_10px_25px_-5px_rgba(15,23,42,0.06),0_1px_3px_rgba(0,0,0,0.04)]">
+              <LandingDashboardPreview />
+            </div>
 
-            {/* Bottom Mist Fade Reflection (Matching the Reference Aesthetic) */}
+            {/* Bottom Mist & Cloud Reflection (Matching the Reference Aesthetic) */}
             <div
-              className="absolute -bottom-6 sm:-bottom-8 inset-x-0 h-16 sm:h-24 md:h-32 bg-gradient-to-t from-white via-white/85 to-transparent pointer-events-none z-10"
+              className="absolute -bottom-6 sm:-bottom-8 inset-x-0 h-20 sm:h-28 md:h-36 bg-gradient-to-t from-white via-white/85 to-transparent pointer-events-none z-10"
               aria-hidden="true"
             />
           </motion.div>
@@ -481,92 +371,42 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ── Full-Width Editorial / Narrative Section ────────────────── */}
-      <section className="w-full bg-white py-14 sm:py-20 md:py-24 border-b border-slate-100">
+      {/* ── Section: Stop bad traffic before it reaches your website ───── */}
+      <section className="w-full bg-white py-12 sm:py-16 md:py-20 border-b border-slate-200/80">
         <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-14 items-center">
-            {/* Left Narrative */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
+            {/* Left Content Column (Priority Headline & Messaging) */}
             <motion.div
-              initial={{ opacity: 0, y: 16 }}
+              initial={{ opacity: 0, y: 14 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
-              transition={{ duration: 0.55 }}
-              className="lg:col-span-7 space-y-6"
+              transition={{ duration: 0.5 }}
+              className="lg:col-span-7 xl:col-span-7 flex flex-col justify-center"
             >
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 mb-3.5 self-start">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Next-Generation Bot Defense</span>
+                <span>Real-Time Traffic Inspection</span>
               </div>
               <h2
-                className="text-2xl sm:text-3xl md:text-4xl lg:text-[2.75rem] font-bold text-slate-900 tracking-tight leading-[1.15]"
+                className="text-2xl sm:text-3xl md:text-4xl lg:text-[2.5rem] font-bold text-slate-900 tracking-tight leading-[1.18] mb-4"
                 style={{ fontFamily: "'Space Grotesk', ui-sans-serif, system-ui, sans-serif" }}
               >
                 Stop bad traffic before it reaches your website
               </h2>
-              <div className="space-y-4 text-slate-600 text-base sm:text-lg leading-relaxed">
-                <p>
-                  Traditional CAPTCHAs and basic IP blocklists fail against modern automated bots. Today's residential proxies and automation frameworks easily mimic human devices and bypass simple rate limits.
-                </p>
-                <p>
-                  CleanTraffic takes a deterministic, multi-layer approach — analyzing every visitor across network intelligence, HTTP header anomalies, browser integrity, and behavioral signals in real time.
-                </p>
-                <p>
-                  Deflect automated scrapers and ad-fraud crawlers while letting genuine paying customers flow straight to your application and landing pages without friction.
-                </p>
-              </div>
-              <div className="pt-2">
-                <button
-                  onClick={() => navigate("/user")}
-                  className="w-full sm:w-auto px-7 py-3.5 bg-[#0F172A] hover:bg-black text-white rounded-full font-semibold text-[15px] shadow-sm hover:shadow transition-all flex items-center justify-center gap-2 group"
-                >
-                  <span>Start Free Trial</span>
-                  <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                </button>
-              </div>
+              <p className="text-slate-600 text-sm sm:text-base md:text-[17px] leading-relaxed max-w-2xl">
+                Every inbound request is evaluated in sub-milliseconds across browser runtime fingerprints, network ASN reputation, and behavioral biometrics. Deflect bots and automated crawlers while letting verified humans convert with zero friction.
+              </p>
             </motion.div>
 
-            {/* Right Highlights Cards */}
+            {/* Right Column: Compact Light-Theme JSON Dashboard Visual */}
             <motion.div
-              initial={{ opacity: 0, y: 16 }}
+              initial={{ opacity: 0, y: 14 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
-              transition={{ duration: 0.55, delay: 0.1 }}
-              className="lg:col-span-5 space-y-3.5"
+              transition={{ duration: 0.5, delay: 0.08 }}
+              className="lg:col-span-5 xl:col-span-5 flex justify-center lg:justify-end"
             >
-              {[
-                {
-                  title: "Sub-Millisecond Edge Evaluation",
-                  desc: "PHP SDK and direct API responses under 1ms mean zero conversion dropoff for human visitors.",
-                  badge: "< 1ms latency",
-                },
-                {
-                  title: "Zero False Positives for Real Buyers",
-                  desc: "Granular heuristics distinguish real mobile carriers and residential ISPs from malicious bot proxies.",
-                  badge: "99.8% precision",
-                },
-                {
-                  title: "Custom Fallback Routing & Mitigation",
-                  desc: "Serve safe fallback content or HTTP 404/403 blocks to automated crawlers while routing verified users to your real destination.",
-                  badge: "Custom rules",
-                },
-              ].map((item, idx) => (
-                <div
-                  key={idx}
-                  className="p-4 sm:p-5 rounded-2xl bg-[#F8FAFC] border border-slate-200/90 shadow-2xs hover:border-slate-300 transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <h3 className="text-sm sm:text-base font-bold text-slate-900">
-                      {item.title}
-                    </h3>
-                    <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full shrink-0">
-                      {item.badge}
-                    </span>
-                  </div>
-                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    {item.desc}
-                  </p>
-                </div>
-              ))}
+              <TrafficInspectorJsonDashboard />
             </motion.div>
           </div>
         </div>
@@ -600,45 +440,68 @@ export default function Landing() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
             {resourceFeatures.map((feature, i) => (
               <motion.div
-                key={i}
+                key={feature.slug}
                 initial={{ opacity: 0, y: 14 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
                 transition={{ duration: 0.45, delay: i * 0.05 }}
-                className="bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/90 shadow-2xs hover:shadow-md hover:border-slate-300 transition-all duration-300 flex flex-col justify-between group"
+                onClick={() => navigate(`/use-cases/${feature.slug}`)}
+                className="bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/90 shadow-2xs hover:shadow-lg hover:border-slate-300 hover:-translate-y-1 transition-all duration-300 flex flex-col justify-between group cursor-pointer"
               >
                 <div>
-                  <div className="w-11 h-11 rounded-xl bg-slate-100 flex items-center justify-center mb-4 text-slate-700 group-hover:bg-[#0F172A] group-hover:text-white transition-colors duration-200">
-                    <feature.icon className="w-5 h-5" />
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="w-11 h-11 rounded-xl bg-slate-100 flex items-center justify-center text-slate-700 group-hover:bg-[#0F172A] group-hover:text-white transition-colors duration-200 shadow-2xs">
+                      <feature.icon className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-semibold text-slate-500 bg-slate-50 border border-slate-200/70 px-2 py-0.5 rounded-full group-hover:border-emerald-200 group-hover:text-emerald-700 transition-colors">
+                      {feature.badge}
+                    </span>
                   </div>
+
                   <h3
-                    className="text-base sm:text-lg font-bold text-slate-900 mb-2 tracking-tight"
+                    className="text-base sm:text-lg font-bold text-slate-900 mb-2 tracking-tight group-hover:text-emerald-700 transition-colors"
                     style={{ fontFamily: "'Space Grotesk', ui-sans-serif" }}
                   >
                     {feature.title}
                   </h3>
-                  <p className="text-slate-600 text-xs sm:text-sm leading-relaxed">
+                  <p className="text-slate-600 text-xs sm:text-sm leading-relaxed mb-4">
                     {feature.desc}
                   </p>
+                </div>
+
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-slate-700 group-hover:text-emerald-700 transition-colors">
+                  <span>Explore use case</span>
+                  <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
                 </div>
               </motion.div>
             ))}
           </div>
 
-          <div className="mt-12 sm:mt-16 flex flex-col items-center text-center">
+          <div className="mt-12 sm:mt-16 flex flex-col sm:flex-row items-center justify-center gap-4 text-center">
+            <button
+              onClick={() => navigate("/use-cases")}
+              className="px-8 py-3.5 bg-white hover:bg-slate-50 text-slate-900 border border-slate-300 rounded-full font-bold text-[15px] shadow-2xs hover:shadow-sm transition-all flex items-center justify-center gap-2 group cursor-pointer"
+            >
+              <span>See all use cases</span>
+              <ArrowRight className="w-4 h-4 text-emerald-600 group-hover:translate-x-1 transition-transform" />
+            </button>
+
             <button
               onClick={() => navigate("/user")}
-              className="px-8 py-3.5 bg-[#0F172A] hover:bg-black text-white rounded-full font-semibold text-[15px] shadow-sm hover:shadow transition-all flex items-center justify-center gap-2 group"
+              className="px-8 py-3.5 bg-[#0F172A] hover:bg-black text-white rounded-full font-semibold text-[15px] shadow-sm hover:shadow transition-all flex items-center justify-center gap-2 group cursor-pointer"
             >
               <span>Get Started for Free</span>
               <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
             </button>
-            <p className="mt-3 text-xs sm:text-sm text-slate-500 font-medium">
-              Start protecting your campaigns in under 5 minutes. No credit card required.
-            </p>
           </div>
+          <p className="mt-3.5 text-center text-xs sm:text-sm text-slate-500 font-medium">
+            Start protecting your campaigns in under 5 minutes. No credit card required.
+          </p>
         </div>
       </section>
+
+      {/* ── AI Agents & Autonomous Workflows Showcase Section ── */}
+      <AgentGovernanceMonitor />
 
       {/* ── Full-Width Detection Engine (Dark Luxury Security Section) ── */}
       <section id="how-it-works" className="w-full bg-[#0B0F17] py-16 sm:py-20 md:py-28 relative overflow-hidden border-b border-slate-800">
@@ -937,30 +800,8 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ── Full-Width Footer ───────────────────────────────────────── */}
-      <footer className="w-full bg-[#0B0F17] border-t border-slate-800 py-12 sm:py-14 px-4 sm:px-6 lg:px-8 text-slate-400">
-        <div className="w-full max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="flex items-center gap-2.5 text-white">
-            <div className="w-7 h-7 rounded-lg bg-[#064E3B] border border-[#047857] flex items-center justify-center text-white">
-              <ShieldCheck className="w-4 h-4 text-emerald-300" />
-            </div>
-            <span className="font-bold text-base tracking-tight">CleanTraffic</span>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-center gap-5 sm:gap-8 text-xs sm:text-sm text-slate-400">
-            <a href="#features" className="hover:text-white transition-colors">Features</a>
-            <a href="#how-it-works" className="hover:text-white transition-colors">Detection Engine</a>
-            <a href="#click-fraud" className="hover:text-white transition-colors">Click Fraud</a>
-            <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
-            <button onClick={() => navigate("/docs")} className="hover:text-white transition-colors">Documentation</button>
-            <button onClick={() => navigate("/user")} className="hover:text-white transition-colors">Log In</button>
-          </div>
-
-          <p className="text-xs text-slate-500">
-            © {new Date().getFullYear()} CleanTraffic. All rights reserved.
-          </p>
-        </div>
-      </footer>
+      {/* ── Global Unified Footer (Shared Across Site) ─────────────── */}
+      <SiteFooter />
     </div>
   );
 }

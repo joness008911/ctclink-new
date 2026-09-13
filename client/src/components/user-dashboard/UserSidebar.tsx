@@ -74,6 +74,17 @@ export function UserSidebar({
   const isLicenseActive = apiKeyDetails?.status === "active";
   const isLicensePaused = apiKeyDetails?.status === "paused";
 
+  const statusSummary = computeEffectiveAccountStatus({
+    status: user?.status,
+    complianceStatus: user?.complianceStatus,
+    statusReason: user?.statusReason,
+    statusUpdatedAt: user?.statusUpdatedAt,
+    statusUpdatedBy: user?.statusUpdatedBy,
+    subscriptionStatus: billing?.subscriptionStatus ?? user?.subscriptionStatus,
+    subscriptionTier: billing?.subscriptionTier ?? user?.subscriptionTier,
+    trialEndsAt: billing?.trialEndsAt ?? user?.trialEndsAt,
+  });
+
   return (
     <>
       {/* Mobile Backdrop */}
@@ -269,12 +280,6 @@ export function UserSidebar({
 
         {/* Usage Meter Widget (Live API Key Usage & Quota Tracker) */}
         {!isCollapsed && (() => {
-          const statusSummary = computeEffectiveAccountStatus({
-            subscriptionStatus: billing?.subscriptionStatus ?? user?.subscriptionStatus,
-            subscriptionTier: billing?.subscriptionTier ?? user?.subscriptionTier,
-            trialEndsAt: billing?.trialEndsAt ?? user?.trialEndsAt,
-          });
-
           const used = apiKeyDetails?.callCount ?? 0;
           const limit = apiKeyDetails?.callLimit ?? (statusSummary.isTrial ? 5000 : 50000);
           const percentage = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
@@ -358,6 +363,19 @@ export function UserSidebar({
                   <div className="text-[11px] text-slate-400 truncate">
                     {user?.email || "admin@acme.com"}
                   </div>
+                  {statusSummary.isFlagged ? (
+                    <div className="mt-0.5">
+                      <span className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200" title="Account under compliance review">
+                        Under Review
+                      </span>
+                    </div>
+                  ) : statusSummary.isPending ? (
+                    <div className="mt-0.5">
+                      <span className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200" title="Account awaiting clearance">
+                        Pending Clearance
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
               <button

@@ -141,9 +141,15 @@ export default function Documentation() {
           <div className="flex items-center gap-3">
             <button
               onClick={() => navigate("/")}
-              className="text-xs font-medium text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 transition-colors hidden sm:inline-block"
+              className="text-xs font-medium text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 transition-colors hidden sm:inline-block cursor-pointer"
             >
               Home
+            </button>
+            <button
+              onClick={() => navigate("/use-cases")}
+              className="text-xs font-medium text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 transition-colors hidden sm:inline-block cursor-pointer"
+            >
+              Use Cases
             </button>
             <button
               onClick={() => navigate("/user")}

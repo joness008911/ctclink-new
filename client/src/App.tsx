@@ -12,6 +12,8 @@ import UserDashboard from "@/pages/user-dashboard";
 import Landing from "@/pages/landing";
 import Documentation from "@/pages/documentation";
 import VerificationRequired from "@/pages/verification-required";
+import UseCasesIndex from "@/pages/use-cases/index";
+import UseCaseDetail from "@/pages/use-cases/[slug]";
 import { userAuthApi } from "@/lib/user-auth";
 import { authApi } from "@/lib/auth";
 
@@ -68,6 +70,10 @@ function MainRouter() {
     <Switch>
       {/* Public Landing Page */}
       <Route path="/" component={Landing} />
+
+      {/* Dedicated Use Cases Portal & Dynamic Pages */}
+      <Route path="/use-cases" component={UseCasesIndex} />
+      <Route path="/use-cases/:slug" component={UseCaseDetail} />
 
       {/* Dedicated Documentation Portal */}
       <Route path="/docs" component={Documentation} />

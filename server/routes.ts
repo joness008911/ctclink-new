@@ -15,6 +15,15 @@ import {
   MAX_VERIFICATION_ATTEMPTS,
   EMAIL_COOLDOWN_MS,
 } from "./authVerificationService";
+import {
+  isAccountLocked,
+  isIpLocked,
+  recordFailedLogin,
+  recordSuccessfulLogin,
+} from "./accountLockout";
+
+// Session & idle timeout configuration
+export const IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours idle timeout
 
 // Extend session types
 declare module 'express-session' {
@@ -22,6 +31,7 @@ declare module 'express-session' {
     userId?: string; // Admin user ID
     clientUserId?: string; // Client user ID (end-user customers)
     clientUserAuthenticated?: boolean; // Whether client user has verified API key
+    lastActiveAt?: number; // Idle timeout tracking
   }
 }
 
@@ -31,45 +41,81 @@ interface AuthTokenData {
   userId: string;
   authenticated?: boolean;
   expiresAt: number;
+  lastActiveAt?: number;
 }
 
 const authTokens = new Map<string, AuthTokenData>();
 
-// Periodic cleanup of expired tokens
-setInterval(() => {
+// Helper to immediately invalidate all in-memory auth tokens for a user
+export function revokeUserSessions(userId: string): number {
+  let count = 0;
+  for (const [token, data] of authTokens.entries()) {
+    if (data.userId === userId) {
+      authTokens.delete(token);
+      count++;
+    }
+  }
+  return count;
+}
+
+// Periodic cleanup of expired and idle tokens
+const tokenCleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [token, data] of authTokens.entries()) {
-    if (now > data.expiresAt) {
+    if (now > data.expiresAt || (data.lastActiveAt && now - data.lastActiveAt > IDLE_TIMEOUT_MS)) {
       authTokens.delete(token);
     }
   }
-}, 30 * 60 * 1000);
+}, 15 * 60 * 1000);
+if (tokenCleanupTimer && typeof tokenCleanupTimer.unref === 'function') {
+  tokenCleanupTimer.unref();
+}
 
 export function getSessionOrToken(req: any): { type: 'admin' | 'client'; userId: string; authenticated?: boolean } | null {
+  const now = Date.now();
+
   // 1. Check Authorization, X-Auth-Token, or X-Client-Token headers first (works across iframes)
   const authHeader = req.headers?.authorization || req.headers?.['x-auth-token'] || req.headers?.['x-client-token'];
   if (authHeader && typeof authHeader === 'string') {
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
     if (token && authTokens.has(token)) {
       const data = authTokens.get(token)!;
-      if (Date.now() < data.expiresAt) {
-        return data;
-      } else {
+      // Absolute expiration check
+      if (now > data.expiresAt) {
         authTokens.delete(token);
+        return null;
       }
+      // Idle timeout check
+      if (data.lastActiveAt && (now - data.lastActiveAt > IDLE_TIMEOUT_MS)) {
+        authTokens.delete(token);
+        return null;
+      }
+      data.lastActiveAt = now;
+      return data;
     }
   }
 
   // 2. Fall back to Cookie Session
-  if (req.session?.userId) {
-    return { type: 'admin', userId: req.session.userId, authenticated: true };
-  }
-  if (req.session?.clientUserId) {
-    return { 
-      type: 'client', 
-      userId: req.session.clientUserId, 
-      authenticated: !!req.session.clientUserAuthenticated 
-    };
+  if (req.session) {
+    if (req.session.lastActiveAt && (now - req.session.lastActiveAt > IDLE_TIMEOUT_MS)) {
+      delete req.session.userId;
+      delete req.session.clientUserId;
+      delete req.session.clientUserAuthenticated;
+      delete req.session.lastActiveAt;
+      return null;
+    }
+    req.session.lastActiveAt = now;
+
+    if (req.session.userId) {
+      return { type: 'admin', userId: req.session.userId, authenticated: true };
+    }
+    if (req.session.clientUserId) {
+      return { 
+        type: 'client', 
+        userId: req.session.clientUserId, 
+        authenticated: !!req.session.clientUserAuthenticated 
+      };
+    }
   }
 
   return null;
@@ -99,6 +145,8 @@ import {
   sendVerificationEmail,
   sendPasswordResetEmail,
   sendWelcomeEmail,
+  sendAccountStatusEmail,
+  sendPasswordChangedEmail,
   getEmailTemplate,
   saveEmailTemplate,
   getEmailLogs,
@@ -193,6 +241,102 @@ const classifyLimiter = rateLimit({
     code: "RATE_LIMIT_EXCEEDED",
     message: "Too Many Requests. You have made too many requests in a short period of time. Please wait a moment and try again.",
     error: "Too Many Requests",
+  },
+});
+
+// Dedicated API Key verification rate limiter (10 attempts per 15 min per IP)
+const apiKeyVerificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 429,
+    code: "RATE_LIMITED",
+    message: "Too many API key verification attempts. Please wait 15 minutes before trying again.",
+  },
+});
+
+// Sensitive account operations (password changes, terms acceptance, etc.)
+// 15 attempts per 15 min
+const sensitiveAccountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 429,
+    code: "RATE_LIMITED",
+    message: "Too many requests for this account operation. Please wait 15 minutes before trying again.",
+  },
+});
+
+// Dedicated password change rate limiter
+// Protects against password guessing, repeated current-password attempts, and email notification abuse
+const changePasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === "test" ? 100 : 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 429,
+    code: "RATE_LIMITED",
+    message: "Too many password change attempts. Please wait 15 minutes before trying again.",
+  },
+});
+
+// Admin sensitive endpoints (mass broadcast emails, connection tests, bulk operations)
+// 60 attempts per 15 min
+const adminActionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 429,
+    code: "RATE_LIMITED",
+    message: "Too many administrative requests. Please slow down and try again shortly.",
+  },
+});
+
+// Heavy query rate limiter (classification logs, aggregate stats, export, audit queries)
+// 60 requests per 1 minute
+const heavyQueryLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 429,
+    code: "RATE_LIMITED",
+    message: "Query rate limit exceeded. Please wait a moment before loading more records.",
+  },
+});
+
+// Public utility endpoints (client-error reporting, current-location geo lookup)
+// 60 requests per 1 minute
+const publicEndpointLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 429,
+    code: "RATE_LIMITED",
+    message: "Rate limit reached. Please wait a moment before trying again.",
+  },
+});
+
+// General authenticated API limiter (200 requests per 1 minute)
+const generalApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 429,
+    code: "RATE_LIMITED",
+    message: "Too many requests. Please slow down.",
   },
 });
 
@@ -449,7 +593,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.set('trust proxy', 1);
   
   // Clean up old IP log entries every hour to prevent memory leak
-  setInterval(() => {
+  const ipLogCleanupTimer = setInterval(() => {
     const now = Date.now();
     const entries = Array.from(ipLastLogTime.entries());
     for (const [ip, lastLogTime] of entries) {
@@ -458,6 +602,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
   }, 60 * 60 * 1000); // Run cleanup every hour
+  if (ipLogCleanupTimer && typeof ipLogCleanupTimer.unref === 'function') {
+    ipLogCleanupTimer.unref();
+  }
   
   // IP Whitelist Middleware - Runs BEFORE session to block unauthorized /user access early
   app.use(async (req, res, next) => {
@@ -662,12 +809,40 @@ Disallow: /*`);
     apiKey: z.string().min(1).max(256).trim(),
   });
 
-  const changePasswordSchema = z.object({
-    currentPassword: z.string().min(1).max(256),
-    newPassword: z.string().min(8).max(256),
-  });
+  const changePasswordSchema = z
+    .object({
+      currentPassword: z
+        .string({ required_error: "Current password is required" })
+        .min(1, "Current password is required")
+        .max(256),
+      newPassword: z
+        .string({ required_error: "New password is required" })
+        .min(8, "Password must be at least 8 characters long")
+        .max(256)
+        .refine((val) => /[a-z]/.test(val), {
+          message: "Password must contain at least one lowercase letter (a-z)",
+        })
+        .refine((val) => /[A-Z]/.test(val), {
+          message: "Password must contain at least one uppercase letter (A-Z)",
+        })
+        .refine((val) => /[0-9]/.test(val) || /[^A-Za-z0-9]/.test(val), {
+          message: "Password must contain at least one number (0-9) or special symbol",
+        }),
+      confirmPassword: z
+        .string({ required_error: "Password confirmation is required" })
+        .min(1, "Password confirmation is required")
+        .max(256),
+    })
+    .refine((data) => data.newPassword === data.confirmPassword, {
+      message: "New password and confirmation password do not match",
+      path: ["confirmPassword"],
+    })
+    .refine((data) => data.newPassword !== data.currentPassword, {
+      message: "Your new password must be different from your current password.",
+      path: ["newPassword"],
+    });
 
-  // Login endpoint
+  // Login endpoint (Admin)
   app.post("/api/login", authLimiter, async (req, res) => {
     try {
       const parse = loginSchema.safeParse(req.body);
@@ -675,27 +850,79 @@ Disallow: /*`);
         return res.status(400).json({ message: "Invalid request", errors: parse.error.flatten().fieldErrors });
       }
       const { username, password } = parse.data;
+      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress || req.ip || "unknown";
+
+      // 1. Account and IP lockout checks
+      const accountLock = isAccountLocked(username);
+      if (accountLock.isLocked) {
+        return res.status(429).json({
+          message: `Account is temporarily locked due to multiple failed login attempts. Please try again in ${Math.ceil(accountLock.remainingSeconds / 60)} minutes.`,
+          locked: true,
+          retryAfter: accountLock.remainingSeconds,
+          code: "ACCOUNT_LOCKED",
+        });
+      }
+      const ipLock = isIpLocked(clientIp);
+      if (ipLock.isLocked) {
+        return res.status(429).json({
+          message: "Too many failed attempts from your IP address. Please try again later.",
+          locked: true,
+          retryAfter: ipLock.remainingSeconds,
+          code: "IP_LOCKED",
+        });
+      }
 
       const user = await storage.getUserByUsername(username);
       if (!user) {
-        return res.status(401).json({ message: "Invalid credentials" });
+        // Mitigation for timing attack: compute dummy hash comparison so execution time matches real user
+        await bcrypt.compare(password, "$2b$10$wT8m9M6n8E0A7C2L9J4PbeJvX9G1Z8M2K3N5R7T9V1X3Z5B7D9F1H");
+        const lockRes = recordFailedLogin(username, clientIp);
+        if (lockRes.isLocked) {
+          return res.status(429).json({
+            message: "Too many failed login attempts. Account temporarily locked for 15 minutes.",
+            locked: true,
+            retryAfter: lockRes.remainingSeconds,
+            code: "ACCOUNT_LOCKED",
+          });
+        }
+        return res.status(401).json({
+          message: "Invalid credentials",
+          remainingAttempts: lockRes.remainingAttempts,
+        });
       }
 
       const passwordMatch = await bcrypt.compare(password, user.password);
       if (!passwordMatch) {
-        return res.status(401).json({ message: "Invalid credentials" });
+        const lockRes = recordFailedLogin(username, clientIp);
+        if (lockRes.isLocked) {
+          return res.status(429).json({
+            message: "Too many failed login attempts. Account temporarily locked for 15 minutes.",
+            locked: true,
+            retryAfter: lockRes.remainingSeconds,
+            code: "ACCOUNT_LOCKED",
+          });
+        }
+        return res.status(401).json({
+          message: "Invalid credentials",
+          remainingAttempts: lockRes.remainingAttempts,
+        });
       }
+
+      // Reset failed attempts on valid login
+      recordSuccessfulLogin(username, clientIp);
       
       // Generate Admin session token
       const adminToken = "adm_tok_" + randomUUID().replace(/-/g, "");
       authTokens.set(adminToken, {
         type: 'admin',
         userId: user.id,
-        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        lastActiveAt: Date.now(),
       });
 
       // Set Admin session and clear any client session keys
       req.session.userId = user.id;
+      req.session.lastActiveAt = Date.now();
       delete (req.session as any).clientUserId;
       delete (req.session as any).clientUserAuthenticated;
       req.session.save((err) => {
@@ -717,7 +944,7 @@ Disallow: /*`);
   });
 
   // Logout endpoint
-  app.post("/api/logout", (req, res) => {
+  app.post("/api/logout", generalApiLimiter, (req, res) => {
     const authHeader = req.headers?.authorization || req.headers?.['x-auth-token'];
     if (authHeader && typeof authHeader === 'string') {
       const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
@@ -996,11 +1223,29 @@ Disallow: /*`);
 
       if (user) {
         // User exists: verify active status
-        if (user.status !== "active") {
-          return res.status(403).json({ message: `Account is ${user.status}. Please contact support.` });
+        if (user.status === "suspended" || user.complianceStatus === "suspended") {
+          return res.status(403).json({ 
+            message: "Your account has been suspended. Please contact us if you believe this was done in error.",
+            code: "ACCOUNT_SUSPENDED",
+            accountStatus: "suspended",
+            complianceStatus: user.complianceStatus || "suspended",
+            statusReason: user.statusReason
+          });
         }
-        if (user.complianceStatus === "suspended") {
-          return res.status(403).json({ message: "Account suspended due to compliance policy. Please contact support." });
+        if (user.status === "deactivated" || user.status === "deleted") {
+          return res.status(403).json({ 
+            message: "Your account has been deactivated. Please contact us if you believe this was done in error.",
+            code: "ACCOUNT_DEACTIVATED",
+            accountStatus: user.status,
+            statusReason: user.statusReason
+          });
+        }
+        if (user.status !== "active") {
+          return res.status(403).json({ 
+            message: `Account is ${user.status}. Please contact support.`,
+            code: "ACCOUNT_INACTIVE",
+            accountStatus: user.status
+          });
         }
 
         // If user lacks an API key for any reason, auto-provision
@@ -1125,27 +1370,97 @@ Disallow: /*`);
         return res.status(400).json({ message: "Invalid request", errors: parse.error.flatten().fieldErrors });
       }
       const { username, password } = parse.data;
+      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress || req.ip || "unknown";
+
+      // 1. Check account lockout status
+      const accountLock = isAccountLocked(username);
+      if (accountLock.isLocked) {
+        return res.status(429).json({
+          message: `Account is temporarily locked due to multiple failed login attempts. Please try again in ${Math.ceil(accountLock.remainingSeconds / 60)} minutes or reset your password.`,
+          locked: true,
+          retryAfter: accountLock.remainingSeconds,
+          code: "ACCOUNT_LOCKED",
+        });
+      }
+
+      // 2. Check IP lockout status
+      const ipLock = isIpLocked(clientIp);
+      if (ipLock.isLocked) {
+        return res.status(429).json({
+          message: "Too many failed attempts from your IP address. Please try again later.",
+          locked: true,
+          retryAfter: ipLock.remainingSeconds,
+          code: "IP_LOCKED",
+        });
+      }
 
       // Find client user by username OR email
       const user = await storage.getClientUserByUsernameOrEmail(username);
       if (!user) {
-        return res.status(401).json({ message: "Invalid credentials" });
+        // Timing attack mitigation: compare against dummy hash to match real response latency
+        await bcrypt.compare(password, "$2b$10$wT8m9M6n8E0A7C2L9J4PbeJvX9G1Z8M2K3N5R7T9V1X3Z5B7D9F1H");
+        const lockRes = recordFailedLogin(username, clientIp);
+        if (lockRes.isLocked) {
+          return res.status(429).json({
+            message: "Too many failed login attempts. Account temporarily locked for 15 minutes.",
+            locked: true,
+            retryAfter: lockRes.remainingSeconds,
+            code: "ACCOUNT_LOCKED",
+          });
+        }
+        return res.status(401).json({
+          message: "Invalid credentials",
+          remainingAttempts: lockRes.remainingAttempts,
+        });
       }
 
       // Use bcrypt to compare passwords
       const passwordMatch = await bcrypt.compare(password, user.password);
       if (!passwordMatch) {
-        return res.status(401).json({ message: "Invalid credentials" });
+        const lockRes = recordFailedLogin(username, clientIp);
+        if (lockRes.isLocked) {
+          return res.status(429).json({
+            message: "Too many failed login attempts. Account temporarily locked for 15 minutes.",
+            locked: true,
+            retryAfter: lockRes.remainingSeconds,
+            code: "ACCOUNT_LOCKED",
+          });
+        }
+        return res.status(401).json({
+          message: "Invalid credentials",
+          remainingAttempts: lockRes.remainingAttempts,
+        });
       }
 
-      // Check if user account is active
+      // Valid credentials: clear failed attempt tracker
+      recordSuccessfulLogin(username, clientIp);
+
+      // Check if user account is suspended or deactivated
+      if (user.status === "suspended" || user.complianceStatus === "suspended") {
+        return res.status(403).json({ 
+          message: "Your account has been suspended. Please contact us if you believe this was done in error.",
+          code: "ACCOUNT_SUSPENDED",
+          accountStatus: "suspended",
+          complianceStatus: user.complianceStatus || "suspended",
+          statusReason: user.statusReason,
+        });
+      }
+
+      if (user.status === "deactivated" || user.status === "deleted") {
+        return res.status(403).json({ 
+          message: "Your account has been deactivated. Please contact us if you believe this was done in error.",
+          code: "ACCOUNT_DEACTIVATED",
+          accountStatus: user.status,
+          statusReason: user.statusReason,
+        });
+      }
+
       if (user.status !== "active") {
-        return res.status(403).json({ message: `Account is ${user.status}. Please contact support.` });
-      }
-
-      // Check compliance status before allowing login
-      if (user.complianceStatus === "suspended") {
-        return res.status(403).json({ message: "Account suspended due to compliance violation. Please contact support." });
+        return res.status(403).json({ 
+          message: `Account is ${user.status}. Please contact support.`,
+          code: "ACCOUNT_INACTIVE",
+          accountStatus: user.status,
+        });
       }
 
       // If user doesn't have an API key yet, auto-provision one
@@ -1162,10 +1477,12 @@ Disallow: /*`);
           userId: user.id,
           authenticated: false,
           expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+          lastActiveAt: Date.now(),
         });
         delete (req.session as any).userId;
         req.session.clientUserId = user.id;
         req.session.clientUserAuthenticated = false;
+        req.session.lastActiveAt = Date.now();
         return res.status(200).json({
           message: "Terms of service must be accepted before using this service.",
           requiresTos: true,
@@ -1181,11 +1498,13 @@ Disallow: /*`);
         userId: user.id,
         authenticated: true,
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        lastActiveAt: Date.now(),
       });
 
       delete (req.session as any).userId;
       req.session.clientUserId = user.id;
       req.session.clientUserAuthenticated = true;
+      req.session.lastActiveAt = Date.now();
 
       const { user: syncedUser, statusSummary } = await syncClientUserSubscription(user);
 
@@ -1204,6 +1523,10 @@ Disallow: /*`);
             email: syncedUser.email,
             fullName: syncedUser.fullName,
             status: syncedUser.status,
+            complianceStatus: syncedUser.complianceStatus || statusSummary.complianceStatus || 'cleared',
+            statusReason: syncedUser.statusReason || null,
+            statusUpdatedAt: syncedUser.statusUpdatedAt || null,
+            statusUpdatedBy: syncedUser.statusUpdatedBy || null,
             subscriptionStatus: statusSummary.status,
             subscriptionTier: statusSummary.tier,
             statusLabel: statusSummary.statusLabel,
@@ -1213,6 +1536,9 @@ Disallow: /*`);
             isActive: statusSummary.isActive,
             isTrial: statusSummary.isTrial,
             isTrialExpired: statusSummary.isTrialExpired,
+            isFlagged: statusSummary.isFlagged || syncedUser.complianceStatus === 'flagged',
+            isPending: statusSummary.isPending || syncedUser.complianceStatus === 'pending',
+            isCleared: statusSummary.isCleared || syncedUser.complianceStatus === 'cleared',
           },
           apiKey: apiKey ? {
             name: apiKey.keyName,
@@ -1753,7 +2079,7 @@ Disallow: /*`);
   });
 
   // Verify / Attach API key for client user (optional secondary step)
-  app.post("/api/user/verify-api-key", async (req, res) => {
+  app.post("/api/user/verify-api-key", apiKeyVerificationLimiter, async (req, res) => {
     try {
       const parse = apiKeySchema.safeParse(req.body);
       if (!parse.success) {
@@ -1762,21 +2088,15 @@ Disallow: /*`);
       const { apiKey } = parse.data;
 
       const auth = getSessionOrToken(req);
-      let clientUserId = auth?.userId || req.session?.clientUserId;
+      const clientUserId = auth?.userId || req.session?.clientUserId;
+
+      if (!clientUserId) {
+        return res.status(401).json({ message: "Authentication required. Please login with your account credentials first." });
+      }
 
       const apiKeyRecord = await storage.getApiKeyByValue(apiKey);
       if (!apiKeyRecord) {
         return res.status(401).json({ message: "Invalid API key" });
-      }
-
-      if (!clientUserId) {
-        const matchingUser = await storage.getClientUserByApiKey(apiKeyRecord.id);
-        if (matchingUser) {
-          clientUserId = matchingUser.id;
-          req.session.clientUserId = matchingUser.id;
-        } else {
-          return res.status(401).json({ message: "Please login with your username and password first" });
-        }
       }
 
       const user = await storage.getClientUser(clientUserId);
@@ -1863,16 +2183,62 @@ Disallow: /*`);
     }
   });
 
-  // Middleware for client user auth — supports token header or session cookie
-  const requireClientAuth = (req: any, res: any, next: any) => {
-    const auth = getSessionOrToken(req);
-    if (auth && auth.type === 'client' && auth.authenticated) {
+  // Middleware for client user auth — supports token header or session cookie with authoritative DB state check
+  const requireClientAuth = async (req: any, res: any, next: any) => {
+    try {
+      const auth = getSessionOrToken(req);
+      if (!auth || auth.type !== 'client' || !auth.authenticated) {
+        return res.status(401).json({ message: "Unauthorized. Please login and verify your API key." });
+      }
+
+      const user = await storage.getClientUser(auth.userId);
+      if (!user) {
+        revokeUserSessions(auth.userId);
+        if (req.session) {
+          delete req.session.clientUserId;
+          delete req.session.clientUserAuthenticated;
+        }
+        return res.status(401).json({ message: "User account not found or has been removed.", code: "ACCOUNT_NOT_FOUND" });
+      }
+
+      if (user.status === "suspended" || user.complianceStatus === "suspended") {
+        revokeUserSessions(auth.userId);
+        if (req.session) {
+          delete req.session.clientUserId;
+          delete req.session.clientUserAuthenticated;
+        }
+        return res.status(403).json({ 
+          message: "Your account has been suspended. Please contact us if you believe this was done in error.", 
+          code: "ACCOUNT_SUSPENDED",
+          accountStatus: "suspended",
+          complianceStatus: user.complianceStatus || "suspended",
+          statusReason: user.statusReason
+        });
+      }
+
+      if (user.status === "deleted" || user.status === "deactivated") {
+        revokeUserSessions(auth.userId);
+        if (req.session) {
+          delete req.session.clientUserId;
+          delete req.session.clientUserAuthenticated;
+        }
+        return res.status(403).json({ 
+          message: "Your account has been deactivated. Please contact us if you believe this was done in error.", 
+          code: "ACCOUNT_DEACTIVATED",
+          accountStatus: user.status,
+          statusReason: user.statusReason
+        });
+      }
+
       req.session.clientUserId = auth.userId;
       req.session.clientUserAuthenticated = true;
       (req as any).clientUserId = auth.userId;
+      (req as any).clientUser = user;
       return next();
+    } catch (err) {
+      console.error("requireClientAuth check error:", err);
+      return res.status(500).json({ message: "Authentication validation error." });
     }
-    res.status(401).json({ message: "Unauthorized. Please login and verify your API key." });
   };
 
   // ---- Subscription enforcement middleware ----
@@ -1941,9 +2307,14 @@ Disallow: /*`);
         id: user.id,
         username: user.username,
         email: user.email,
+        fullName: user.fullName,
         emailVerified: !!user.emailVerified,
         emailVerifiedAt: user.emailVerifiedAt,
         status: user.status,
+        complianceStatus: user.complianceStatus || statusSummary.complianceStatus || 'cleared',
+        statusReason: user.statusReason || null,
+        statusUpdatedAt: user.statusUpdatedAt || null,
+        statusUpdatedBy: user.statusUpdatedBy || null,
         createdAt: user.createdAt,
         // Authoritative Billing fields
         subscriptionStatus: statusSummary.status,
@@ -1954,6 +2325,11 @@ Disallow: /*`);
         isTrial: statusSummary.isTrial,
         isTrialExpired: statusSummary.isTrialExpired,
         isExpiringSoon: statusSummary.isExpiringSoon,
+        isFlagged: statusSummary.isFlagged || user.complianceStatus === 'flagged',
+        isPending: statusSummary.isPending || user.complianceStatus === 'pending',
+        isCleared: statusSummary.isCleared || user.complianceStatus === 'cleared',
+        isSuspended: user.status === 'suspended' || user.complianceStatus === 'suspended',
+        isDeactivated: user.status === 'deactivated',
         trialEndsAt: statusSummary.trialEndsAt,
         trialDaysRemaining: statusSummary.trialDaysRemaining,
         notification: statusSummary.notification,
@@ -2055,6 +2431,30 @@ Disallow: /*`);
               ? "Your trial has expired and your dashboard is in read-only mode. Upgrade your subscription to modify routing rules."
               : "Your subscription is inactive and your dashboard is in read-only mode. Upgrade your subscription to modify routing rules.",
             readOnly: true,
+          });
+        }
+
+        if (rawUser.complianceStatus === "flagged") {
+          return res.status(403).json({
+            message: rawUser.statusReason 
+              ? `Your account is currently under compliance review (${rawUser.statusReason}). Modifying traffic routing rules is temporarily unavailable.`
+              : "Your account is currently under compliance review and this action is temporarily unavailable.",
+            code: "ACCOUNT_FLAGGED",
+            complianceStatus: "flagged",
+            statusReason: rawUser.statusReason,
+            isFlagged: true,
+          });
+        }
+
+        if (rawUser.complianceStatus === "pending") {
+          return res.status(403).json({
+            message: rawUser.statusReason
+              ? `Your account is pending verification and review (${rawUser.statusReason}). Modifying traffic routing rules is unavailable until your account is cleared.`
+              : "Your account is pending verification and review. Modifying traffic routing rules is unavailable until your account is cleared.",
+            code: "ACCOUNT_PENDING",
+            complianceStatus: "pending",
+            statusReason: rawUser.statusReason,
+            isPending: true,
           });
         }
       }
@@ -2277,14 +2677,27 @@ Disallow: /*`);
   });
 
   // Change client user password
-  app.post("/api/user/change-password", requireClientAuth, async (req: any, res) => {
+  app.post("/api/user/change-password", changePasswordLimiter, requireClientAuth, async (req: any, res) => {
     try {
       const parse = changePasswordSchema.safeParse(req.body);
       if (!parse.success) {
-        return res.status(400).json({ message: "Invalid request", errors: parse.error.flatten().fieldErrors });
+        return res.status(400).json({
+          message: parse.error.issues[0]?.message || "Invalid request",
+          errors: parse.error.flatten().fieldErrors,
+        });
       }
       const { currentPassword, newPassword } = parse.data;
-      const userId = req.session.clientUserId;
+
+      // Defense-in-depth string check
+      if (currentPassword === newPassword) {
+        return res.status(400).json({
+          message: "Your new password must be different from your current password.",
+          errors: { newPassword: ["Your new password must be different from your current password."] },
+        });
+      }
+
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId;
 
       const user = await storage.getClientUser(userId);
       if (!user) {
@@ -2294,27 +2707,91 @@ Disallow: /*`);
       // Verify current password using bcrypt
       const passwordMatch = await bcrypt.compare(currentPassword, user.password);
       if (!passwordMatch) {
-        return res.status(401).json({ message: "Current password is incorrect" });
+        return res.status(401).json({
+          message: "Current password is incorrect",
+          errors: { currentPassword: ["Current password is incorrect"] },
+        });
+      }
+
+      // Verify new password is NOT identical to existing stored hash
+      const isReused = await bcrypt.compare(newPassword, user.password);
+      if (isReused) {
+        return res.status(400).json({
+          message: "Your new password must be different from your current password.",
+          errors: { newPassword: ["Your new password must be different from your current password."] },
+        });
       }
 
       // Hash new password before storing
       const hashedPassword = await bcrypt.hash(newPassword, 10);
       await storage.updateClientUser(userId, { password: hashedPassword });
 
-      res.json({ message: "Password changed successfully" });
+      // Invalidate all existing tokens and sessions across all devices for this user
+      revokeUserSessions(userId);
+      await invalidateAllTokensForUser(userId);
+
+      // Issue a fresh, secure session token for the current session
+      const newClientToken = "ct_cli_" + randomUUID().replace(/-/g, "");
+      authTokens.set(newClientToken, {
+        type: "client",
+        userId: user.id,
+        authenticated: true,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        lastActiveAt: Date.now(),
+      });
+
+      if (req.session) {
+        req.session.clientUserId = user.id;
+        req.session.clientUserAuthenticated = true;
+        req.session.lastActiveAt = Date.now();
+        req.session.save?.(() => {});
+      }
+
+      const clientIp =
+        (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+        req.socket?.remoteAddress ||
+        req.ip ||
+        "unknown";
+
+      void auditLog({
+        actorId: user.id,
+        actorType: "system",
+        action: "user.password_changed",
+        ipAddress: clientIp.replace("::ffff:", ""),
+      });
+
+      // Dispatch security confirmation email to user's verified address
+      if (user.email) {
+        const userEmail = user.email;
+        void sendPasswordChangedEmail({
+          to: userEmail,
+          name: user.fullName || user.username || userEmail.split("@")[0],
+          ipAddress: clientIp.replace("::ffff:", ""),
+          timestamp: new Date().toUTCString(),
+        }).catch((err) => {
+          console.error("[Email] Failed to dispatch password change alert:", err);
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Password changed successfully",
+        token: newClientToken,
+      });
     } catch (error) {
       console.error("Change password error:", error);
-      res.status(500).json({ message: "Internal server error" });
+      return res.status(500).json({ message: "Internal server error" });
     }
   });
 
-  // Accept Terms of Service
-  app.post("/api/user/accept-tos", async (req: any, res) => {
+  // Accept Terms of Service (Strict session/pre-auth validation — IDOR protected)
+  app.post("/api/user/accept-tos", sensitiveAccountLimiter, async (req: any, res) => {
     try {
       const auth = getSessionOrToken(req);
-      const userId = auth?.userId || req.session?.clientUserId || req.body?.userId;
+      // Strictly require verified pre-auth session or token; NEVER trust req.body.userId
+      const userId = auth?.userId || req.session?.clientUserId;
       if (!userId) {
-        return res.status(401).json({ message: "Please login first" });
+        return res.status(401).json({ message: "Unauthorized. Please login first." });
       }
 
       const user = await storage.getClientUser(userId);
@@ -2333,14 +2810,23 @@ Disallow: /*`);
         type: 'client',
         userId: user.id,
         authenticated: true,
-        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        lastActiveAt: Date.now(),
       });
 
       // Complete session
       delete (req.session as any).userId;
       req.session.clientUserId = user.id;
       req.session.clientUserAuthenticated = true;
+      req.session.lastActiveAt = Date.now();
       req.session.save?.(() => {});
+
+      void auditLog({
+        actorId: user.id,
+        actorType: "system",
+        action: "user.tos_accepted",
+        ipAddress: (req.ip || "").replace("::ffff:", ""),
+      });
 
       const apiKeyRecord = user.apiKeyId ? await storage.getApiKeyById(user.apiKeyId) : null;
 
@@ -2581,27 +3067,128 @@ Disallow: /*`);
   app.patch("/api/interface/client-users/:id/compliance", requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const { complianceStatus } = req.body;
+      const { complianceStatus, reason, notifyUser = true } = req.body;
 
       if (!complianceStatus || !['pending', 'cleared', 'flagged', 'suspended'].includes(complianceStatus)) {
         return res.status(400).json({ message: "Invalid compliance status. Must be: pending, cleared, flagged, suspended" });
       }
 
-      const updated = await storage.updateClientUser(id, { complianceStatus });
-      if (!updated) {
+      const user = await storage.getClientUser(id);
+      if (!user) {
         return res.status(404).json({ message: "User not found" });
       }
 
-      console.log(`[COMPLIANCE] Admin updated user ${id} compliance status to ${complianceStatus}`);
+      const now = new Date();
+      const adminId = (req as any).adminUserId || (req as any).session?.userId || "admin";
+      let adminUsername = "Administrator";
+      try {
+        const adminUser = await storage.getUser(adminId);
+        if (adminUser?.username) adminUsername = adminUser.username;
+      } catch {}
+
+      const cleanReason = typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+      const updates: Partial<ClientUser> = {
+        complianceStatus,
+        statusUpdatedAt: now,
+        statusUpdatedBy: adminUsername,
+      };
+      if (cleanReason) {
+        updates.statusReason = cleanReason;
+      }
+
+      // Update status audit history
+      const existingHistory = Array.isArray(user.statusHistory) ? [...user.statusHistory] : [];
+      existingHistory.unshift({
+        timestamp: now.toISOString(),
+        fromStatus: user.status,
+        toStatus: user.status,
+        fromCompliance: user.complianceStatus,
+        toCompliance: complianceStatus,
+        reason: cleanReason || `Compliance status set to ${complianceStatus}`,
+        changedBy: adminUsername,
+      });
+      updates.statusHistory = existingHistory.slice(0, 50);
+
+      const updated = await storage.updateClientUser(id, updates);
+      if (!updated) {
+        return res.status(500).json({ message: "Failed to update compliance status" });
+      }
+
+      // If compliance suspended: invalidate sessions and pause API key
+      if (complianceStatus === "suspended") {
+        revokeUserSessions(id);
+        if (user.apiKeyId) {
+          try {
+            await storage.updateApiKey(user.apiKeyId, { status: "suspended", enabled: false });
+          } catch (keyErr) {
+            console.error(`Failed to suspend API key for compliance user ${id}:`, keyErr);
+          }
+        }
+      } else if (complianceStatus === "cleared" && user.status === "active") {
+        if (user.apiKeyId) {
+          try {
+            const currentKey = await storage.getApiKeyById(user.apiKeyId);
+            if (currentKey && (currentKey.status === "suspended" || !currentKey.enabled)) {
+              await storage.updateApiKey(user.apiKeyId, { status: "active", enabled: true });
+            }
+          } catch (keyErr) {
+            console.error(`Failed to reactivate API key for cleared user ${id}:`, keyErr);
+          }
+        }
+      }
+
+      console.log(`[COMPLIANCE] Admin ${adminUsername} updated user ${user.username} (${id}) compliance status to ${complianceStatus}`);
       void auditLog({
-        actorId: (req as any).session?.userId,
+        actorId: adminId,
         actorType: "admin",
         action: "compliance.updated",
         targetId: id,
         targetType: "client_user",
-        metadata: { complianceStatus },
+        metadata: {
+          previousCompliance: user.complianceStatus,
+          newCompliance: complianceStatus,
+          reason: cleanReason,
+          changedBy: adminUsername,
+        },
       });
-      res.json({ success: true, user: updated });
+
+      // Send transactional status notification email if requested
+      let emailResult: any = null;
+      if (notifyUser && user.email) {
+        try {
+          emailResult = await sendAccountStatusEmail({
+            to: user.email,
+            name: user.fullName || user.username,
+            username: user.username,
+            newStatus: complianceStatus,
+            previousStatus: user.complianceStatus || "cleared",
+            reason: cleanReason || undefined,
+            changedBy: adminUsername,
+          });
+        } catch (emailErr) {
+          console.error(`Failed to dispatch compliance status email to ${user.email}:`, emailErr);
+        }
+      }
+
+      const { user: syncedUser, statusSummary } = await syncClientUserSubscription(updated);
+
+      res.json({
+        success: true,
+        user: {
+          ...syncedUser,
+          subscriptionStatus: statusSummary.status,
+          subscriptionTier: statusSummary.tier,
+          statusLabel: statusSummary.statusLabel,
+          tierLabel: statusSummary.tierLabel,
+          isActive: statusSummary.isActive,
+          complianceStatus: statusSummary.complianceStatus,
+          isFlagged: statusSummary.isFlagged,
+          isPending: statusSummary.isPending,
+          isCleared: statusSummary.isCleared,
+          isRestricted: statusSummary.isRestricted,
+        },
+        emailNotification: emailResult ? { sent: emailResult.success, message: emailResult.message } : null,
+      });
     } catch (error) {
       console.error("Update compliance status error:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -2791,29 +3378,393 @@ Disallow: /*`);
     }
   });
 
-  // Delete a client user (Admin only)
-  app.delete("/api/interface/client-users/:id", requireAuth, async (req, res) => {
+  // Comprehensive Account Status Update (Admin only)
+  app.patch("/api/interface/client-users/:id/status", requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      
-      // Check if user exists
+      const { status, complianceStatus, reason, notifyUser = true } = req.body;
+
       const user = await storage.getClientUser(id);
       if (!user) {
         return res.status(404).json({ message: "User not found" });
       }
 
-      // For now, we don't have a delete method, so we'll suspend the user instead
-      const updated = await storage.updateClientUser(id, { status: 'suspended' });
+      const updates: Partial<ClientUser> = {};
+      const now = new Date();
+      const adminId = (req as any).adminUserId || (req as any).session?.userId || "admin";
+      let adminUsername = "Administrator";
+      try {
+        const adminUser = await storage.getUser(adminId);
+        if (adminUser?.username) adminUsername = adminUser.username;
+      } catch {}
+
+      if (status !== undefined) {
+        const cleanStatus = String(status).toLowerCase().trim();
+        if (!['active', 'suspended', 'deactivated', 'inactive'].includes(cleanStatus)) {
+          return res.status(400).json({ message: "Invalid status. Must be: active, suspended, deactivated" });
+        }
+        updates.status = cleanStatus;
+        if (cleanStatus === 'deactivated') {
+          updates.deactivatedAt = now;
+        } else if (cleanStatus === 'active') {
+          updates.deactivatedAt = null;
+        }
+      }
+
+      if (complianceStatus !== undefined) {
+        const cleanCompliance = String(complianceStatus).toLowerCase().trim();
+        if (!['pending', 'cleared', 'flagged', 'suspended'].includes(cleanCompliance)) {
+          return res.status(400).json({ message: "Invalid compliance status. Must be: pending, cleared, flagged, suspended" });
+        }
+        updates.complianceStatus = cleanCompliance;
+      }
+
+      const cleanReason = typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+      if (cleanReason) {
+        updates.statusReason = cleanReason;
+      }
+      updates.statusUpdatedAt = now;
+      updates.statusUpdatedBy = adminUsername;
+
+      // Update status audit history
+      const existingHistory = Array.isArray(user.statusHistory) ? [...user.statusHistory] : [];
+      existingHistory.unshift({
+        timestamp: now.toISOString(),
+        fromStatus: user.status,
+        toStatus: updates.status || user.status,
+        fromCompliance: user.complianceStatus,
+        toCompliance: updates.complianceStatus || user.complianceStatus,
+        reason: cleanReason || 'Status update via administration portal',
+        changedBy: adminUsername,
+      });
+      updates.statusHistory = existingHistory.slice(0, 50);
+
+      const updated = await storage.updateClientUser(id, updates);
+      if (!updated) {
+        return res.status(500).json({ message: "Failed to update account status" });
+      }
+
+      const effectiveStatus = updates.status || user.status;
+      const effectiveCompliance = updates.complianceStatus || user.complianceStatus;
+
+      // If suspended or deactivated: immediately revoke active sessions and pause API key
+      if (effectiveStatus === 'suspended' || effectiveStatus === 'deactivated' || effectiveCompliance === 'suspended') {
+        const revokedCount = revokeUserSessions(id);
+        console.log(`[STATUS_ENFORCEMENT] Revoked ${revokedCount} session(s) for user ${user.username} (${id})`);
+
+        if (user.apiKeyId) {
+          try {
+            await storage.updateApiKey(user.apiKeyId, { status: 'suspended', enabled: false });
+          } catch (keyErr) {
+            console.error(`Failed to pause API key for user ${id}:`, keyErr);
+          }
+        }
+      } else if (effectiveStatus === 'active' && (effectiveCompliance === 'cleared' || !effectiveCompliance)) {
+        // Re-enable API key if previously suspended
+        if (user.apiKeyId) {
+          try {
+            const currentKey = await storage.getApiKeyById(user.apiKeyId);
+            if (currentKey && (currentKey.status === 'suspended' || !currentKey.enabled)) {
+              await storage.updateApiKey(user.apiKeyId, { status: 'active', enabled: true });
+            }
+          } catch (keyErr) {
+            console.error(`Failed to reactivate API key for cleared user ${id}:`, keyErr);
+          }
+        }
+      }
 
       void auditLog({
-        actorId: (req as any).session?.userId,
+        actorId: adminId,
         actorType: "admin",
-        action: "client_user.suspended",
+        action: "client_user.status_updated",
         targetId: id,
         targetType: "client_user",
-        metadata: { username: user.username },
+        metadata: {
+          previousStatus: user.status,
+          newStatus: effectiveStatus,
+          previousCompliance: user.complianceStatus,
+          newCompliance: effectiveCompliance,
+          reason: cleanReason,
+          changedBy: adminUsername,
+        },
       });
-      res.json({ message: "User suspended", user: updated });
+
+      let emailResult: any = null;
+      if (notifyUser && user.email) {
+        try {
+          const reportStatus = (effectiveStatus === 'suspended' || effectiveCompliance === 'suspended')
+            ? 'suspended'
+            : effectiveStatus === 'deactivated'
+            ? 'deactivated'
+            : effectiveCompliance === 'flagged'
+            ? 'flagged'
+            : effectiveCompliance === 'pending'
+            ? 'pending'
+            : 'cleared';
+
+          emailResult = await sendAccountStatusEmail({
+            to: user.email,
+            name: user.fullName || user.username,
+            username: user.username,
+            newStatus: reportStatus,
+            previousStatus: user.status,
+            reason: cleanReason || undefined,
+            changedBy: adminUsername,
+          });
+        } catch (emailErr) {
+          console.error(`Failed to dispatch status update email to ${user.email}:`, emailErr);
+        }
+      }
+
+      const { user: syncedUser, statusSummary } = await syncClientUserSubscription(updated);
+
+      return res.json({
+        success: true,
+        message: `Account status successfully updated to ${effectiveStatus} (${effectiveCompliance || 'cleared'})`,
+        user: {
+          ...syncedUser,
+          subscriptionStatus: statusSummary.status,
+          subscriptionTier: statusSummary.tier,
+          statusLabel: statusSummary.statusLabel,
+          tierLabel: statusSummary.tierLabel,
+          isActive: statusSummary.isActive,
+          complianceStatus: statusSummary.complianceStatus,
+          isFlagged: statusSummary.isFlagged,
+          isPending: statusSummary.isPending,
+          isCleared: statusSummary.isCleared,
+          isRestricted: statusSummary.isRestricted,
+        },
+        emailNotification: emailResult ? { sent: emailResult.success, message: emailResult.message } : null,
+      });
+    } catch (error) {
+      console.error("Update account status error:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Deactivate a client user (Soft-delete / Suspended with preservation of records)
+  app.post("/api/interface/client-users/:id/deactivate", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { reason, notifyUser = true } = req.body;
+
+      const user = await storage.getClientUser(id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      const now = new Date();
+      const adminId = (req as any).adminUserId || (req as any).session?.userId || "admin";
+      let adminUsername = "Administrator";
+      try {
+        const adminUser = await storage.getUser(adminId);
+        if (adminUser?.username) adminUsername = adminUser.username;
+      } catch {}
+
+      const cleanReason = typeof reason === 'string' && reason.trim() ? reason.trim() : "Account deactivated by administrator";
+
+      const existingHistory = Array.isArray(user.statusHistory) ? [...user.statusHistory] : [];
+      existingHistory.unshift({
+        timestamp: now.toISOString(),
+        fromStatus: user.status,
+        toStatus: "deactivated",
+        fromCompliance: user.complianceStatus,
+        toCompliance: user.complianceStatus,
+        reason: cleanReason,
+        changedBy: adminUsername,
+      });
+
+      const updated = await storage.updateClientUser(id, {
+        status: "deactivated",
+        deactivatedAt: now,
+        statusReason: cleanReason,
+        statusUpdatedAt: now,
+        statusUpdatedBy: adminUsername,
+        statusHistory: existingHistory.slice(0, 50),
+      });
+
+      revokeUserSessions(id);
+
+      if (user.apiKeyId) {
+        try {
+          await storage.updateApiKey(user.apiKeyId, { status: "suspended", enabled: false });
+        } catch (keyErr) {
+          console.error(`Failed to pause API key on deactivation for user ${id}:`, keyErr);
+        }
+      }
+
+      void auditLog({
+        actorId: adminId,
+        actorType: "admin",
+        action: "client_user.deactivated",
+        targetId: id,
+        targetType: "client_user",
+        metadata: { username: user.username, reason: cleanReason, changedBy: adminUsername },
+      });
+
+      let emailResult: any = null;
+      if (notifyUser && user.email) {
+        try {
+          emailResult = await sendAccountStatusEmail({
+            to: user.email,
+            name: user.fullName || user.username,
+            username: user.username,
+            newStatus: "deactivated",
+            previousStatus: user.status,
+            reason: cleanReason,
+            changedBy: adminUsername,
+          });
+        } catch (emailErr) {
+          console.error(`Failed to dispatch deactivation email to ${user.email}:`, emailErr);
+        }
+      }
+
+      res.json({
+        success: true,
+        message: "User account deactivated successfully",
+        user: updated,
+        emailNotification: emailResult ? { sent: emailResult.success, message: emailResult.message } : null,
+      });
+    } catch (error) {
+      console.error("Deactivate client user error:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Delete a client user (Admin only - supports permanent removal or soft-delete)
+  app.delete("/api/interface/client-users/:id", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const isPermanent = req.query.permanent === "true" || req.query.mode === "permanent" || req.body?.permanent === true;
+      const reason = req.body?.reason || (req.query.reason as string) || "Account deleted by administrator";
+      const notifyUser = req.body?.notifyUser !== false && req.query.notifyUser !== "false";
+
+      const user = await storage.getClientUser(id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      const adminId = (req as any).adminUserId || (req as any).session?.userId || "admin";
+      let adminUsername = "Administrator";
+      try {
+        const adminUser = await storage.getUser(adminId);
+        if (adminUser?.username) adminUsername = adminUser.username;
+      } catch {}
+
+      // Invalidate active sessions immediately
+      revokeUserSessions(id);
+
+      let emailResult: any = null;
+      if (notifyUser && user.email) {
+        try {
+          emailResult = await sendAccountStatusEmail({
+            to: user.email,
+            name: user.fullName || user.username,
+            username: user.username,
+            newStatus: "deleted",
+            previousStatus: user.status,
+            reason,
+            changedBy: adminUsername,
+          });
+        } catch (emailErr) {
+          console.error(`Failed to dispatch deletion email to ${user.email}:`, emailErr);
+        }
+      }
+
+      if (isPermanent) {
+        // 1. Delete user redirect URLs
+        try {
+          await storage.deleteUserRedirectUrls(id);
+        } catch (urlErr) {
+          console.error(`Failed to clean up redirect URLs for user ${id}:`, urlErr);
+        }
+
+        // 2. Delete or disable associated API key
+        if (user.apiKeyId) {
+          try {
+            await storage.deleteApiKey(user.apiKeyId);
+          } catch (keyErr) {
+            console.error(`Failed to delete API key for user ${id}:`, keyErr);
+          }
+        }
+
+        // 3. Delete client user permanently from storage
+        const deleted = await storage.deleteClientUser(id);
+        if (!deleted) {
+          return res.status(500).json({ message: "Failed to permanently remove user record" });
+        }
+
+        void auditLog({
+          actorId: adminId,
+          actorType: "admin",
+          action: "client_user.permanently_deleted",
+          targetId: id,
+          targetType: "client_user",
+          metadata: {
+            username: user.username,
+            email: user.email,
+            reason,
+            changedBy: adminUsername,
+            permanent: true,
+          },
+        });
+
+        console.log(`[USER_DELETION] Permanently deleted user ${user.username} (${id}) by ${adminUsername}`);
+        return res.json({
+          success: true,
+          message: `User ${user.username} has been permanently deleted from the system.`,
+          id,
+          permanent: true,
+          emailNotification: emailResult ? { sent: emailResult.success, message: emailResult.message } : null,
+        });
+      } else {
+        // Soft delete / suspend
+        const now = new Date();
+        const existingHistory = Array.isArray(user.statusHistory) ? [...user.statusHistory] : [];
+        existingHistory.unshift({
+          timestamp: now.toISOString(),
+          fromStatus: user.status,
+          toStatus: "suspended",
+          fromCompliance: user.complianceStatus,
+          toCompliance: "suspended",
+          reason,
+          changedBy: adminUsername,
+        });
+
+        const updated = await storage.updateClientUser(id, {
+          status: "suspended",
+          complianceStatus: "suspended",
+          statusReason: reason,
+          statusUpdatedAt: now,
+          statusUpdatedBy: adminUsername,
+          statusHistory: existingHistory.slice(0, 50),
+        });
+
+        if (user.apiKeyId) {
+          try {
+            await storage.updateApiKey(user.apiKeyId, { status: "suspended", enabled: false });
+          } catch (keyErr) {
+            console.error(`Failed to pause API key for user ${id}:`, keyErr);
+          }
+        }
+
+        void auditLog({
+          actorId: adminId,
+          actorType: "admin",
+          action: "client_user.suspended",
+          targetId: id,
+          targetType: "client_user",
+          metadata: { username: user.username, reason, changedBy: adminUsername, permanent: false },
+        });
+
+        return res.json({
+          success: true,
+          message: "User suspended (soft-deleted)",
+          user: updated,
+          permanent: false,
+          emailNotification: emailResult ? { sent: emailResult.success, message: emailResult.message } : null,
+        });
+      }
     } catch (error) {
       console.error("Delete client user error:", error);
       res.status(500).json({ message: "Internal server error" });
@@ -5511,6 +6462,28 @@ Disallow: /*`);
         return res.status(400).json({ message: "domainId is required" });
       }
 
+      if (clientUser.complianceStatus === "flagged") {
+        return res.status(403).json({
+          message: clientUser.statusReason
+            ? `Your account is currently under compliance review (${clientUser.statusReason}). Generating campaign domains is temporarily unavailable.`
+            : "Your account is currently under compliance review and this action is temporarily unavailable.",
+          code: "ACCOUNT_FLAGGED",
+          complianceStatus: "flagged",
+          statusReason: clientUser.statusReason,
+        });
+      }
+
+      if (clientUser.complianceStatus === "pending") {
+        return res.status(403).json({
+          message: clientUser.statusReason
+            ? `Your account is pending verification and review (${clientUser.statusReason}). Modifying campaign domains is unavailable until your account is cleared.`
+            : "Your account is pending verification and review. Modifying campaign domains is unavailable until your account is cleared.",
+          code: "ACCOUNT_PENDING",
+          complianceStatus: "pending",
+          statusReason: clientUser.statusReason,
+        });
+      }
+
       // Check daily limit
       const [todayGenerations, dailyLimit] = await Promise.all([
         storage.getUserDomainGenerationsToday(userId),
@@ -5558,7 +6531,7 @@ Disallow: /*`);
         success: true,
         generation,
         domain: domain.domain,
-        apiKey: apiKey?.keyValue || 'NO_API_KEY',
+        apiKey: apiKey?.keyValue ? `${apiKey.keyValue.slice(0, 4)}••••••••${apiKey.keyValue.slice(-4)}` : 'NO_API_KEY',
         redirectUrls: redirectUrls || { humanUrl: '', botUrl: '' },
         remaining: dailyLimit - todayCount - 1
       });

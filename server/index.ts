@@ -74,6 +74,24 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false }));
 
+// Request timeout protection (25s timeout for API requests to mitigate hanging sockets and DoS)
+app.use("/api", (req, res, next) => {
+  const timeoutMs = 25000;
+  const timer = setTimeout(() => {
+    if (!res.headersSent) {
+      console.warn(`[TIMEOUT_EVENT] API Request timed out: ${req.method} ${req.path}`);
+      res.status(504).json({
+        message: "The server took too long to respond. Request timed out.",
+        code: "GATEWAY_TIMEOUT"
+      });
+    }
+  }, timeoutMs);
+
+  res.on("finish", () => clearTimeout(timer));
+  res.on("close", () => clearTimeout(timer));
+  next();
+});
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -90,7 +108,17 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        try {
+          const sanitized = JSON.parse(JSON.stringify(capturedJsonResponse, (key, value) => {
+            if (typeof key === 'string' && /^(keyvalue|apikey|token|password|secret|authorization|idtoken)$/i.test(key)) {
+              return typeof value === 'string' ? `${value.substring(0, 4)}••••` : '••••';
+            }
+            return value;
+          }));
+          logLine += ` :: ${JSON.stringify(sanitized)}`;
+        } catch {
+          logLine += ` :: [Response Redacted]`;
+        }
       }
 
       if (logLine.length > 80) {
@@ -128,11 +156,23 @@ process.on('uncaughtException', (error) => {
     const server = await registerRoutes(app);
     
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-      const status = err.status || err.statusCode || 500;
-      const message = err.message || "Internal Server Error";
+      if (res.headersSent) {
+        return _next(err);
+      }
+      const status = typeof err.status === "number" ? err.status : (typeof err.statusCode === "number" ? err.statusCode : 500);
+      
+      // Prevent internal error details, database paths, and sensitive stacks from leaking in 500 responses
+      const isProduction = process.env.NODE_ENV === "production";
+      let message = err.message || "Internal Server Error";
+      if (status >= 500 && isProduction) {
+        message = "An unexpected internal server error occurred. Please try again later.";
+      }
 
-      res.status(status).json({ message });
-      throw err;
+      console.error(`[API_ERROR] ${_req.method} ${_req.path} -> Status ${status}:`, err);
+      res.status(status).json({
+        message,
+        code: err.code || "INTERNAL_ERROR",
+      });
     });
 
     // Setup Vite in development or serve static build in production
