@@ -5,12 +5,12 @@
  * 1. Visitor opens PHP link -> Immediately returns HTTP 200 Loading & Verification page (<1ms).
  * 2. Background verification -> Executes full visitor security checks (IP, headers, telemetry,
  *    threat intelligence, VPN/proxy, device/geo routing) via /api/classify.
- * 3. Log & Classify -> Result recorded in traffic logs and broadcasted to client dashboard.
- * 4. Client Rule Enforcement -> Applies configured custom redirect URL or HTTP 404/403 status.
+ * 3. Log & Classify -> Result recorded in traffic logs and broadcasted to client dashboard in real time.
+ * 4. Automatic "Done" & Transition -> Automatically changes state to "Done" and executes the client rule (NO button, NO manual action).
  */
 export function generatePhpIntegrationCode(apiKeyValue: string | null, effectiveEndpoint: string): string {
   const key = apiKeyValue || 'ctc_your_api_key_here';
-  const endpoint = effectiveEndpoint || window.location.origin;
+  const endpoint = effectiveEndpoint || (typeof window !== 'undefined' ? window.location.origin : '');
 
   return `<?php
 /**
@@ -22,9 +22,11 @@ export function generatePhpIntegrationCode(apiKeyValue: string | null, effective
  *    Eliminates blank-screen hangs, bounce drops, and avoids premature error messages.
  * 2. Asynchronous Background Verification: Runs the full visitor-detection and threat classification
  *    pipeline in the background while the visitor views the loading state.
- * 3. Central Rule Evaluation: Evaluates client-configured routing policies (Human Offer URL,
- *    Bot Destination, or HTTP 404 / 403 status deflection) strictly AFTER verification completes.
- * 4. High-Speed Decision Cache: Caches verified decisions (APCu / local temp storage) to optimize repeat hits.
+ * 3. Central Rule Evaluation & Logging: Evaluates client-configured routing policies (Human Offer URL,
+ *    Bot Destination, or HTTP 404 / 403 status deflection) and records the event in the dashboard logs.
+ * 4. Automatic Transition (Zero-Click): The loading screen automatically transitions to "Done" and
+ *    redirects immediately without requiring any button clicks or user interaction.
+ * 5. High-Speed Decision Cache: Caches verified decisions (APCu / local temp storage) to optimize repeat hits.
  */
 session_start();
 
@@ -110,7 +112,8 @@ if ($isVerifyRequest) {
             'success' => true,
             'action' => '429',
             'destination' => '429',
-            'visitorType' => 'Bot'
+            'visitorType' => 'Bot',
+            'ruleSelected' => 'Rate Limit Exceeded (429)'
         ]);
         exit;
     }
@@ -166,11 +169,12 @@ if ($isVerifyRequest) {
         }
     }
 
-    $saveDecisionCache = function($destination, $action, $isBot) use ($cacheKey, $cacheTtl) {
+    $saveDecisionCache = function($destination, $action, $isBot, $rule) use ($cacheKey, $cacheTtl) {
         $record = [
             'target' => $destination,
             'action' => $action,
             'is_bot' => $isBot,
+            'rule' => $rule,
             'time' => time()
         ];
         if (function_exists('apcu_store')) {
@@ -180,11 +184,12 @@ if ($isVerifyRequest) {
         @file_put_contents($ipCacheFile, json_encode($record), LOCK_EX);
     };
 
-    // If cache hits, apply decision immediately
+    // If cache hits, return verified decision immediately
     if ($cachedData) {
         $destination = $cachedData['target'];
         $action = $cachedData['action'] ?? 'redirect';
         $visitorType = !empty($cachedData['is_bot']) ? 'Bot' : 'Human';
+        $rule = $cachedData['rule'] ?? 'Verified Cache';
 
         // Append query string if destination is a URL
         if (!empty($clientQuery) && strpos($destination, 'http') === 0) {
@@ -217,12 +222,13 @@ if ($isVerifyRequest) {
             'success' => true,
             'action' => $action,
             'destination' => $destination,
-            'visitorType' => $visitorType
+            'visitorType' => $visitorType,
+            'ruleSelected' => $rule
         ]);
         exit;
     }
 
-    // 5. Execute Full Cascading Verification via Central Engine
+    // 5. Execute Verification via Central Detection Engine
     $postPayload = json_encode([
         'apiKey' => $apiKey,
         'ip' => $visitorIp,
@@ -243,34 +249,60 @@ if ($isVerifyRequest) {
         ]
     ]);
 
-    $ch = curl_init(rtrim($apiEndpoint, '/') . '/api/classify');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $postPayload,
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . $apiKey,
-            'x-api-key: ' . $apiKey
-        ],
-        CURLOPT_TIMEOUT => 6,
-        CURLOPT_CONNECTTIMEOUT => 3,
-        CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
-        CURLOPT_TCP_NODELAY => 1,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_SSL_VERIFYHOST => 0,
-        CURLOPT_FOLLOWLOCATION => true
-    ]);
+    $response = null;
+    $httpCode = 0;
 
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    if (function_exists('curl_init')) {
+        $ch = curl_init(rtrim($apiEndpoint, '/') . '/api/classify');
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $postPayload,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $apiKey,
+                'x-api-key: ' . $apiKey
+            ],
+            CURLOPT_TIMEOUT => 6,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => 0,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 3
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+    }
+
+    if ((!$response || $httpCode !== 200) && ini_get('allow_url_fopen')) {
+        $ctx = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => "Content-Type: application/json\r\nAuthorization: Bearer " . $apiKey . "\r\nx-api-key: " . $apiKey . "\r\n",
+                'content' => $postPayload,
+                'timeout' => 5,
+                'ignore_errors' => true
+            ],
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false
+            ]
+        ]);
+        $streamRes = @file_get_contents(rtrim($apiEndpoint, '/') . '/api/classify', false, $ctx);
+        if ($streamRes) {
+            $response = $streamRes;
+            $httpCode = 200;
+        }
+    }
 
     // 6. Handle Verification Response
     $destination = null;
     $statusAction = 'redirect';
     $visitorType = 'Human';
     $isBot = false;
+    $ruleSelected = 'Verified';
+    $detectionMethod = 'IP Analysis';
 
     if ($httpCode === 200 && $response) {
         $data = json_decode($response, true);
@@ -279,16 +311,21 @@ if ($isVerifyRequest) {
             $statusAction = $data['statusAction'] ?? ($data['status_action'] ?? 'redirect');
             $visitorType = $data['visitorType'] ?? ($data['visitor_type'] ?? 'Human');
             $isBot = ($visitorType === 'Bot');
+            $ruleSelected = $data['ruleSelected'] ?? ($isBot ? 'Bot Policy Applied' : 'Human Offer URL');
+            $detectionMethod = $data['detection_method'] ?? ($data['detectionMethod'] ?? 'IP Analysis');
         }
     }
 
-    // Handle transient upstream network dropouts gracefully without failing hard
-    if (!$destination && ($httpCode === 0 || $httpCode >= 500 || !$response)) {
+    // If the server-side host cannot reach the API endpoint (e.g., host firewall or preview cookie barrier),
+    // delegate client-side verification so the visitor browser hits /api/classify directly with guaranteed logging!
+    if (!$destination && ($httpCode === 0 || $httpCode >= 400 || !$response || !is_array(json_decode($response, true)))) {
         header('Content-Type: application/json');
         echo json_encode([
-            'success' => false,
-            'retry' => true,
-            'message' => 'Verification in progress'
+            'success' => true,
+            'clientClassify' => true,
+            'apiKey' => $apiKey,
+            'endpoint' => $apiEndpoint,
+            'visitorIp' => $visitorIp
         ]);
         exit;
     }
@@ -315,7 +352,7 @@ if ($isVerifyRequest) {
     }
 
     // Cache the verified decision
-    $saveDecisionCache($destination, $statusAction, $isBot);
+    $saveDecisionCache($destination, $statusAction, $isBot, $ruleSelected);
 
     // Non-JS crawler fallback handler
     if (isset($_GET['ctc_format']) && $_GET['ctc_format'] === 'html') {
@@ -339,7 +376,9 @@ if ($isVerifyRequest) {
         'success' => true,
         'action' => $statusAction,
         'destination' => $destination,
-        'visitorType' => $visitorType
+        'visitorType' => $visitorType,
+        'ruleSelected' => $ruleSelected,
+        'detectionMethod' => $detectionMethod
     ]);
     exit;
 }
@@ -347,7 +386,7 @@ if ($isVerifyRequest) {
 // ============================================================================
 // PHASE C: IMMEDIATE VISITOR LOADING & VERIFICATION PAGE (HTTP 200)
 // ============================================================================
-// Returns immediately in <1ms. Never hangs or throws premature errors.
+// Returns immediately in <1ms. Never hangs or throws premature error messages.
 http_response_code(200);
 header('Content-Type: text/html; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
@@ -378,6 +417,7 @@ header('Pragma: no-cache');
     border: 1px solid rgba(16, 185, 129, 0.2);
     border-radius: 16px;
     box-shadow: 0 20px 40px -15px rgba(0,0,0,0.5);
+    transition: all 0.3s ease;
   }
   .spinner-box {
     position: relative;
@@ -390,6 +430,7 @@ header('Pragma: no-cache');
     border-top: 3px solid #10b981;
     border-radius: 50%;
     animation: ct-spin 0.85s linear infinite;
+    transition: opacity 0.2s ease;
   }
   .shield-icon {
     position: absolute;
@@ -397,10 +438,23 @@ header('Pragma: no-cache');
     transform: translate(-50%, -50%);
     color: #10b981;
     display: flex; align-items: center; justify-content: center;
+    transition: opacity 0.2s ease;
   }
   .shield-icon svg {
     width: 22px; height: 22px;
     fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .check-icon {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #10b981;
+    display: none;
+    align-items: center; justify-content: center;
+  }
+  .check-icon svg {
+    width: 28px; height: 28px;
+    fill: none; stroke: #10b981; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round;
   }
   h1 {
     font-size: 1.25rem;
@@ -408,12 +462,14 @@ header('Pragma: no-cache');
     margin: 0 0 8px;
     color: #ffffff;
     letter-spacing: -0.01em;
+    transition: color 0.2s ease;
   }
   p {
     font-size: 0.88rem;
     color: #94a3b8;
     margin: 0 0 20px;
     line-height: 1.5;
+    transition: color 0.2s ease;
   }
   .progress-wrap {
     width: 100%;
@@ -429,21 +485,22 @@ header('Pragma: no-cache');
     background: #10b981;
     border-radius: 999px;
     animation: ct-fill 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    transition: width 0.3s ease;
   }
-  .btn-retry {
+  .done-state .spinner {
+    opacity: 0;
+    animation: none;
+  }
+  .done-state .shield-icon {
     display: none;
-    margin-top: 16px;
-    padding: 10px 24px;
-    background: #0f766e;
-    color: #ffffff;
-    border: none;
-    border-radius: 8px;
-    font-size: 0.88rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s ease;
   }
-  .btn-retry:hover { background: #115e59; }
+  .done-state .check-icon {
+    display: flex;
+  }
+  .done-state .progress-bar {
+    animation: none;
+    width: 100% !important;
+  }
   @keyframes ct-spin {
     to { transform: rotate(360deg); }
   }
@@ -454,29 +511,32 @@ header('Pragma: no-cache');
   }
 </style>
 <noscript>
-  <meta http-equiv="refresh" content="2;url=?ctc_verify=1&ctc_format=html">
+  <meta http-equiv="refresh" content="1;url=?ctc_verify=1&ctc_format=html">
 </noscript>
 </head>
 <body>
-<div class="card">
+<div class="card" id="ctc-card">
   <div class="spinner-box">
-    <div class="spinner"></div>
-    <div class="shield-icon">
+    <div class="spinner" id="ctc-spinner"></div>
+    <div class="shield-icon" id="ctc-shield">
       <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
     </div>
+    <div class="check-icon" id="ctc-check">
+      <svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
+    </div>
   </div>
-  <h1 id="ctc-title">Securing Connection...</h1>
-  <p id="ctc-desc">Verifying connection authenticity. You will be redirected momentarily.</p>
+  <h1 id="ctc-title">Checking connection...</h1>
+  <p id="ctc-desc">Verifying connection authenticity...</p>
   <div class="progress-wrap" id="ctc-pwrap">
-    <div class="progress-bar"></div>
+    <div class="progress-bar" id="ctc-pbar"></div>
   </div>
-  <button id="ctc-btn" class="btn-retry" onclick="performVerification(1);">Continue</button>
 </div>
 
 <script>
 (function() {
   var startTime = Date.now();
-  var minDisplayMs = 1200; // Smooth transition duration to prevent visual flicker
+  var minDisplayMs = 700; // Brief smooth duration to prevent visual flash
+  var finalized = false;
 
   function getVerifyUrl() {
     var loc = window.location;
@@ -484,94 +544,180 @@ header('Pragma: no-cache');
     return loc.pathname + search;
   }
 
-  window.performVerification = function(attempt) {
-    var btn = document.getElementById('ctc-btn');
-    var pwrap = document.getElementById('ctc-pwrap');
-    if (btn) btn.style.display = 'none';
-    if (pwrap) pwrap.style.display = 'block';
+  // Transitions smoothly to "Done" state and automatically performs redirect
+  function transitionToDoneAndRedirect(decision) {
+    if (finalized) return;
+    finalized = true;
+
+    var elapsed = Date.now() - startTime;
+    var waitMs = Math.max(0, minDisplayMs - elapsed);
+
+    setTimeout(function() {
+      // 1. Show "Done" state automatically (NO button, NO manual action)
+      var card = document.getElementById('ctc-card');
+      var title = document.getElementById('ctc-title');
+      var desc = document.getElementById('ctc-desc');
+      if (card) card.classList.add('done-state');
+      if (title) title.textContent = 'Done';
+      if (desc) desc.textContent = 'Redirecting to your destination...';
+
+      // 2. Automatically execute client-configured routing rule after brief Done display (450ms)
+      setTimeout(function() {
+        var action = decision && (decision.action || decision.statusAction);
+        var dest = decision && (decision.destination || decision.redirectUrl);
+
+        // Apply HTTP 404 response rule
+        if (action === '404' || dest === '404') {
+          var sep = window.location.search ? '&' : '?';
+          window.location.replace(window.location.pathname + window.location.search + sep + 'ctc_res=404');
+          return;
+        }
+
+        // Apply HTTP 403 response rule
+        if (action === '403' || dest === '403') {
+          var sep = window.location.search ? '&' : '?';
+          window.location.replace(window.location.pathname + window.location.search + sep + 'ctc_res=403');
+          return;
+        }
+
+        // Apply configured destination URL redirect
+        if (dest && dest.indexOf('http') === 0) {
+          try {
+            window.location.replace(dest);
+          } catch (e) {
+            window.location.href = dest;
+          }
+          return;
+        }
+
+        // Safe fallback
+        var sep = window.location.search ? '&' : '?';
+        window.location.replace(window.location.pathname + window.location.search + sep + 'ctc_res=404');
+      }, 450);
+    }, waitMs);
+  }
+
+  // Direct client classification to CleanTraffic engine
+  // Guarantees execution and logging even when external hosting blocks outbound cURL
+  function performDirectClassify(endpoint, apiKey, visitorIp) {
+    var apiUrl = (endpoint || '${endpoint}').replace(/\\/+$/, '') + '/api/classify';
+    var payload = {
+      apiKey: apiKey || '${key}',
+      ip: visitorIp || '',
+      userAgent: navigator.userAgent || '',
+      screen: window.screen ? (window.screen.width + 'x' + window.screen.height) : '',
+      timezone: (window.Intl && Intl.DateTimeFormat) ? Intl.DateTimeFormat().resolvedOptions().timeZone : '',
+      referrer: document.referrer || '',
+      queryString: window.location.search || ''
+    };
+
+    if (window.fetch) {
+      fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + (apiKey || '${key}'),
+          'x-api-key': apiKey || '${key}'
+        },
+        body: JSON.stringify(payload)
+      })
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        if (data) {
+          transitionToDoneAndRedirect(data);
+        } else {
+          fallbackSafeRedirect();
+        }
+      })
+      .catch(function() {
+        fallbackSafeRedirect();
+      });
+    } else {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', apiUrl, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.setRequestHeader('x-api-key', apiKey || '${key}');
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          try {
+            var data = JSON.parse(xhr.responseText);
+            transitionToDoneAndRedirect(data);
+            return;
+          } catch (e) {}
+        }
+        fallbackSafeRedirect();
+      };
+      xhr.onerror = function() { fallbackSafeRedirect(); };
+      xhr.send(JSON.stringify(payload));
+    }
+  }
+
+  function fallbackSafeRedirect() {
+    transitionToDoneAndRedirect({ action: '404', destination: '404' });
+  }
+
+  // Run background verification immediately
+  function startBackgroundVerification() {
+    var desc = document.getElementById('ctc-desc');
+    if (desc) desc.textContent = 'Verifying...';
+
+    var verifyUrl = getVerifyUrl();
+    var payload = {
+      screen: window.screen ? (window.screen.width + 'x' + window.screen.height) : '',
+      timezone: (window.Intl && Intl.DateTimeFormat) ? Intl.DateTimeFormat().resolvedOptions().timeZone : '',
+      referrer: document.referrer || '',
+      queryString: window.location.search || ''
+    };
 
     var xhr = new XMLHttpRequest();
-    xhr.open('POST', getVerifyUrl(), true);
+    xhr.open('POST', verifyUrl, true);
     xhr.setRequestHeader('Content-Type', 'application/json');
     xhr.setRequestHeader('X-CTC-Verify', '1');
-    xhr.timeout = 7000;
+    xhr.timeout = 5000;
 
     xhr.onload = function() {
       if (xhr.status === 200) {
         try {
           var data = JSON.parse(xhr.responseText);
-          if (data && data.success) {
-            applyDecision(data);
+          if (data && data.clientClassify) {
+            // Server requested direct client classification
+            performDirectClassify(data.endpoint, data.apiKey, data.visitorIp);
+            return;
+          }
+          if (data && data.success && (data.destination || data.action)) {
+            transitionToDoneAndRedirect(data);
             return;
           }
         } catch (e) {}
       }
-      handleRetry(attempt);
+      // If server-side proxy failed, run direct client classification
+      performDirectClassify('${endpoint}', '${key}', '');
     };
 
-    xhr.onerror = function() { handleRetry(attempt); };
-    xhr.ontimeout = function() { handleRetry(attempt); };
-
-    var payload = {
-      screen: window.screen ? (window.screen.width + 'x' + window.screen.height) : '',
-      timezone: (Intl && Intl.DateTimeFormat) ? Intl.DateTimeFormat().resolvedOptions().timeZone : '',
-      referrer: document.referrer || '',
-      queryString: window.location.search || ''
+    xhr.onerror = function() {
+      performDirectClassify('${endpoint}', '${key}', '');
     };
+
+    xhr.ontimeout = function() {
+      performDirectClassify('${endpoint}', '${key}', '');
+    };
+
     xhr.send(JSON.stringify(payload));
-  };
+  }
 
-  function handleRetry(attempt) {
-    if (attempt < 2) {
-      setTimeout(function() { window.performVerification(attempt + 1); }, 600);
-    } else {
-      // Graceful fallback without alarming errors
-      var pwrap = document.getElementById('ctc-pwrap');
-      var desc = document.getElementById('ctc-desc');
-      var btn = document.getElementById('ctc-btn');
-      if (pwrap) pwrap.style.display = 'none';
-      if (desc) desc.textContent = 'Connection check completed. Click continue to proceed.';
-      if (btn) btn.style.display = 'inline-block';
+  // Safety maximum timeout: ensure visitor NEVER gets stuck on loading screen
+  setTimeout(function() {
+    if (!finalized) {
+      fallbackSafeRedirect();
     }
+  }, 4500);
+
+  // Execute verification as soon as DOM is ready or immediately
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startBackgroundVerification);
+  } else {
+    startBackgroundVerification();
   }
-
-  function applyDecision(data) {
-    var elapsed = Date.now() - startTime;
-    var delay = Math.max(0, minDisplayMs - elapsed);
-
-    setTimeout(function() {
-      // Apply client-configured 404 response
-      if (data.action === '404' || data.destination === '404') {
-        var sep = window.location.search ? '&' : '?';
-        window.location.replace(window.location.pathname + window.location.search + sep + 'ctc_res=404');
-        return;
-      }
-
-      // Apply client-configured 403 response
-      if (data.action === '403' || data.destination === '403') {
-        var sep = window.location.search ? '&' : '?';
-        window.location.replace(window.location.pathname + window.location.search + sep + 'ctc_res=403');
-        return;
-      }
-
-      // Apply configured destination URL redirect
-      if (data.destination && data.destination !== '404' && data.destination !== '403') {
-        try {
-          window.location.replace(data.destination);
-        } catch (e) {
-          window.location.href = data.destination;
-        }
-        return;
-      }
-
-      // Safe fallback
-      var sep = window.location.search ? '&' : '?';
-      window.location.replace(window.location.pathname + window.location.search + sep + 'ctc_res=404');
-    }, delay);
-  }
-
-  // Initiate background verification immediately
-  window.performVerification(1);
 })();
 </script>
 </body>

@@ -33,6 +33,19 @@ app.use((req, res, next) => {
   next();
 });
 
+// Enable CORS and OPTIONS handling for API endpoints so integration scripts can verify traffic reliably
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, api-key, X-CTC-Verify, X-Forwarded-For');
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+  }
+  next();
+});
+
 // Block known scrapers, bots, and preview services (production only)
 const blockedUserAgents = [
   'slackbot', 'slack-imgproxy', 'slackbot-linkexpanding',

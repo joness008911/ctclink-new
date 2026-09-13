@@ -266,10 +266,10 @@ export function UserIntegrationTab({
         <div className="bg-white border border-[#E5EAE7] rounded-xl p-5 space-y-1.5 shadow-xs">
           <div className="flex items-center gap-2 text-[#0A5C48] font-bold text-xs">
             <Shield className="h-4 w-4" />
-            4. Post-Decision Rules
+            4. Automatic Transition
           </div>
           <p className="text-[11px] text-[#64748B] leading-relaxed">
-            Applies the client's configured destination URL, HTTP 404, or HTTP 403 rule strictly after verification decision is finalized.
+            Transitions to "Done" automatically upon verification and executes the client-configured routing rule without requiring any button clicks.
           </p>
         </div>
       </div>

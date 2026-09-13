@@ -5443,6 +5443,9 @@ Disallow: /*`);
         human_url: finalHumanUrl || null,
         botUrl: finalBotUrl || null,
         bot_url: finalBotUrl || null,
+        ruleSelected: isHumanVisitor 
+          ? (configuredHumanUrl ? "Human Destination URL" : "Default Safe Forward")
+          : (blockReason || detectionMethod || (finalBotUrl ? `Bot Deflection (${finalBotUrl})` : "Default Mitigation")),
         redirectVersion: redirectVersion,
         configured: Boolean(effectiveRedirectUrl),
         status: "success"
