@@ -30,6 +30,8 @@ import {
   type InsertUserDomainGeneration,
   type AuditLog,
   type InsertAuditLog,
+  type InterstitialTheme,
+  type InsertInterstitialTheme,
   users,
   classifications,
   detectionRules,
@@ -47,7 +49,9 @@ import {
   userDomainGenerations,
   stripeProcessedEvents,
   auditLogs,
+  interstitialThemes,
 } from "@shared/schema";
+import { DEFAULT_INTERSTITIAL_THEMES } from "@shared/interstitialThemes";
 import { randomUUID } from "crypto";
 import * as ipaddr from "ipaddr.js";
 import bcrypt from "bcrypt";
@@ -57,7 +61,7 @@ import { FirestoreStorage } from "./firestoreStorage";
 import { eq, desc, sql, count, lt, or, inArray } from "drizzle-orm";
 import { getTierCallLimit } from "@shared/subscription";
 
-// IP2Geo Cache for performance optimization - 24 hours TTL reduces upstream lookups by up to 85%
+// IP2Geo Cache for performance optimization
 interface CachedIPData {
   data: any;
   timestamp: number;
@@ -66,15 +70,9 @@ interface CachedIPData {
 
 class IP2GeoCache {
   private cache = new Map<string, CachedIPData>();
-  private readonly DEFAULT_TTL = 24 * 60 * 60 * 1000; // 24 hours default TTL
-  private readonly MAX_ENTRIES = 50000; // Cap at 50,000 entries (~15MB RAM)
+  private readonly DEFAULT_TTL = 30 * 60 * 1000; // 30 minutes
   
   set(ip: string, data: any, ttl = this.DEFAULT_TTL): void {
-    if (this.cache.size >= this.MAX_ENTRIES) {
-      // Evict oldest entries
-      const firstKey = this.cache.keys().next().value;
-      if (firstKey) this.cache.delete(firstKey);
-    }
     this.cache.set(ip, {
       data,
       timestamp: Date.now(),
@@ -215,8 +213,19 @@ export interface IStorage {
     allowSearchCrawlers?: string;
     blockAiCrawlers?: string;
     allowSocialPreviews?: string;
+    interstitialThemeId?: string;
+    interstitialHeading?: string;
+    interstitialSubnote?: string;
   }): Promise<UserRedirectUrls>;
   
+  // Interstitial Themes (Admin managed loading UI styles for client scripts)
+  getInterstitialThemes(includeDisabled?: boolean): Promise<InterstitialTheme[]>;
+  getInterstitialTheme(id: string): Promise<InterstitialTheme | undefined>;
+  createInterstitialTheme(theme: InsertInterstitialTheme): Promise<InterstitialTheme>;
+  updateInterstitialTheme(id: string, updates: Partial<InterstitialTheme>): Promise<InterstitialTheme | undefined>;
+  deleteInterstitialTheme(id: string): Promise<boolean>;
+  setDefaultInterstitialTheme(id: string): Promise<boolean>;
+
   // Classification methods for users
   getUserClassifications(apiKeyId: string, limit?: number): Promise<Classification[]>;
   getUserStats(apiKeyId: string): Promise<{
@@ -261,6 +270,7 @@ export class MemStorage implements IStorage {
   private clientIpWhitelist: Map<string, ClientIpWhitelist>;
   private clientUsers: Map<string, ClientUser>;
   private redirectUrls: Map<string, UserRedirectUrls>;
+  private interstitialThemes: Map<string, InterstitialTheme>;
   private settings: Map<string, string>;
   private auditLogsData: AuditLog[];
 
@@ -274,10 +284,16 @@ export class MemStorage implements IStorage {
     this.clientIpWhitelist = new Map();
     this.clientUsers = new Map();
     this.redirectUrls = new Map();
+    this.interstitialThemes = new Map();
     this.settings = new Map();
     this.auditLogsData = [];
     this.ipBlocklist = new Map();
     this.cidrBlocklist = new Map();
+
+    // Populate initial default interstitial themes
+    DEFAULT_INTERSTITIAL_THEMES.forEach((t) => {
+      this.interstitialThemes.set(t.id, { ...t });
+    });
     
     // Initialize default detection rules
     this.detectionRules = {
@@ -912,6 +928,9 @@ export class MemStorage implements IStorage {
     allowSearchCrawlers?: string;
     blockAiCrawlers?: string;
     allowSocialPreviews?: string;
+    interstitialThemeId?: string;
+    interstitialHeading?: string;
+    interstitialSubnote?: string;
   }): Promise<UserRedirectUrls> {
     const existing = this.redirectUrls.get(userId);
     const redirectUrl: UserRedirectUrls = {
@@ -931,10 +950,85 @@ export class MemStorage implements IStorage {
       allowSearchCrawlers: urls.allowSearchCrawlers !== undefined ? urls.allowSearchCrawlers : (existing?.allowSearchCrawlers || "allow"),
       blockAiCrawlers: urls.blockAiCrawlers !== undefined ? urls.blockAiCrawlers : (existing?.blockAiCrawlers || "block"),
       allowSocialPreviews: urls.allowSocialPreviews !== undefined ? urls.allowSocialPreviews : (existing?.allowSocialPreviews || "allow"),
+      interstitialThemeId: urls.interstitialThemeId !== undefined ? urls.interstitialThemeId : (existing?.interstitialThemeId || "clean_light"),
+      interstitialHeading: urls.interstitialHeading !== undefined ? urls.interstitialHeading : (existing?.interstitialHeading || "Verifying your connection..."),
+      interstitialSubnote: urls.interstitialSubnote !== undefined ? urls.interstitialSubnote : (existing?.interstitialSubnote || "Please wait while we secure your session."),
       updatedAt: new Date()
     };
     this.redirectUrls.set(userId, redirectUrl);
     return redirectUrl;
+  }
+
+  // Interstitial Themes methods
+  async getInterstitialThemes(includeDisabled = false): Promise<InterstitialTheme[]> {
+    const list = Array.from(this.interstitialThemes.values());
+    if (includeDisabled) return list;
+    return list.filter(t => t.enabled);
+  }
+
+  async getInterstitialTheme(id: string): Promise<InterstitialTheme | undefined> {
+    return this.interstitialThemes.get(id);
+  }
+
+  async createInterstitialTheme(theme: InsertInterstitialTheme): Promise<InterstitialTheme> {
+    const id = theme.id || randomUUID();
+    const newTheme: InterstitialTheme = {
+      ...theme,
+      id,
+      category: theme.category || "Light",
+      badge: theme.badge || null,
+      isDefault: theme.isDefault ?? false,
+      enabled: theme.enabled ?? true,
+      previewBg: theme.previewBg || "#f8fafc",
+      previewAccent: theme.previewAccent || "#059669",
+      scriptJs: theme.scriptJs || null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    if (newTheme.isDefault) {
+      for (const [k, t] of this.interstitialThemes.entries()) {
+        if (t.isDefault) {
+          this.interstitialThemes.set(k, { ...t, isDefault: false });
+        }
+      }
+    }
+    this.interstitialThemes.set(id, newTheme);
+    return newTheme;
+  }
+
+  async updateInterstitialTheme(id: string, updates: Partial<InterstitialTheme>): Promise<InterstitialTheme | undefined> {
+    const existing = this.interstitialThemes.get(id);
+    if (!existing) return undefined;
+    if (updates.isDefault) {
+      for (const [k, t] of this.interstitialThemes.entries()) {
+        if (t.isDefault && k !== id) {
+          this.interstitialThemes.set(k, { ...t, isDefault: false });
+        }
+      }
+    }
+    const updated: InterstitialTheme = {
+      ...existing,
+      ...updates,
+      id,
+      updatedAt: new Date(),
+    };
+    this.interstitialThemes.set(id, updated);
+    return updated;
+  }
+
+  async deleteInterstitialTheme(id: string): Promise<boolean> {
+    const existing = this.interstitialThemes.get(id);
+    if (!existing || existing.isDefault) return false;
+    return this.interstitialThemes.delete(id);
+  }
+
+  async setDefaultInterstitialTheme(id: string): Promise<boolean> {
+    const existing = this.interstitialThemes.get(id);
+    if (!existing) return false;
+    for (const [k, t] of this.interstitialThemes.entries()) {
+      this.interstitialThemes.set(k, { ...t, isDefault: k === id });
+    }
+    return true;
   }
 
   // Classification methods for users
@@ -1813,6 +1907,9 @@ export class DatabaseStorage {
     allowSearchCrawlers?: string;
     blockAiCrawlers?: string;
     allowSocialPreviews?: string;
+    interstitialThemeId?: string;
+    interstitialHeading?: string;
+    interstitialSubnote?: string;
   }): Promise<UserRedirectUrls> {
     // Check if user has existing redirect URLs
     const existing = await this.getUserRedirectUrls(userId);
@@ -1832,6 +1929,9 @@ export class DatabaseStorage {
     if (urls.allowSearchCrawlers !== undefined) updatePayload.allowSearchCrawlers = urls.allowSearchCrawlers;
     if (urls.blockAiCrawlers !== undefined) updatePayload.blockAiCrawlers = urls.blockAiCrawlers;
     if (urls.allowSocialPreviews !== undefined) updatePayload.allowSocialPreviews = urls.allowSocialPreviews;
+    if (urls.interstitialThemeId !== undefined) updatePayload.interstitialThemeId = urls.interstitialThemeId;
+    if (urls.interstitialHeading !== undefined) updatePayload.interstitialHeading = urls.interstitialHeading;
+    if (urls.interstitialSubnote !== undefined) updatePayload.interstitialSubnote = urls.interstitialSubnote;
     if (urls.allowVpn !== undefined) {
       updatePayload.allowVpn = urls.allowVpn;
     } else if (urls.blockVpn !== undefined) {
@@ -1866,10 +1966,80 @@ export class DatabaseStorage {
           allowSearchCrawlers: urls.allowSearchCrawlers || "allow",
           blockAiCrawlers: urls.blockAiCrawlers || "block",
           allowSocialPreviews: urls.allowSocialPreviews || "allow",
+          interstitialThemeId: urls.interstitialThemeId || "clean_light",
+          interstitialHeading: urls.interstitialHeading || "Verifying your connection...",
+          interstitialSubnote: urls.interstitialSubnote || "Please wait while we secure your session.",
         })
         .returning();
       return created;
     }
+  }
+
+  // Interstitial Themes methods (DatabaseStorage)
+  async getInterstitialThemes(includeDisabled = false): Promise<InterstitialTheme[]> {
+    try {
+      const q = db.select().from(interstitialThemes);
+      const list = await (includeDisabled ? q : q.where(eq(interstitialThemes.enabled, true)));
+      if (!list || list.length === 0) return DEFAULT_INTERSTITIAL_THEMES;
+      return list;
+    } catch {
+      return DEFAULT_INTERSTITIAL_THEMES;
+    }
+  }
+
+  async getInterstitialTheme(id: string): Promise<InterstitialTheme | undefined> {
+    try {
+      const [theme] = await db.select().from(interstitialThemes).where(eq(interstitialThemes.id, id));
+      if (!theme) {
+        return DEFAULT_INTERSTITIAL_THEMES.find(t => t.id === id);
+      }
+      return theme;
+    } catch {
+      return DEFAULT_INTERSTITIAL_THEMES.find(t => t.id === id);
+    }
+  }
+
+  async createInterstitialTheme(theme: InsertInterstitialTheme): Promise<InterstitialTheme> {
+    const id = theme.id || randomUUID();
+    if (theme.isDefault) {
+      await db.update(interstitialThemes).set({ isDefault: false });
+    }
+    const [newTheme] = await db.insert(interstitialThemes).values({
+      ...theme,
+      id,
+      category: theme.category || "Light",
+      badge: theme.badge || null,
+      isDefault: theme.isDefault ?? false,
+      enabled: theme.enabled ?? true,
+      previewBg: theme.previewBg || "#f8fafc",
+      previewAccent: theme.previewAccent || "#059669",
+      scriptJs: theme.scriptJs || null,
+    }).returning();
+    return newTheme;
+  }
+
+  async updateInterstitialTheme(id: string, updates: Partial<InterstitialTheme>): Promise<InterstitialTheme | undefined> {
+    if (updates.isDefault) {
+      await db.update(interstitialThemes).set({ isDefault: false });
+    }
+    const [updated] = await db.update(interstitialThemes).set({
+      ...updates,
+      updatedAt: sql`now()`
+    }).where(eq(interstitialThemes.id, id)).returning();
+    return updated;
+  }
+
+  async deleteInterstitialTheme(id: string): Promise<boolean> {
+    const theme = await this.getInterstitialTheme(id);
+    if (!theme || theme.isDefault) return false;
+    const res = await db.delete(interstitialThemes).where(eq(interstitialThemes.id, id)).returning();
+    return res.length > 0;
+  }
+
+  async setDefaultInterstitialTheme(id: string): Promise<boolean> {
+    await db.update(interstitialThemes).set({ isDefault: false });
+    const res = await db.update(interstitialThemes).set({ isDefault: true }).where(eq(interstitialThemes.id, id)).returning();
+    return res.length > 0;
   }
 
   // Classification methods for users (filtered by API key)

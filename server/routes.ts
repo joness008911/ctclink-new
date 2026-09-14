@@ -2473,7 +2473,10 @@ Disallow: /*`);
         allowVpn,
         allowSearchCrawlers,
         blockAiCrawlers,
-        allowSocialPreviews
+        allowSocialPreviews,
+        interstitialThemeId,
+        interstitialHeading,
+        interstitialSubnote
       } = req.body;
       
       if (!humanUrl || !botUrl) {
@@ -2598,7 +2601,10 @@ Disallow: /*`);
         allowVpn: effectiveAllowVpn,
         allowSearchCrawlers: formattedAllowSearchCrawlers,
         blockAiCrawlers: formattedBlockAiCrawlers,
-        allowSocialPreviews: formattedAllowSocialPreviews
+        allowSocialPreviews: formattedAllowSocialPreviews,
+        interstitialThemeId: typeof interstitialThemeId === "string" ? interstitialThemeId.trim() : undefined,
+        interstitialHeading: typeof interstitialHeading === "string" ? interstitialHeading.trim() : undefined,
+        interstitialSubnote: typeof interstitialSubnote === "string" ? interstitialSubnote.trim() : undefined,
       });
       res.json(updated);
     } catch (error) {
@@ -5443,9 +5449,6 @@ Disallow: /*`);
         human_url: finalHumanUrl || null,
         botUrl: finalBotUrl || null,
         bot_url: finalBotUrl || null,
-        ruleSelected: isHumanVisitor 
-          ? (configuredHumanUrl ? "Human Destination URL" : "Default Safe Forward")
-          : (blockReason || detectionMethod || (finalBotUrl ? `Bot Deflection (${finalBotUrl})` : "Default Mitigation")),
         redirectVersion: redirectVersion,
         configured: Boolean(effectiveRedirectUrl),
         status: "success"
@@ -6541,6 +6544,244 @@ Disallow: /*`);
     } catch (error) {
       console.error("Generate domain link error:", error);
       res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // ── Admin Interstitial Theme Management Endpoints ────────────────────────
+  // List all themes (including inactive/disabled)
+  app.get("/api/admin/themes", requireAuth, async (req, res) => {
+    try {
+      const themes = await storage.getInterstitialThemes(true);
+      res.json(themes);
+    } catch (error) {
+      console.error("Admin fetch themes error:", error);
+      res.status(500).json({ message: "Failed to fetch themes" });
+    }
+  });
+
+  // Create/push new theme design
+  app.post("/api/admin/themes", requireAuth, async (req, res) => {
+    try {
+      const { name, description, category, badge, previewBg, previewAccent, htmlHead, htmlBody, scriptJs, isDefault, enabled } = req.body;
+      if (!name || !htmlHead || !htmlBody) {
+        return res.status(400).json({ message: "Name, CSS (htmlHead), and HTML structure (htmlBody) are required" });
+      }
+      const created = await storage.createInterstitialTheme({
+        name: String(name).trim(),
+        description: description ? String(description).trim() : "",
+        category: category || "Light",
+        badge: badge ? String(badge).trim() : null,
+        previewBg: previewBg || "#f8fafc",
+        previewAccent: previewAccent || "#059669",
+        htmlHead: String(htmlHead).trim(),
+        htmlBody: String(htmlBody).trim(),
+        scriptJs: scriptJs ? String(scriptJs).trim() : null,
+        isDefault: Boolean(isDefault),
+        enabled: enabled !== false,
+      });
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: "theme.created",
+        targetId: created.id,
+        targetType: "interstitial_theme",
+        metadata: { name: created.name, category: created.category },
+      });
+
+      res.status(201).json(created);
+    } catch (error: any) {
+      console.error("Admin create theme error:", error);
+      res.status(500).json({ message: error?.message || "Failed to create theme" });
+    }
+  });
+
+  // Update theme
+  app.put("/api/admin/themes/:id", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updates = req.body;
+      const updated = await storage.updateInterstitialTheme(id, updates);
+      if (!updated) {
+        return res.status(404).json({ message: "Theme not found" });
+      }
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: "theme.updated",
+        targetId: id,
+        targetType: "interstitial_theme",
+        metadata: { updates },
+      });
+
+      res.json(updated);
+    } catch (error: any) {
+      console.error("Admin update theme error:", error);
+      res.status(500).json({ message: error?.message || "Failed to update theme" });
+    }
+  });
+
+  // Delete theme
+  app.delete("/api/admin/themes/:id", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const theme = await storage.getInterstitialTheme(id);
+      if (!theme) {
+        return res.status(404).json({ message: "Theme not found" });
+      }
+      if (theme.isDefault) {
+        return res.status(400).json({ message: "Cannot delete the default interstitial theme" });
+      }
+
+      const deleted = await storage.deleteInterstitialTheme(id);
+      if (!deleted) {
+        return res.status(400).json({ message: "Failed to delete theme" });
+      }
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: "theme.deleted",
+        targetId: id,
+        targetType: "interstitial_theme",
+        metadata: { name: theme.name },
+      });
+
+      res.json({ success: true, message: "Theme deleted successfully" });
+    } catch (error: any) {
+      console.error("Admin delete theme error:", error);
+      res.status(500).json({ message: error?.message || "Failed to delete theme" });
+    }
+  });
+
+  // Set default theme
+  app.post("/api/admin/themes/:id/set-default", requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const success = await storage.setDefaultInterstitialTheme(id);
+      if (!success) {
+        return res.status(404).json({ message: "Theme not found" });
+      }
+
+      void auditLog({
+        actorId: (req as any).session?.userId,
+        actorType: "admin",
+        action: "theme.set_default",
+        targetId: id,
+        targetType: "interstitial_theme",
+      });
+
+      res.json({ success: true, message: "Theme set as default" });
+    } catch (error: any) {
+      console.error("Admin set default theme error:", error);
+      res.status(500).json({ message: error?.message || "Failed to set default theme" });
+    }
+  });
+
+  // ── Client User Theme Endpoints ──────────────────────────────────────────
+  // List enabled themes for users
+  app.get("/api/user/themes", async (_req, res) => {
+    try {
+      const themes = await storage.getInterstitialThemes(false);
+      res.json(themes);
+    } catch (error) {
+      console.error("User fetch themes error:", error);
+      res.status(500).json({ message: "Failed to fetch themes" });
+    }
+  });
+
+  // Preview rendered HTML for a specific theme
+  app.get("/api/user/themes/:id/preview-html", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const theme = await storage.getInterstitialTheme(id);
+      if (!theme) {
+        return res.status(404).send("Theme not found");
+      }
+
+      const heading = String(req.query.heading || "Verifying your connection...");
+      const subnote = String(req.query.subnote || "Please wait while we secure your session.");
+
+      const renderedBody = theme.htmlBody
+        .replace(/{{HEADING}}/g, heading)
+        .replace(/{{SUBNOTE}}/g, subnote);
+
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${heading}</title>
+  <style>
+${theme.htmlHead}
+  </style>
+</head>
+<body>
+${renderedBody}
+${theme.scriptJs ? `<script>\n${theme.scriptJs}\n</script>` : ""}
+</body>
+</html>`;
+
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("X-Frame-Options", "SAMEORIGIN");
+      res.send(html);
+    } catch (error) {
+      console.error("Theme preview error:", error);
+      res.status(500).send("Error generating preview");
+    }
+  });
+
+  // Update user's chosen loading theme & texts
+  app.put("/api/user/interstitial-theme", requireClientAuth, async (req: any, res) => {
+    try {
+      const auth = getSessionOrToken(req);
+      const userId = auth?.userId || req.session?.clientUserId || req.clientUserId;
+      if (!userId) {
+        return res.status(401).json({ message: "User not found" });
+      }
+
+      const { interstitialThemeId, interstitialHeading, interstitialSubnote } = req.body;
+      if (!interstitialThemeId) {
+        return res.status(400).json({ message: "interstitialThemeId is required" });
+      }
+
+      // Verify theme exists
+      const theme = await storage.getInterstitialTheme(interstitialThemeId);
+      if (!theme) {
+        return res.status(400).json({ message: "Selected theme does not exist" });
+      }
+
+      // Fetch or initialize user redirect settings
+      const existing = await storage.getUserRedirectUrls(userId);
+      const updated = await storage.setUserRedirectUrls(userId, {
+        humanUrl: existing?.humanUrl || "",
+        botUrl: existing?.botUrl || "404",
+        allowedCountries: existing?.allowedCountries || "ALL",
+        allowedDevices: existing?.allowedDevices || "all",
+        desktopOsFilter: existing?.desktopOsFilter || "both",
+        blockVpn: existing?.blockVpn || "block",
+        blockDatacenter: existing?.blockDatacenter || "block",
+        blockTor: existing?.blockTor || "block",
+        fingerprintActivate: existing?.fingerprintActivate || "enabled",
+        wildcardSubdomains: existing?.wildcardSubdomains || "disabled",
+        allowVpn: existing?.allowVpn || false,
+        allowSearchCrawlers: existing?.allowSearchCrawlers || "allow",
+        blockAiCrawlers: existing?.blockAiCrawlers || "block",
+        allowSocialPreviews: existing?.allowSocialPreviews || "allow",
+        interstitialThemeId: theme.id,
+        interstitialHeading: interstitialHeading ? String(interstitialHeading).trim() : "Verifying your connection...",
+        interstitialSubnote: interstitialSubnote ? String(interstitialSubnote).trim() : "Please wait while we secure your session.",
+      });
+
+      res.json({
+        success: true,
+        message: "Interstitial loading theme updated successfully",
+        redirectUrls: updated,
+      });
+    } catch (error: any) {
+      console.error("Update interstitial theme error:", error);
+      res.status(500).json({ message: error?.message || "Failed to update interstitial theme" });
     }
   });
 

@@ -28,7 +28,10 @@ import {
   type InsertUserDomainGeneration,
   type AuditLog,
   type InsertAuditLog,
+  type InterstitialTheme,
+  type InsertInterstitialTheme,
 } from "@shared/schema";
+import { DEFAULT_INTERSTITIAL_THEMES } from "@shared/interstitialThemes";
 import { type IStorage } from "./storage";
 import { firestore } from "./firebase";
 import {
@@ -136,6 +139,18 @@ export class FirestoreStorage implements IStorage {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         });
+      }
+
+      // Ensure default interstitial themes exist in Firestore
+      const themesSnap = await getDocs(collection(this.db, "interstitial_themes"));
+      if (themesSnap.empty) {
+        for (const theme of DEFAULT_INTERSTITIAL_THEMES) {
+          await setDoc(doc(this.db, "interstitial_themes", theme.id), {
+            ...theme,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        }
       }
     } catch (e) {
       console.warn("Firestore bootstrap error (non-fatal):", e);
@@ -1208,6 +1223,9 @@ export class FirestoreStorage implements IStorage {
     allowSearchCrawlers?: string;
     blockAiCrawlers?: string;
     allowSocialPreviews?: string;
+    interstitialThemeId?: string;
+    interstitialHeading?: string;
+    interstitialSubnote?: string;
   }): Promise<UserRedirectUrls> {
     const existing = await this.getUserRedirectUrls(userId);
     const now = new Date();
@@ -1228,6 +1246,9 @@ export class FirestoreStorage implements IStorage {
       allowSearchCrawlers: urls.allowSearchCrawlers !== undefined ? urls.allowSearchCrawlers : (existing?.allowSearchCrawlers || "allow"),
       blockAiCrawlers: urls.blockAiCrawlers !== undefined ? urls.blockAiCrawlers : (existing?.blockAiCrawlers || "block"),
       allowSocialPreviews: urls.allowSocialPreviews !== undefined ? urls.allowSocialPreviews : (existing?.allowSocialPreviews || "allow"),
+      interstitialThemeId: urls.interstitialThemeId !== undefined ? urls.interstitialThemeId : (existing?.interstitialThemeId || "clean_light"),
+      interstitialHeading: urls.interstitialHeading !== undefined ? urls.interstitialHeading : (existing?.interstitialHeading || "Verifying your connection..."),
+      interstitialSubnote: urls.interstitialSubnote !== undefined ? urls.interstitialSubnote : (existing?.interstitialSubnote || "Please wait while we secure your session."),
       updatedAt: now,
     };
     await setDoc(doc(this.db, "user_redirect_urls", userId), {
@@ -1469,5 +1490,121 @@ export class FirestoreStorage implements IStorage {
     } catch (e) {
       return [];
     }
+  }
+
+  // ── Interstitial Themes ───────────────────────────────────────────────────
+  async getInterstitialThemes(includeDisabled = false): Promise<InterstitialTheme[]> {
+    try {
+      const snap = await getDocs(collection(this.db, "interstitial_themes"));
+      if (snap.empty) {
+        return DEFAULT_INTERSTITIAL_THEMES;
+      }
+      const list: InterstitialTheme[] = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          ...data,
+          id: d.id,
+          createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
+          updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
+        } as InterstitialTheme;
+      });
+      if (includeDisabled) return list;
+      return list.filter((t) => t.enabled);
+    } catch (e) {
+      console.error("Failed to get interstitial themes from Firestore:", e);
+      return DEFAULT_INTERSTITIAL_THEMES;
+    }
+  }
+
+  async getInterstitialTheme(id: string): Promise<InterstitialTheme | undefined> {
+    try {
+      const snap = await getDoc(doc(this.db, "interstitial_themes", id));
+      if (!snap.exists()) {
+        return DEFAULT_INTERSTITIAL_THEMES.find((t) => t.id === id);
+      }
+      const data = snap.data();
+      return {
+        ...data,
+        id: snap.id,
+        createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
+        updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
+      } as InterstitialTheme;
+    } catch {
+      return DEFAULT_INTERSTITIAL_THEMES.find((t) => t.id === id);
+    }
+  }
+
+  async createInterstitialTheme(theme: InsertInterstitialTheme): Promise<InterstitialTheme> {
+    const id = theme.id || randomUUID();
+    const now = new Date();
+    const newTheme: InterstitialTheme = {
+      ...theme,
+      id,
+      category: (theme.category as any) || "Light",
+      badge: theme.badge || null,
+      isDefault: theme.isDefault ?? false,
+      enabled: theme.enabled ?? true,
+      previewBg: theme.previewBg || "#f8fafc",
+      previewAccent: theme.previewAccent || "#059669",
+      scriptJs: theme.scriptJs || null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (newTheme.isDefault) {
+      const snap = await getDocs(collection(this.db, "interstitial_themes"));
+      for (const d of snap.docs) {
+        if (d.data().isDefault && d.id !== id) {
+          await updateDoc(doc(this.db, "interstitial_themes", d.id), { isDefault: false });
+        }
+      }
+    }
+    await setDoc(doc(this.db, "interstitial_themes", id), {
+      ...newTheme,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    });
+    return newTheme;
+  }
+
+  async updateInterstitialTheme(id: string, updates: Partial<InterstitialTheme>): Promise<InterstitialTheme | undefined> {
+    const existing = await this.getInterstitialTheme(id);
+    if (!existing) return undefined;
+    const now = new Date();
+    if (updates.isDefault) {
+      const snap = await getDocs(collection(this.db, "interstitial_themes"));
+      for (const d of snap.docs) {
+        if (d.data().isDefault && d.id !== id) {
+          await updateDoc(doc(this.db, "interstitial_themes", d.id), { isDefault: false });
+        }
+      }
+    }
+    const updated: InterstitialTheme = {
+      ...existing,
+      ...updates,
+      id,
+      updatedAt: now,
+    };
+    await setDoc(doc(this.db, "interstitial_themes", id), {
+      ...updated,
+      updatedAt: now.toISOString(),
+    });
+    return updated;
+  }
+
+  async deleteInterstitialTheme(id: string): Promise<boolean> {
+    const existing = await this.getInterstitialTheme(id);
+    if (!existing || existing.isDefault) return false;
+    await deleteDoc(doc(this.db, "interstitial_themes", id));
+    return true;
+  }
+
+  async setDefaultInterstitialTheme(id: string): Promise<boolean> {
+    const existing = await this.getInterstitialTheme(id);
+    if (!existing) return false;
+    const snap = await getDocs(collection(this.db, "interstitial_themes"));
+    for (const d of snap.docs) {
+      await updateDoc(doc(this.db, "interstitial_themes", d.id), { isDefault: d.id === id });
+    }
+    return true;
   }
 }

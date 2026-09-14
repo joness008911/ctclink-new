@@ -441,13 +441,13 @@ export default function Documentation() {
                   <span className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
                     Mode A: Campaign & Funnel Redirector (Recommended for Ads)
                   </span>
-                  <span className="text-[11px] text-slate-400 font-mono">Standalone Directory</span>
+                  <span className="text-[11px] text-slate-400 font-mono">Instant Interstitial</span>
                 </div>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Drop the generated <code className="bg-slate-100 px-1 py-0.5 rounded font-mono">index.php</code> into a specific folder in your web root, such as <code className="bg-slate-100 px-1 py-0.5 rounded font-mono">public_html/promo/index.php</code>.
+                  Drop the generated <code className="bg-slate-100 px-1 py-0.5 rounded font-mono">index.php</code> into a specific folder in your web root, such as <code className="bg-slate-100 px-1 py-0.5 rounded font-mono">public_html/promo/index.php</code>. Visitors immediately see a polished, zero-interaction "Verifying your connection..." security screen (&lt;15ms) while classification executes asynchronously in the background. Zero blank white screens.
                 </p>
                 <div className="bg-[#051C15] border border-[#0F382B] rounded-lg p-3.5 text-xs text-[#C8E0D7] font-mono overflow-x-auto">
-                  https://yourdomain.com/promo/ &nbsp;➔ Evaluated in &lt;30ms &nbsp;➔ Human forwarded to Target Page | Bot receives 404/403
+                  https://yourdomain.com/promo/ &nbsp;➔ Instant Interstitial (&lt;15ms) &nbsp;➔ Background Async Check &nbsp;➔ Human forwarded to Target Page | Bot receives 404/403
                 </div>
               </div>
 

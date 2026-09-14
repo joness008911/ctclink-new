@@ -80,6 +80,9 @@ service cloud.firestore {
     match /user_domain_generations/{genId} {
       allow read, write: if true;
     }
+    match /interstitial_themes/{themeId} {
+      allow read, write: if true;
+    }
 
     // Default deny for unmatched collections
     match /{document=**} {

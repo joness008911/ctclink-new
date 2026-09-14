@@ -76,15 +76,40 @@
     },
     "UserRedirectUrls": {
       "title": "UserRedirectUrls",
-      "description": "Destination URLs for human vs bot traffic routing",
+      "description": "Destination URLs for human vs bot traffic routing and user chosen interstitial theme",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "userId": { "type": "string" },
         "humanUrl": { "type": "string" },
-        "botUrl": { "type": "string" }
+        "botUrl": { "type": "string" },
+        "interstitialThemeId": { "type": "string" },
+        "interstitialHeading": { "type": "string" },
+        "interstitialSubnote": { "type": "string" }
       },
       "required": ["id", "userId", "humanUrl", "botUrl"]
+    },
+    "InterstitialTheme": {
+      "title": "InterstitialTheme",
+      "description": "Loading state UI template for PHP anti-bot verification splash screens",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "badge": { "type": "string" },
+        "isDefault": { "type": "boolean" },
+        "enabled": { "type": "boolean" },
+        "previewBg": { "type": "string" },
+        "previewAccent": { "type": "string" },
+        "htmlHead": { "type": "string" },
+        "htmlBody": { "type": "string" },
+        "scriptJs": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "category", "enabled"]
     },
     "AuthVerificationToken": {
       "title": "AuthVerificationToken",
@@ -138,6 +163,10 @@
     "/auth_verification_tokens/{tokenId}": {
       "schema": "AuthVerificationToken",
       "description": "Hashed email verification and password recovery security tokens"
+    },
+    "/interstitial_themes/{themeId}": {
+      "schema": "InterstitialTheme",
+      "description": "Customizable PHP loading state UI themes managed by Admin"
     }
   }
 }

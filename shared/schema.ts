@@ -166,6 +166,27 @@ export const userRedirectUrls = pgTable("user_redirect_urls", {
   allowSearchCrawlers: text("allow_search_crawlers").default("allow"), // "allow" | "block" (default: allow so SEO and indexing are preserved)
   blockAiCrawlers: text("block_ai_crawlers").default("block"), // "block" | "allow" (default: block AI training scrapers)
   allowSocialPreviews: text("allow_social_previews").default("allow"), // "allow" | "block" (default: allow link preview crawlers)
+  interstitialThemeId: text("interstitial_theme_id").default("clean_light"),
+  interstitialHeading: text("interstitial_heading").default("Verifying your connection..."),
+  interstitialSubnote: text("interstitial_subnote").default("Please wait while we secure your session."),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Interstitial Themes (Admin managed loading UI styles for client scripts)
+export const interstitialThemes = pgTable("interstitial_themes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  category: text("category").default("Light").notNull(),
+  badge: text("badge"),
+  isDefault: boolean("is_default").default(false).notNull(),
+  enabled: boolean("enabled").default(true).notNull(),
+  previewBg: text("preview_bg").default("#f8fafc").notNull(),
+  previewAccent: text("preview_accent").default("#059669").notNull(),
+  htmlHead: text("html_head").notNull(),
+  htmlBody: text("html_body").notNull(),
+  scriptJs: text("script_js"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -302,6 +323,18 @@ export type InsertDomainPool = z.infer<typeof insertDomainPoolSchema>;
 export type DomainPool = typeof domainPool.$inferSelect;
 export type InsertUserDomainGeneration = z.infer<typeof insertUserDomainGenerationSchema>;
 export type UserDomainGeneration = typeof userDomainGenerations.$inferSelect;
+
+export const insertInterstitialThemeSchema = createInsertSchema(interstitialThemes).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  id: z.string().optional(),
+});
+export type InsertInterstitialTheme = z.infer<typeof insertInterstitialThemeSchema>;
+export type InterstitialTheme = typeof interstitialThemes.$inferSelect;
+
+export * from "./interstitialThemes";
 
 // Tracks Stripe webhook events that have already been processed (idempotency guard)
 export const stripeProcessedEvents = pgTable("stripe_processed_events", {

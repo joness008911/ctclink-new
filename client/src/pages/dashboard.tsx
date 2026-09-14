@@ -31,7 +31,8 @@ import {
   ChevronRight,
   Sparkles,
   Activity,
-  ArrowRight
+  ArrowRight,
+  Palette
 } from "lucide-react";
 import ClassificationTable from "@/components/classification-table";
 import DetectionRules from "@/components/detection-rules";
@@ -45,6 +46,7 @@ import IspBlacklist from "@/components/isp-blacklist";
 import ClientUserManagement from "@/components/client-user-management";
 import WhitelabelDomainSettings from "@/components/whitelabel-domain-settings";
 import EmailManagement from "@/components/email-management";
+import ThemeManagement from "@/components/theme-management";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -253,6 +255,7 @@ export default function Dashboard() {
       group: "Client & Services",
       items: [
         { id: "client-users", label: "Client Users", icon: Users, testId: "tab-client-users" },
+        { id: "themes", label: "Loading Themes & UI", icon: Palette, testId: "tab-themes" },
         { id: "email", label: "Email & SMTP", icon: Mail, testId: "tab-email" },
       ],
     },
@@ -689,6 +692,10 @@ export default function Dashboard() {
 
             <TabsContent value="email" className="mt-0 space-y-6">
               <EmailManagement />
+            </TabsContent>
+
+            <TabsContent value="themes" className="mt-0 space-y-6">
+              <ThemeManagement />
             </TabsContent>
 
             <TabsContent value="analytics" className="mt-0 space-y-6">
